@@ -196,7 +196,11 @@ def pdf_to_txt(pdf_path: Path) -> tuple[Path | None, Path | None, str]:
         if sys.platform == "darwin":
             ocr_args = ["--ocr-engine", "ocrmac", "--ocr-lang", "ko-KR,en-US"]
         else:
-            ocr_args = ["--ocr-engine", "easyocr", "--ocr-lang", "ko,en"]
+            # 기본 PDF 백엔드(dlparse)는 윈도우에서 한글 파일명을 못 열고
+            # (Inconsistent number of pages: N!=-1) ASCII 이름이어도 std::bad_alloc로
+            # 죽는다 — pypdfium2 백엔드는 둘 다 정상 (2026-06-11 실기 확인).
+            ocr_args = ["--ocr-engine", "easyocr", "--ocr-lang", "ko,en",
+                        "--pdf-backend", "pypdfium2"]
         try:
             r = subprocess.run(
                 [str(docling_bin), str(pdf_path), "--to", "md",
