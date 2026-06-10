@@ -20,7 +20,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.2.7"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.2.8"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -934,7 +934,9 @@ def open_path(p: Path, reveal: bool = False):
         if sys.platform == "darwin":
             subprocess.run(["open", "-R", str(p)] if reveal else ["open", str(p)])
         elif reveal:
-            subprocess.run(["explorer", f"/select,{p}"])
+            # 리스트로 넘기면 인자 전체가 따옴표로 감싸여 explorer가 무시하고
+            # 문서 폴더를 열어버림 — 경로만 따옴표한 문자열로 직접 구성 (2026-06-11)
+            subprocess.run(f'explorer /select,"{p}"')
         else:
             os.startfile(str(p))
     except Exception as e:
