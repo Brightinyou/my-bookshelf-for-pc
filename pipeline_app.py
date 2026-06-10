@@ -20,7 +20,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.2.6"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.2.7"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -1624,19 +1624,21 @@ with tab_history:
             f"({'숨김' if hide_zero else '표시'} — 처리 중 흔적, 완료 아님)"
         )
     if rows:
-        st.caption("ℹ️ 행을 클릭하면 아래에 열기 버튼이 나타납니다.")
-        hist_event = st.dataframe(
-            pd.DataFrame(rows), use_container_width=True, hide_index=True,
-            on_select="rerun", selection_mode="single-row", key="history_table",
-        )
-        hist_sel = hist_event.selection.rows if hist_event and hasattr(hist_event, "selection") else []
-        if hist_sel:
-            hp = row_paths[hist_sel[0]]
-            hc1, hc2 = st.columns(2)
-            if hc1.button(f"📄 파일 열기 — {hp.name}", use_container_width=True, key="history_open_file"):
-                open_path(hp)
-            if hc2.button("📁 폴더에서 보기", use_container_width=True, key="history_open_folder"):
-                open_path(hp, reveal=True)
+        st.caption("ℹ️ 파일명을 클릭하면 파일이 열리고, 📁 경로를 클릭하면 폴더가 열립니다.")
+        with st.container(height=700, border=True):
+            for _i, (row, fp) in enumerate(zip(rows[:200], row_paths[:200])):
+                c_name, c_meta, c_path = st.columns([4.6, 1.6, 2.0])
+                _icon = row["상태"].split()[0]
+                if c_name.button(f"{_icon} {row['파일명']}", key=f"hist_open_{_i}",
+                                 help="클릭하면 파일 열기", use_container_width=True):
+                    open_path(fp)
+                c_meta.markdown(f"<small>{row['시각']}<br>{row['크기']}</small>",
+                                unsafe_allow_html=True)
+                if c_path.button(f"📁 {row['경로']}", key=f"hist_folder_{_i}",
+                                 help="폴더 열기", use_container_width=True):
+                    open_path(fp, reveal=True)
+            if len(rows) > 200:
+                st.caption(f"… 외 {len(rows) - 200}개 (최신 200개만 표시)")
     else:
         st.info("처리된 파일이 없습니다.")
 
