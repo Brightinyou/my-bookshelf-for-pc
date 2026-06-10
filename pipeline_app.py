@@ -20,6 +20,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
+APP_VERSION = "v0.2.6"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -1104,7 +1105,11 @@ div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) > div:
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📚 My Bookshelf")
+st.markdown(
+    f"# 📚 My Bookshelf <span style='font-size:0.42em;color:#9aa0a6;"
+    f"font-weight:400;vertical-align:middle'>{APP_VERSION}</span>",
+    unsafe_allow_html=True,
+)
 st.caption("PDF 업로드 → OCR/번역 → 텍스트 내용 요약 Obsidian Wiki 자동 생성")
 
 # 상태 배너
