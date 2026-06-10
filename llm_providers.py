@@ -129,9 +129,15 @@ def claude_cli_path() -> str | None:
     p = shutil.which("claude")
     if p:
         return p
-    for cand in ("/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
-        if Path(cand).exists():
-            return cand
+    home = Path.home()
+    for cand in (
+        Path("/opt/homebrew/bin/claude"), Path("/usr/local/bin/claude"),
+        home / ".local" / "bin" / "claude",        # 네이티브 설치(맥·리눅스)
+        home / ".local" / "bin" / "claude.exe",    # 네이티브 설치(윈도우)
+        Path(os.environ.get("APPDATA", "")) / "npm" / "claude.cmd",  # npm 전역(윈도우)
+    ):
+        if cand.exists():
+            return str(cand)
     return None
 
 

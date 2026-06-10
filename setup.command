@@ -45,6 +45,10 @@ if ! command -v pdftotext >/dev/null 2>&1; then
     echo "ℹ️  (선택) pdftotext 폴백이 없습니다. Homebrew가 있다면: brew install poppler"
 fi
 
+# ── Streamlit 첫 실행 영문 환영문(이메일 입력) 건너뛰기 ──
+mkdir -p "$HOME/.streamlit"
+[ -f "$HOME/.streamlit/credentials.toml" ] || printf '[general]\nemail = ""\n' > "$HOME/.streamlit/credentials.toml"
+
 # ── 4. 옵시디언(위키 노트 열람용) 확인 ─────────────────────
 if [ -d "/Applications/Obsidian.app" ]; then
     echo "✅ 옵시디언이 이미 설치되어 있습니다."

@@ -1100,7 +1100,7 @@ div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) > div:
 """, unsafe_allow_html=True)
 
 st.title("📚 My Bookshelf")
-st.caption("PDF 업로드 → OCR/번역 → Gemini가 책 전문으로 Obsidian Wiki 자동 생성")
+st.caption("PDF 업로드 → OCR/번역 → 책 요약 Obsidian Wiki 자동 생성")
 
 # 상태 배너
 col_s1, col_s2, col_s3 = st.columns(3)

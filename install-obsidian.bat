@@ -24,4 +24,5 @@ echo [확인] 옵시디언이 이미 설치되어 있습니다.
 echo.
 echo [안내] 옵시디언에서 "Open folder as vault"로
 echo        문서\My Bookshelf\wiki 폴더를 열면 생성된 노트가 보입니다.
-pause
+echo 아무 키나 누르면 창이 닫힙니다.
+pause >nul
