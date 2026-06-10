@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -180,7 +181,7 @@ def pdf_to_txt(pdf_path: Path) -> tuple[Path | None, Path | None, str]:
     동시에 깨끗한 .md 사이드카 파일을 PDF 폴더에 생성."""
     pdftotext = cfg.PDFTOTEXT
 
-    txt_path = Path("/tmp") / (pdf_path.stem + ".txt")
+    txt_path = Path(tempfile.gettempdir()) / (pdf_path.stem + ".txt")
 
     # ── Docling 변환 (2026-06-09): 레이아웃 인식으로 본문/각주/표 분리 + ocrmac(Apple Vision) OCR ──
     docling_bin = Path(cfg.DOCLING) if cfg.DOCLING else None
@@ -189,12 +190,18 @@ def pdf_to_txt(pdf_path: Path) -> tuple[Path | None, Path | None, str]:
     if docling_bin and docling_bin.exists():
         st.caption("📄 Docling 변환 중 — 레이아웃 인식·각주 분리 (대형 스캔은 수 분 소요)…")
         out_dir = pdf_path.parent
+        # OS별 OCR 엔진: 맥=ocrmac(Apple Vision), 그 외=easyocr(ko 지원).
+        # 언어 미지정 시 영어 기본 → 한글 깨짐. rapidocr은 docling이 중국어·영어 모델만
+        # 지원해 한국어 불가(2026-06-10 확인) — easyocr만이 윈도우 한글 경로.
+        if sys.platform == "darwin":
+            ocr_args = ["--ocr-engine", "ocrmac", "--ocr-lang", "ko-KR,en-US"]
+        else:
+            ocr_args = ["--ocr-engine", "easyocr", "--ocr-lang", "ko,en"]
         try:
             r = subprocess.run(
                 [str(docling_bin), str(pdf_path), "--to", "md",
                  "--image-export-mode", "placeholder",
-                 "--ocr-engine", "ocrmac",
-                 "--ocr-lang", "ko-KR,en-US",  # 한국어 우선 (2026-06-09: 미지정시 en-US 기본→한글 깨짐)
+                 *ocr_args,
                  "--output", str(out_dir)],
                 capture_output=True, text=True, timeout=3600,
             )
@@ -905,6 +912,8 @@ def read_log(n: int = 20) -> list:
 
 
 def notify(msg: str, title: str = "My Bookshelf"):
+    if sys.platform != "darwin":   # 윈도우 등: OS 알림 생략 (UI 토스트가 이미 표시됨)
+        return
     subprocess.run(
         ["osascript", "-e",
          f'display notification "{msg}" with title "{title}" sound name "Glass"'],
@@ -1624,7 +1633,7 @@ with tab_failed:
         st.info("실패 파일 없음. 파이프라인 실패 시 자동으로 여기 모입니다.")
     else:
         st.caption(
-            "✓ 체크한 파일을 *재시도*하면 **/tmp/pipeline_uploads로 이동 + 📤 파일 업로드 탭에 자동 합산**됩니다. "
+            "✓ 체크한 파일을 *재시도*하면 **임시 업로드 폴더로 이동 + 📤 파일 업로드 탭에 자동 합산**됩니다. "
             "업로드 탭으로 가서 🚀 파이프라인 실행을 누르세요."
         )
 

@@ -24,6 +24,7 @@ config.json 예 (모든 키 선택 사항):
 import json
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 CONFIG_DIR  = Path.home() / ".config" / "mybookshelf"
@@ -75,7 +76,10 @@ LOG_FILE         = _file("log_file",     LOG_DIR / "upload.log")
 RESULTS_FILE     = _file("results_file", LOG_DIR / "pipeline_results.json")
 GEMINI_DONE_FILE = _file("gemini_done",  LOG_DIR / "gemini_done.txt")
 
-UPLOAD_TMP = Path("/tmp/pipeline_uploads")   # 모든 맥 공통, 무해
+# 업로드 대기 파일은 재시작 후에도 다시 찾아야 하므로 맥은 기존 /tmp 경로 유지(호환),
+# 윈도우는 %TEMP% 사용.
+UPLOAD_TMP = (Path("/tmp") if sys.platform == "darwin" else Path(tempfile.gettempdir())) \
+             / "pipeline_uploads"
 
 
 # ── 분류 폴더(워크스페이스) ───────────────────────────────
@@ -105,8 +109,9 @@ def find_binary(name: str, extra: tuple = ()) -> str | None:
 
 PDFTOTEXT = find_binary("pdftotext")
 DOCLING   = find_binary("docling", extra=(
-    str(_HERE / ".venv" / "bin" / "docling"),      # 배포본: 앱 폴더 venv
-    str(BASE_DIR / ".venv" / "bin" / "docling"),   # 옛 레이아웃 호환
+    str(_HERE / ".venv" / "bin" / "docling"),              # 배포본: 앱 폴더 venv (맥)
+    str(_HERE / ".venv" / "Scripts" / "docling.exe"),      # 배포본: 앱 폴더 venv (윈도우)
+    str(BASE_DIR / ".venv" / "bin" / "docling"),           # 옛 레이아웃 호환
 ))
 PYTHON    = sys.executable   # 보조 스크립트는 앱과 같은 인터프리터로 실행
 

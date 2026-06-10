@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -187,7 +188,7 @@ def _claude_cli(model: str, system: str, prompt: str) -> str:
     r = subprocess.run(
         [cli, "-p", prompt, "--model", model,
          "--system-prompt", system, "--output-format", "text"],
-        capture_output=True, text=True, timeout=600, cwd="/tmp",
+        capture_output=True, text=True, timeout=600, cwd=tempfile.gettempdir(),
     )
     if r.returncode != 0:
         raise RuntimeError(f"claude CLI exit {r.returncode}: {(r.stderr or '')[:200]}")
