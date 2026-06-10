@@ -553,6 +553,7 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
     # 중복 검사 생략 (AnythingLLM 제거) — Gemini 노트는 동일 파일명 덮어쓰기
 
     dest = UPLOAD_TMP / uf.name
+    uf.seek(0)   # 같은 업로드로 재실행 시 포인터가 끝에 있어 0바이트 저장되는 것 방지 (2026-06-11)
     with open(dest, "wb") as f:
         f.write(uf.read())
 
@@ -1104,7 +1105,7 @@ div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) > div:
 """, unsafe_allow_html=True)
 
 st.title("📚 My Bookshelf")
-st.caption("PDF 업로드 → OCR/번역 → 책 요약 Obsidian Wiki 자동 생성")
+st.caption("PDF 업로드 → OCR/번역 → 텍스트 내용 요약 Obsidian Wiki 자동 생성")
 
 # 상태 배너
 col_s1, col_s2, col_s3 = st.columns(3)
@@ -1587,6 +1588,7 @@ with tab_history:
     # 토글: 0KB 항목 숨김
     hide_zero = st.toggle("⚠️ 0KB(빈 파일) 숨김", value=True, key="history_hide_zero")
     rows = []
+    row_paths: list[Path] = []          # 행 선택 → 파일/폴더 열기용 (2026-06-11)
     zero_count = 0
     for f in sorted((f for f in DONE_DIR.rglob("*") if f.is_file()), key=lambda x: x.stat().st_mtime, reverse=True):
         sz = f.stat().st_size
@@ -1600,6 +1602,7 @@ with tab_history:
             "크기": f"{sz // 1024} KB" if sz > 0 else "0 KB ⚠️",
             "경로": str(f.parent.relative_to(DONE_DIR)),
         })
+        row_paths.append(f)
     for f in sorted(FAILED_DIR.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True):
         sz = f.stat().st_size
         rows.append({
@@ -1609,15 +1612,26 @@ with tab_history:
             "크기": f"{sz // 1024} KB",
             "경로": "failed",
         })
+        row_paths.append(f)
     if zero_count:
         st.caption(
             f"⚠️ 0KB 파일 **{zero_count}건** 감지됨 "
             f"({'숨김' if hide_zero else '표시'} — 처리 중 흔적, 완료 아님)"
         )
     if rows:
-        st.dataframe(
+        st.caption("ℹ️ 행을 클릭하면 아래에 열기 버튼이 나타납니다.")
+        hist_event = st.dataframe(
             pd.DataFrame(rows), use_container_width=True, hide_index=True,
+            on_select="rerun", selection_mode="single-row", key="history_table",
         )
+        hist_sel = hist_event.selection.rows if hist_event and hasattr(hist_event, "selection") else []
+        if hist_sel:
+            hp = row_paths[hist_sel[0]]
+            hc1, hc2 = st.columns(2)
+            if hc1.button(f"📄 파일 열기 — {hp.name}", use_container_width=True, key="history_open_file"):
+                open_path(hp)
+            if hc2.button("📁 폴더에서 보기", use_container_width=True, key="history_open_folder"):
+                open_path(hp, reveal=True)
     else:
         st.info("처리된 파일이 없습니다.")
 
@@ -1645,6 +1659,11 @@ with tab_wiki:
             st.divider()
             st.markdown(f"### 📖 {wf.stem}")
             st.caption(f"경로: `{wf}` · {wf.stat().st_size // 1024}KB")
+            wc1, wc2 = st.columns(2)
+            if wc1.button("📄 파일 열기 (옵시디언/기본 앱)", use_container_width=True, key="wiki_open_file"):
+                open_path(wf)
+            if wc2.button("📁 폴더에서 보기", use_container_width=True, key="wiki_open_folder"):
+                open_path(wf, reveal=True)
             try:
                 content = wf.read_text(errors="ignore")
                 with st.container(height=600, border=True):
@@ -1711,7 +1730,7 @@ with tab_failed:
         st.divider()
         with st.container(height=700, border=True):
             for ff in _failed_files[:200]:
-                cols = st.columns([0.5, 5.5, 1, 1])
+                cols = st.columns([0.5, 4.7, 0.9, 0.9, 0.9])
                 sel_key = f"failed_sel_{ff}"
                 cols[0].checkbox("선택", key=sel_key, label_visibility="collapsed")
                 try:
@@ -1723,7 +1742,9 @@ with tab_failed:
                     f"**{ff.name}**\n\n<small>{size_kb}KB · {mtime}</small>",
                     unsafe_allow_html=True,
                 )
-                if cols[2].button("↩️", key=f"retry_single_{ff}", help="이 파일만 재시도"):
+                if cols[2].button("📂", key=f"open_single_{ff}", help="폴더에서 보기"):
+                    open_path(ff, reveal=True)
+                if cols[3].button("↩️", key=f"retry_single_{ff}", help="이 파일만 재시도"):
                     target = UPLOAD_TMP / ff.name
                     try:
                         shutil.move(str(ff), str(target))
@@ -1731,7 +1752,7 @@ with tab_failed:
                         st.rerun()
                     except Exception as e:
                         st.error(str(e))
-                if cols[3].button("🗑️", key=f"del_single_{ff}", help="삭제"):
+                if cols[4].button("🗑️", key=f"del_single_{ff}", help="삭제"):
                     try:
                         ff.unlink()
                     except Exception:
