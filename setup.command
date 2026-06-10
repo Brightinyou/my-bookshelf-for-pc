@@ -45,7 +45,24 @@ if ! command -v pdftotext >/dev/null 2>&1; then
     echo "ℹ️  (선택) pdftotext 폴백이 없습니다. Homebrew가 있다면: brew install poppler"
 fi
 
+# ── 4. 옵시디언(위키 노트 열람용) 확인 ─────────────────────
+if [ -d "/Applications/Obsidian.app" ]; then
+    echo "✅ 옵시디언이 이미 설치되어 있습니다."
+else
+    read -n 1 -r -p "❓ 위키 노트 열람용 옵시디언이 없습니다. 지금 설치할까요? (y/n) " yn; echo
+    if [[ "$yn" =~ [Yy] ]]; then
+        if command -v brew >/dev/null 2>&1; then
+            echo "📦 Homebrew로 옵시디언을 설치합니다…"
+            brew install --cask obsidian || open "https://obsidian.md/download"
+        else
+            echo "🌐 옵시디언 다운로드 페이지를 엽니다 — DMG를 받아 설치해 주세요."
+            open "https://obsidian.md/download"
+        fi
+    else
+        echo "ℹ️  나중에 install-obsidian.command 를 실행하면 설치할 수 있습니다."
+    fi
+fi
+
 echo
 echo "🎉 설치 완료! 이제 start.command 를 더블클릭하면 앱이 열립니다."
-echo "   (옵시디언이 없다면 install-obsidian.command 도 실행하세요.)"
 read -n 1 -s -r -p "아무 키나 누르면 창이 닫힙니다…"

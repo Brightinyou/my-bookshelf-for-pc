@@ -42,7 +42,33 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM ── 3. 옵시디언(위키 노트 열람용) 확인 ─────────────────────
+echo.
+if exist "%LOCALAPPDATA%\Programs\Obsidian\Obsidian.exe" goto :obs_have
+if exist "%LOCALAPPDATA%\Obsidian\Obsidian.exe" goto :obs_have
+choice /c YN /m "[질문] 위키 노트 열람용 옵시디언이 없습니다. 지금 설치할까요"
+if errorlevel 2 (
+    echo [안내] 나중에 install-obsidian.bat 를 실행하면 설치할 수 있습니다.
+    goto :done
+)
+where winget >nul 2>nul
+if errorlevel 1 (
+    echo [안내] 옵시디언 다운로드 페이지를 엽니다 — 설치 파일을 받아 실행하세요.
+    start https://obsidian.md/download
+    goto :done
+)
+echo [진행] winget으로 옵시디언 설치 중...
+winget install -e --id Obsidian.Obsidian --accept-source-agreements --accept-package-agreements
+if errorlevel 1 (
+    echo [안내] 자동 설치 실패 — 다운로드 페이지를 엽니다.
+    start https://obsidian.md/download
+)
+goto :done
+
+:obs_have
+echo [확인] 옵시디언이 이미 설치되어 있습니다.
+
+:done
 echo.
 echo [완료] 설치 끝! 이제 start.bat 를 더블클릭하면 앱이 열립니다.
-echo        (옵시디언이 없다면 install-obsidian.bat 도 실행하세요.)
 pause
