@@ -1,0 +1,4 @@
+streamlit>=1.40
+pandas>=2.0
+docling>=2.0
+ocrmac>=1.0

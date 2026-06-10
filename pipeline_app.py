@@ -1,0 +1,1759 @@
+#!/usr/bin/env python3
+"""My Bookshelf — PDF→Wiki 파이프라인 (Streamlit GUI)"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import urllib.request
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+import config as cfg
+import llm_providers as llm
+
+# ── 설정 ─────────────────────────────────────────────────
+# 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
+# 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
+GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
+
+WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
+
+UPLOAD_TMP    = cfg.UPLOAD_TMP
+RAW_DIR       = cfg.RAW_DIR
+WIKI_DIR      = cfg.WIKI_DIR
+PROCESSED_DIR = cfg.PROCESSED_DIR
+DONE_DIR      = cfg.DONE_DIR
+OLD_DONE_DIR  = cfg.OLD_DONE_DIR            # 옛 fallback (사용 안 함, 호환용)
+FAILED_DIR    = cfg.FAILED_DIR
+# translated/는 done/<ws>/_translated/로 통합 (2026-05-18).
+# OLD_TRANSLATED_DIR은 데이터 이동 이전 옛 위치 — fallback 용도로만 유지.
+OLD_TRANSLATED_DIR = cfg.OLD_TRANSLATED_DIR
+# done/<ws>/ 하위 산출물 폴더명 — 텍스트 처리 순서대로 번호 접두 (2026-06-09).
+#   1_txt(②변환 TXT, Gemini 입력) → 2_md(③Docling MD, 각주·표) → 3_translated(④번역)
+TXT_SUB   = "1_txt"
+MD_SUB    = "2_md"
+TRANS_SUB = "3_translated"
+LOG_FILE      = cfg.LOG_FILE
+RESULTS_FILE  = cfg.RESULTS_FILE
+
+for _d in [DONE_DIR, FAILED_DIR, RAW_DIR, WIKI_DIR, PROCESSED_DIR, UPLOAD_TMP,
+           LOG_FILE.parent, RESULTS_FILE.parent]:
+    _d.mkdir(parents=True, exist_ok=True)
+
+CATEGORY_ICONS = {
+    "신학자":   "🧑‍🏫",
+    "AI개념":   "🤖",
+    "윤리":     "⚖️",
+    "교회":     "⛪",
+    "사회학":   "🏛️",
+}
+
+GEMINI_WIKI    = cfg.find_script("gemini_wiki.py")    # 2026-06-09 위키=Gemini로 교체
+CHAPTER_WIKI   = cfg.find_script("chapter_wiki.py")   # 2026-06-09 챕터 모드(긴 책 자동 장별)
+WIKI_LOG       = cfg.WIKI_LOG_DIR
+
+
+# ── 폴더 구조 헬퍼 ────────────────────────────────────────
+# done/<ws>/<file>.pdf      ← PDF는 워크스페이스 루트
+# done/<ws>/_txt/<file>.txt ← MD 성공 시 TXT는 _txt/
+# done/<ws>/_md/<file>.md   ← MD는 _md/ (분할본도 동일)
+# MD 생성 실패 시 TXT는 루트에 남아 미완료 신호로 사용
+
+import re as _re
+
+def txt_dir(base: Path, ws_name: str) -> Path:
+    return base / ws_name / TXT_SUB
+
+def md_dir(base: Path, ws_name: str) -> Path:
+    return base / ws_name / MD_SUB
+
+def translated_dir(base: Path, ws_name: str) -> Path:
+    """bilingual.txt를 두는 폴더. done/<ws>/_translated/. (2026-05-18 통합)"""
+    return base / ws_name / TRANS_SUB
+
+def _bilingual_candidates(stem: str, exclude_ws: str | None = None) -> list[Path]:
+    """모든 워크스페이스에서 같은 stem의 bilingual.txt 후보 경로 수집. (2026-05-18 cross-ws resume)"""
+    paths: list[Path] = []
+    if DONE_DIR.exists():
+        for ws_dir in DONE_DIR.iterdir():
+            if not ws_dir.is_dir() or ws_dir.name == exclude_ws:
+                continue
+            bil = translated_dir(DONE_DIR, ws_dir.name) / f"{stem}_bilingual.txt"
+            if bil.exists():
+                paths.append(bil)
+    if OLD_TRANSLATED_DIR.exists():
+        for ws_dir in OLD_TRANSLATED_DIR.iterdir():
+            if not ws_dir.is_dir() or ws_dir.name == exclude_ws:
+                continue
+            bil = ws_dir / f"{stem}_bilingual.txt"
+            if bil.exists():
+                paths.append(bil)
+    return paths
+
+
+def _ko_block_count(p: Path) -> int:
+    try:
+        return p.read_text(errors="ignore").count("\n\n[KO]\n")
+    except Exception:
+        return 0
+
+
+def find_cross_ws_bilingual(stem: str, exclude_ws: str) -> Path | None:
+    """다른 ws에서 같은 stem bilingual.txt 후보 중 [KO] 블록이 가장 많은 파일 반환."""
+    cands = _bilingual_candidates(stem, exclude_ws=exclude_ws)
+    if not cands:
+        return None
+    cands.sort(key=_ko_block_count, reverse=True)
+    top = cands[0]
+    return top if _ko_block_count(top) > 0 else None
+
+
+def collect_cross_ws_cache(stem: str, exclude_ws: str) -> dict:
+    """다른 모든 ws의 bilingual.txt에서 [EN]→[KO] 매핑 합쳐 dict 반환. 보존마커 제외."""
+    cache: dict = {}
+    for p in _bilingual_candidates(stem, exclude_ws=exclude_ws):
+        try:
+            for block in p.read_text(errors="ignore").split("\n\n---\n\n"):
+                block = block.strip()
+                if not block.startswith("[EN]") or "\n\n[KO]\n" not in block:
+                    continue
+                en_part, ko_part = block.split("\n\n[KO]\n", 1)
+                en = en_part[len("[EN]\n"):].strip()
+                ko = ko_part.strip()
+                if not en or not ko or ko.startswith("(원문 보존"):
+                    continue
+                cache.setdefault(en, ko)
+        except Exception:
+            continue
+    return cache
+
+
+def find_bilingual(ws_name: str, stem: str) -> Path | None:
+    """bilingual.txt 우선 검색 — 새 위치(done/<ws>/_translated/) 먼저, 옛 위치(translated/<ws>/) fallback."""
+    new = translated_dir(DONE_DIR, ws_name) / f"{stem}_bilingual.txt"
+    if new.exists():
+        return new
+    old = OLD_TRANSLATED_DIR / ws_name / f"{stem}_bilingual.txt"
+    if old.exists():
+        return old
+    return None
+
+def find_txt(base: Path, ws_name: str, stem: str) -> Path | None:
+    """_txt/ 우선, 없으면 워크스페이스 루트에서 .txt 찾기."""
+    p1 = txt_dir(base, ws_name) / f"{stem}.txt"
+    if p1.exists(): return p1
+    p2 = base / ws_name / f"{stem}.txt"
+    return p2 if p2.exists() else None
+
+def find_md(base: Path, ws_name: str, stem: str) -> Path | None:
+    """_md/ 우선, 없으면 워크스페이스 루트에서 .md 찾기."""
+    p1 = md_dir(base, ws_name) / f"{stem}.md"
+    if p1.exists(): return p1
+    p2 = base / ws_name / f"{stem}.md"
+    return p2 if p2.exists() else None
+
+def find_pdf(base: Path, ws_name: str, name: str) -> Path | None:
+    """워크스페이스 루트에서 PDF 찾기."""
+    p = base / ws_name / name
+    return p if p.exists() else None
+
+def find_split_mds(base: Path, ws_name: str, stem: str) -> list[Path]:
+    """<stem>_NN_*.md 분할본."""
+    pat = _re.compile(rf"^{_re.escape(stem)}_\d{{2}}_.+\.md$")
+    out: list[Path] = []
+    for d in (md_dir(base, ws_name), base / ws_name):
+        if d.exists():
+            out.extend(p for p in d.iterdir() if p.is_file() and pat.match(p.name))
+    return out
+
+
+# ── 파이프라인 함수들 ─────────────────────────────────────
+
+def pdf_to_txt(pdf_path: Path) -> tuple[Path | None, Path | None, str]:
+    """(txt_path, md_path, error_msg) 반환. md_path는 MD 생성 성공 시에만 채워짐.
+    Docling(레이아웃 인식 + ocrmac OCR)이 기본, 없으면 pdftotext(텍스트 레이어) 폴백.
+    동시에 깨끗한 .md 사이드카 파일을 PDF 폴더에 생성."""
+    pdftotext = cfg.PDFTOTEXT
+
+    txt_path = Path("/tmp") / (pdf_path.stem + ".txt")
+
+    # ── Docling 변환 (2026-06-09): 레이아웃 인식으로 본문/각주/표 분리 + ocrmac(Apple Vision) OCR ──
+    docling_bin = Path(cfg.DOCLING) if cfg.DOCLING else None
+    md_path_out: Path | None = None
+
+    if docling_bin and docling_bin.exists():
+        st.caption("📄 Docling 변환 중 — 레이아웃 인식·각주 분리 (대형 스캔은 수 분 소요)…")
+        out_dir = pdf_path.parent
+        try:
+            r = subprocess.run(
+                [str(docling_bin), str(pdf_path), "--to", "md",
+                 "--image-export-mode", "placeholder",
+                 "--ocr-engine", "ocrmac",
+                 "--ocr-lang", "ko-KR,en-US",  # 한국어 우선 (2026-06-09: 미지정시 en-US 기본→한글 깨짐)
+                 "--output", str(out_dir)],
+                capture_output=True, text=True, timeout=3600,
+            )
+        except subprocess.TimeoutExpired:
+            return None, None, "Docling 변환 타임아웃(3600초) — 초대형 스캔 PDF"
+        except Exception as e:
+            return None, None, f"Docling 실행 오류: {type(e).__name__} {str(e)[:200]}"
+        cand = out_dir / (pdf_path.stem + ".md")
+        if not (cand.exists() and cand.stat().st_size > 0):
+            return None, None, f"Docling 변환 실패 (exit {r.returncode}): {(r.stderr or '')[-300:]}"
+        md_path_out = cand
+        # TXT = MD 본문(이미지 placeholder 제거) — 번역·Gemini 위키용
+        _md = cand.read_text(encoding="utf-8", errors="ignore")
+        _md = _re.sub(r"!\[Image\]\([^)]*\)\s*", "", _md)
+        txt_path.write_text(_md, encoding="utf-8")
+    else:
+        # 폴백: pdftotext (텍스트 레이어만)
+        if not pdftotext or not Path(pdftotext).exists():
+            return None, None, "docling·pdftotext 둘 다 없음 — 설정 또는 설치 필요."
+        r = subprocess.run([pdftotext, str(pdf_path), str(txt_path)], capture_output=True, text=True)
+        if r.returncode != 0:
+            return None, None, f"pdftotext 오류 (exit {r.returncode}): {(r.stderr or '').strip() or '알 수 없는 오류'}"
+
+    if not txt_path.exists() or txt_path.stat().st_size == 0:
+        return None, None, "텍스트 추출 실패 (PDF 손상 또는 빈 PDF)"
+
+    return txt_path, md_path_out, ""
+
+
+def is_english(txt_path: Path, threshold: float = 0.3) -> bool:
+    """한글 비율이 threshold 미만이면 영문 문서로 판단."""
+    sample = txt_path.read_text(errors="ignore")[:3000]
+    korean = sum(1 for c in sample if "가" <= c <= "힣")
+    return (korean / max(len(sample), 1)) < threshold
+
+
+_TRANSLATE_SYSTEM = (
+    "You are a professional theological translator (English → Korean). "
+    "Translate the user's text into Korean. "
+    "Preserve proper nouns, technical terms, and scripture references as-is. "
+    "Use ONLY plain declarative academic Korean (평서체/하다체): "
+    "endings such as -다, -이다, -한다, -였다, -이었다. "
+    "DO NOT use any polite/honorific forms — never use -습니다, -입니다, "
+    "-해요, -이에요, -지요, -군요, -네요, or any other -요/-니다 endings. "
+    "Output ONLY the Korean translation, nothing else."
+)
+
+# 번역 엔진 ID (UI 라디오와 1:1)
+# 번역 엔진 id = "provider:model". 공급자는 llm_providers.PROVIDERS + Claude CLI(구독).
+_translate_error_logged = False
+
+
+def translate_engine_options() -> list[tuple[str, str, bool, str]]:
+    """[(engine_id, label, available, hint)]. 키 있는 공급자만 available=True."""
+    opts: list[tuple[str, str, bool, str]] = []
+    if llm.claude_cli_available():
+        for m, lbl in (("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+                       ("claude-haiku-4-5", "Claude Haiku 4.5")):
+            opts.append((f"claude_cli:{m}", f"{lbl} (구독·CLI)", True, "구독 로그인"))
+    for prov, info in llm.PROVIDERS.items():
+        avail = llm.has_key(prov)
+        for m in info["models"]:
+            opts.append((f"{prov}:{m}", f"{m} · {info['label']}", avail, info["hint"]))
+    return opts
+
+
+def engine_label(engine_id) -> str:
+    if not engine_id:
+        return "?"
+    for eid, lbl, _av, _h in translate_engine_options():
+        if eid == engine_id:
+            return lbl
+    return engine_id
+
+
+def _split_paragraphs_robust(text_raw: str, target_chunk: int = 1500, min_para: int = 5) -> list[str]:
+    """단락 분할 보강. \\n\\n 의존이 실패하면 단일 줄바꿈·문장 단위 fallback.
+    OCR 출력 형식에 무관하게 작동. (2026-05-16 신설)
+
+    1차: \\n\\n 분리. 단락 수 ≥ min_para 이고 평균 길이 ≤ target_chunk*2 이면 통과.
+    2차: \\n 단일 분리 후 target_chunk 자 단위 누적 청크.
+    3차: 문장(. ! ?) 단위 분리 후 target_chunk 자 단위 누적 청크.
+    """
+    primary = [p.strip() for p in text_raw.split("\n\n") if len(p.strip()) > 50]
+    if len(primary) >= min_para:
+        avg = sum(len(p) for p in primary) / len(primary)
+        if avg <= target_chunk * 2:
+            return primary
+
+    # 2차 — 단일 줄바꿈 후 누적 청크
+    lines = [ln.strip() for ln in text_raw.split("\n") if ln.strip()]
+    chunks: list[str] = []
+    buf = ""
+    for ln in lines:
+        if len(buf) + len(ln) + 1 <= target_chunk:
+            buf = (buf + " " + ln).strip() if buf else ln
+        else:
+            if len(buf) > 50:
+                chunks.append(buf)
+            buf = ln
+    if buf and len(buf) > 50:
+        chunks.append(buf)
+    if len(chunks) >= min_para:
+        return chunks
+
+    # 3차 — 문장 단위 누적 청크
+    import re as _re
+    sentences = _re.split(r"(?<=[.!?])\s+", text_raw.replace("\n", " "))
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+    chunks = []
+    buf = ""
+    for s in sentences:
+        if len(buf) + len(s) + 1 <= target_chunk:
+            buf = (buf + " " + s).strip() if buf else s
+        else:
+            if len(buf) > 50:
+                chunks.append(buf)
+            buf = s
+    if buf and len(buf) > 50:
+        chunks.append(buf)
+    return chunks if chunks else primary  # 정말 아무것도 안 잡히면 1차 반환
+
+
+def translate(text: str, engine: str) -> str | None:
+    """단락 하나를 'provider:model' 엔진으로 영→한 번역. 실패 시 None(영어 유지)."""
+    global _translate_error_logged
+    if not engine or ":" not in engine:
+        return None
+    provider, model = engine.split(":", 1)
+    try:
+        out = llm.complete(provider, model, _TRANSLATE_SYSTEM, text, max_tokens=8192)
+        return out.strip() or None
+    except Exception as e:
+        if not _translate_error_logged:
+            append_log(f"ERROR: 번역 실패 [{engine}] ({type(e).__name__}): {str(e)[:300]}")
+            _translate_error_logged = True
+        return None
+
+
+def wiki_generator_running() -> bool:
+    r = subprocess.run(["pgrep", "-f", "gemini_wiki.py"], capture_output=True)
+    return r.returncode == 0
+
+
+def trigger_wiki_generation() -> int:
+    """미처리 책을 Gemini 위키 생성기로 일괄 생성(--all). (2026-06-09 Gemini화)
+    add_pdf/raw/processed의 *.txt 중 gemini_done에 없는 것을 처리한다."""
+    if wiki_generator_running():
+        return 0
+    if not GEMINI_WIKI.exists():
+        append_log(f"ERROR: GEMINI_WIKI 부재 - {GEMINI_WIKI}")
+        return 0
+    log_path = WIKI_LOG / f"gemini_wiki_{datetime.now().strftime('%Y%m%d')}.log"
+    try:
+        subprocess.Popen(
+            [cfg.PYTHON, "-u", str(GEMINI_WIKI), "--all"],
+            stdout=open(log_path, "a"), stderr=subprocess.STDOUT,
+        )
+        append_log("Gemini Wiki 일괄 생성(--all) 트리거")
+    except Exception as e:
+        append_log(f"ERROR: gemini_wiki --all Popen 실패 ({type(e).__name__}) {str(e)[:200]}")
+    return 0
+
+
+def trigger_gemini_wiki(txt_path: Path) -> bool:
+    """주어진 TXT(책 전문)를 Gemini 위키 생성기로 백그라운드 생성. (2026-06-09)
+    RAG·임베드 없이 책 통째를 Gemini에 넣어 옵시디언 노트를 만든다."""
+    if not txt_path or not Path(txt_path).exists():
+        append_log(f"WARN: Gemini wiki — TXT 없음 ({txt_path})")
+        return False
+    if not GEMINI_WIKI.exists():
+        append_log(f"ERROR: GEMINI_WIKI 부재 - {GEMINI_WIKI}")
+        return False
+    log_path = WIKI_LOG / f"gemini_wiki_{datetime.now().strftime('%Y%m%d')}.log"
+    # 챕터 모드 auto: 긴 책(30만자↑)+진짜 장구조면 장별 노트, 아니면 단일 노트로 자동 폴백.
+    if CHAPTER_WIKI.exists():
+        cmd = [cfg.PYTHON, "-u", str(CHAPTER_WIKI), "--file", str(txt_path), "--mode", "auto"]
+    else:
+        cmd = [cfg.PYTHON, "-u", str(GEMINI_WIKI), "--file", str(txt_path)]
+    try:
+        subprocess.Popen(cmd, stdout=open(log_path, "a"), stderr=subprocess.STDOUT)
+        append_log(f"Wiki 트리거({'챕터auto' if CHAPTER_WIKI.exists() else 'gemini'}): {Path(txt_path).name}")
+        return True
+    except Exception as e:
+        append_log(f"ERROR: gemini_wiki Popen 실패 ({type(e).__name__}) {str(e)[:200]}")
+        return False
+
+
+def check_wiki_orphans() -> dict:
+    """raw → wiki → processed 3단계 누락 자리 감지 (2026-05-16 신설).
+    raw/processed 이동 버그(2026-05-14 관측) 흔적 자동 감지용.
+
+    반환:
+      - wiki_done_raw_remaining: wiki 본문(.md)은 생성됐는데 raw .txt가 남아 있는 자리
+        (wiki_generator.py가 raw → processed 이동에 실패한 흔적)
+      - raw_pending: 아직 처리되지 않은 raw .txt 개수
+      - wiki_total: 생성된 wiki .md 총 개수
+    """
+    wiki_stems = {p.stem for p in WIKI_DIR.rglob("*.md")}
+    raw_files = [f for f in RAW_DIR.rglob("*.txt")
+                 if not (PROCESSED_DIR / f.name).exists()]
+    # wiki는 됐는데 raw가 남아 있는 자리
+    orphans = [f for f in raw_files if f.stem in wiki_stems]
+    pending = [f for f in raw_files if f.stem not in wiki_stems]
+    return {
+        "wiki_done_raw_remaining": len(orphans),
+        "orphan_files": [str(f) for f in orphans[:10]],  # 표시용 상위 10건
+        "raw_pending": len(pending),
+        "wiki_total": len(wiki_stems),
+    }
+
+
+def append_log(msg: str):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(LOG_FILE, "a") as f:
+        f.write(f"[{ts}] {msg}\n")
+
+
+def _save_bilingual_atomic(path: Path, blocks: list[str]):
+    """tmp 경유 원자적 저장 — 단락마다 호출해도 파일이 깨지지 않음.
+
+    덮어쓰기 가드 (2026-05-17 추가, 2602.21012 손실 사고 재발 방지):
+    기존 파일의 블록 수가 새 블록 수보다 *크면* 진행분 손실 위험으로 판단,
+    `.bakN` 회전 후 저장. N은 1부터 시작, 기존 .bakN 존재 시 N+1.
+    """
+    new_n = len(blocks)
+    if path.exists() and new_n >= 0:
+        try:
+            existing = path.read_text(encoding="utf-8", errors="ignore")
+            existing_n = sum(
+                1 for b in existing.split("\n\n---\n\n") if b.strip()
+            )
+        except Exception:
+            existing_n = 0
+        if new_n < existing_n:
+            i = 1
+            while True:
+                bak = path.with_name(path.name + f".bak{i}")
+                if not bak.exists():
+                    break
+                i += 1
+            try:
+                path.rename(bak)
+                append_log(
+                    f"GUARD: 덮어쓰기 차단 — 기존 {existing_n}블록 > "
+                    f"새 {new_n}블록 ({path.name}), 백업 회전 → {bak.name}"
+                )
+            except Exception as e:
+                append_log(
+                    f"GUARD: 백업 회전 실패 ({type(e).__name__}): {e} — "
+                    f"저장은 진행"
+                )
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("\n\n---\n\n".join(blocks), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _save_en_ko_split(bilingual_path: Path, blocks: list[str]):
+    """bilingual blocks에서 영어 원본·한글 본만 분리해 _en.txt·_ko.txt로 저장 (2026-05-19)."""
+    stem = bilingual_path.stem.removesuffix("_bilingual")
+    en_path = bilingual_path.parent / f"{stem}_en.txt"
+    ko_path = bilingual_path.parent / f"{stem}_ko.txt"
+    en_lines = []
+    ko_lines = []
+    for b in blocks:
+        b = b.strip()
+        if not b: continue
+        if "\n\n[KO]\n" in b:
+            en_part, ko_part = b.split("\n\n[KO]\n", 1)
+            en_text = en_part[len("[EN]\n"):].strip() if en_part.startswith("[EN]\n") else en_part.strip()
+            ko_text = ko_part.strip()
+            if en_text:
+                en_lines.append(en_text)
+            if ko_text and not ko_text.startswith("(원문 보존"):
+                ko_lines.append(ko_text)
+        elif b.startswith("[EN]\n"):
+            en_text = b[len("[EN]\n"):].strip()
+            if en_text:
+                en_lines.append(en_text)
+    try:
+        en_path.write_text("\n\n".join(en_lines), encoding="utf-8")
+        ko_path.write_text("\n\n".join(ko_lines), encoding="utf-8")
+    except Exception:
+        pass
+
+
+# ─── 재시도 대기 파일 wrapper (file_uploader 인터페이스 모방, 2026-05-19) ──
+class _PathAsUpload:
+    """Path를 file_uploader 결과와 같은 인터페이스로 감싸기."""
+    def __init__(self, p):
+        self._p = Path(p)
+        self.name = self._p.name
+    def read(self) -> bytes:
+        return self._p.read_bytes()
+
+
+# ─── 일시정지 플래그 (워커 thread ↔ 메인 UI 통신, 2026-05-19) ──────────
+PAUSE_DIR = cfg.PAUSE_DIR
+PAUSE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def pause_flag_path(stem: str) -> Path:
+    """파일명 안전화 — 한글·공백 그대로 둠 (Path가 처리)."""
+    return PAUSE_DIR / f"{stem}.pause"
+
+
+def is_paused(stem: str) -> bool:
+    return pause_flag_path(stem).exists()
+
+
+def set_paused(stem: str, paused: bool):
+    p = pause_flag_path(stem)
+    if paused:
+        p.touch()
+    else:
+        if p.exists():
+            try: p.unlink()
+            except Exception: pass
+
+
+# ─── 한 파일 통째 처리 함수 (Phase 1 + Phase 2, 2026-05-19 추출) ────
+def _process_file_for_pipeline(uf, ws_name, ws_slug, do_translate, translate_engine,
+                                force_reembed, defer_embed, placeholder):
+    """한 파일 Phase 1+2 통째 처리. UI는 placeholder.container() 안에서.
+    result dict 반환. 워커 스레드에서도 안전 (placeholder 격리)."""
+    with placeholder.container():
+        return _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
+                                    force_reembed, defer_embed)
+
+def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
+                         force_reembed, defer_embed):
+    """실제 처리 본문."""
+    st.subheader(f"📄 {uf.name}")
+    check_name = Path(uf.name).stem + ".txt" if uf.name.lower().endswith(".pdf") else uf.name
+    # 중복 검사 생략 (AnythingLLM 제거) — Gemini 노트는 동일 파일명 덮어쓰기
+
+    dest = UPLOAD_TMP / uf.name
+    with open(dest, "wb") as f:
+        f.write(uf.read())
+
+    success     = True
+    txt_path    = None
+    md_src      = None
+    upload_file = None
+    final_pdf = final_txt = final_md = None
+    partial_fail_n = 0   # 번역 부분 실패 단락 수 (>0 이면 failed 미이동 + 큐 보류)
+
+    with st.status(f"변환/번역 중: {uf.name}", expanded=True) as status_ui:
+        # Phase 1 inline — 기존 코드 그대로
+        if dest.suffix.lower() == ".pdf":
+            st.write("🔄 **1단계** · PDF → TXT 변환")
+            txt_path, md_src, conv_err = pdf_to_txt(dest)
+            if txt_path:
+                st.write(f"✅ TXT 변환 완료 → `{txt_path.name}`")
+                append_log(f"PDF→TXT 변환 완료: {txt_path.name}")
+                if md_src:
+                    st.write(f"✅ MD 사이드카 생성 → `{md_src.name}` ({md_src.stat().st_size // 1024} KB)")
+                else:
+                    st.write("⚠️ MD 사이드카 생성 실패 (비치명적)")
+            else:
+                st.write(f"❌ TXT 변환 실패 — {conv_err}")
+                st.error(f"**변환 실패 원인:** {conv_err}")
+                append_log(f"ERROR: TXT 변환 실패 - {uf.name} ({conv_err})")
+                shutil.move(str(dest), str(FAILED_DIR / uf.name))
+                status_ui.update(label=f"❌ 실패: {uf.name}", state="error")
+                success = False
+        else:
+            txt_path = dest
+            st.write(f"ℹ️ **1단계** · PDF 아님 — 원본 그대로 사용 (`{dest.name}`)")
+
+        upload_file = txt_path
+        _is_en = (txt_path is not None and txt_path.exists() and is_english(txt_path))
+        will_translate = do_translate and success and _is_en
+        if do_translate and success and txt_path and txt_path.exists():
+            st.caption(f"🔍 언어 감지: {'영어 → 번역 진행' if _is_en else '한국어 → 번역 스킵'}")
+
+        if will_translate:
+            text_raw = txt_path.read_text(errors="ignore")
+            paragraphs = _split_paragraphs_robust(text_raw)
+            if len(paragraphs) < 5:
+                st.warning(f"⚠️ 단락 분할 결과가 {len(paragraphs)}개에 그쳤습니다 (원본 {len(text_raw)}자).")
+                append_log(f"WARN: 단락 분할 부족 — {uf.name} paragraphs={len(paragraphs)}")
+            bilingual_path = translated_dir(DONE_DIR, ws_name) / (txt_path.stem + "_bilingual.txt")
+            translated_dir(DONE_DIR, ws_name).mkdir(parents=True, exist_ok=True)
+            _legacy = RAW_DIR / ws_name / (txt_path.stem + "_bilingual.txt")
+            if _legacy.exists() and not bilingual_path.exists():
+                shutil.move(str(_legacy), str(bilingual_path))
+            _legacy_old_translated = OLD_TRANSLATED_DIR / ws_name / (txt_path.stem + "_bilingual.txt")
+            if _legacy_old_translated.exists() and not bilingual_path.exists():
+                shutil.move(str(_legacy_old_translated), str(bilingual_path))
+            if not bilingual_path.exists():
+                _cross_src = find_cross_ws_bilingual(txt_path.stem, ws_name)
+                if _cross_src is not None:
+                    shutil.copy2(str(_cross_src), str(bilingual_path))
+                    _src_ws = _cross_src.parent.parent.name
+                    _src_ko = _ko_block_count(_cross_src)
+                    append_log(f"♻️ cross-ws resume: {txt_path.stem} ({_src_ws} → {ws_name}, KO {_src_ko}건)")
+                    st.info(f"♻️ 다른 워크스페이스 진행분을 발견해 이어받았습니다 (`{_src_ws}` → `{ws_name}`, [KO] {_src_ko}건)")
+
+            cached: dict = {}
+            if bilingual_path.exists():
+                for block in bilingual_path.read_text(errors="ignore").split("\n\n---\n\n"):
+                    block = block.strip()
+                    if not block.startswith("[EN]") or "\n\n[KO]\n" not in block: continue
+                    en_part, ko_part = block.split("\n\n[KO]\n", 1)
+                    cached[en_part[len("[EN]\n"):].strip()] = ko_part.strip()
+            _cross_cache = collect_cross_ws_cache(txt_path.stem, ws_name)
+            if _cross_cache:
+                _before = len(cached)
+                for _en, _ko in _cross_cache.items():
+                    cached.setdefault(_en, _ko)
+                _added = len(cached) - _before
+                if _added > 0:
+                    append_log(f"♻️ cross-ws 캐시 합침: {txt_path.stem} +{_added}건")
+                    st.caption(f"♻️ 다른 워크스페이스 캐시 {_added}건 추가 합침")
+
+            _tr_fn = lambda p, _e=translate_engine: translate(p, _e)
+            _tr_label = engine_label(translate_engine)
+            skip_section_idxs = find_skip_section_paragraphs(paragraphs)
+            skip_individual_idxs = {i for i, p in enumerate(paragraphs) if should_skip_translation(p)}
+            skip_all_idxs = skip_section_idxs | skip_individual_idxs
+            resume_n = sum(1 for p in paragraphs if p in cached)
+            if resume_n:
+                st.write(f"♻️ 이전 번역 재사용: {resume_n}/{len(paragraphs)} 단락 — 신규 호출 {len(paragraphs)-resume_n}개")
+            if skip_all_idxs:
+                st.write(f"⏭️ 번역 skip 대상: {len(skip_all_idxs)}/{len(paragraphs)} 단락")
+            st.write(f"🌐 **2단계** · 영→한 번역 중 ({len(paragraphs)}단락, {_tr_label})…")
+            N = len(paragraphs)
+            prog = st.progress(0.0, text=f"0/{N} (0.0%)")
+            bilingual: list = []
+            failed_tr = cache_hits = api_calls = skipped_n = 0
+            consecutive_fail = 0
+            RATE_LIMIT_THRESHOLD = 3
+            try:
+                import time as _time2
+                for idx, para in enumerate(paragraphs):
+                    # 일시정지 플래그 체크 (워커가 폴링)
+                    while is_paused(txt_path.stem):
+                        prog.progress(idx / N, text=f"⏸️ 일시정지 중 ({idx}/{N}) — ▶️ 재개 누르면 이어감")
+                        _time2.sleep(2)
+                    if idx in skip_all_idxs:
+                        bilingual.append(f"[EN]\n{para}\n\n[KO]\n(원문 보존: 각주·인용)")
+                        skipped_n += 1
+                        _save_bilingual_atomic(bilingual_path, bilingual)
+                        _save_en_ko_split(bilingual_path, bilingual)
+                        done = idx + 1
+                        prog.progress(done / N, text=f"{done}/{N} ({done/N*100:.1f}%) — ♻️ {cache_hits} / 🌐 {api_calls} / ⏭️ {skipped_n}" + (f" / ❌ {failed_tr}" if failed_tr else ""))
+                        continue
+                    ko = cached.get(para)
+                    if ko is None:
+                        ko = _tr_fn(para)
+                        api_calls += 1
+                    else:
+                        cache_hits += 1
+                    if ko:
+                        bilingual.append(f"[EN]\n{para}\n\n[KO]\n{ko}")
+                        consecutive_fail = 0
+                    else:
+                        bilingual.append(f"[EN]\n{para}")
+                        failed_tr += 1
+                        if cached.get(para) is None:
+                            consecutive_fail += 1
+                    if consecutive_fail >= RATE_LIMIT_THRESHOLD:
+                        _save_bilingual_atomic(bilingual_path, bilingual)
+                        _save_en_ko_split(bilingual_path, bilingual)
+                        append_log(f"RATE_LIMIT: 연속 {consecutive_fail}회 실패 — 자동 일시정지 ({uf.name}, {idx+1}/{N})")
+                        st.warning(f"⏸️ **Claude 한도 임박 추정** — 연속 {consecutive_fail}회 실패. 진행분({idx+1}/{N}) 저장 후 자동 일시정지.")
+                        break
+                    _save_bilingual_atomic(bilingual_path, bilingual)
+                    _save_en_ko_split(bilingual_path, bilingual)
+                    done = idx + 1
+                    prog.progress(done / N, text=f"{done}/{N} ({done/N*100:.1f}%) — ♻️ {cache_hits} / 🌐 {api_calls} / ⏭️ {skipped_n}" + (f" / ❌ {failed_tr}" if failed_tr else ""))
+            except Exception as e:
+                _save_bilingual_atomic(bilingual_path, bilingual)
+                _save_en_ko_split(bilingual_path, bilingual)
+                append_log(f"ERROR: 번역 루프 예외 - {uf.name} ({len(bilingual)}/{len(paragraphs)} 단락, {type(e).__name__})")
+                st.error(f"번역 중 예외 발생 — 진행분 {len(bilingual)}/{len(paragraphs)} 저장.")
+                raise
+            upload_file = bilingual_path
+            _total_par = len(paragraphs)
+            if failed_tr == _total_par and _total_par > 0:
+                st.error(f"❌ **번역 전체 실패** ({failed_tr}/{_total_par}) — [KO] 0개. 임베드 자동 차단.")
+            elif failed_tr:
+                st.warning(f"⚠️ **{failed_tr}/{_total_par} 단락 번역 실패** — failed로 보내지 않고 **큐에 보류**합니다 (재번역 후 임베드 권장).")
+            else:
+                st.success(f"✅ 번역 완료 → `{bilingual_path.name}`")
+            append_log(f"번역: {bilingual_path.name} ({_total_par-failed_tr}/{_total_par})")
+            if failed_tr == _total_par and _total_par > 0:
+                # 전체 실패만 failed 폴더로 이동 + 파이프라인 중단 (genuinely broken)
+                success = False
+                if dest.exists():
+                    shutil.move(str(dest), str(FAILED_DIR / uf.name))
+                append_log(f"ERROR: 번역 전체 실패로 중단 - {uf.name} ({failed_tr}/{_total_par} 단락)")
+                status_ui.update(label=f"❌ 번역 전체 실패: {uf.name}", state="error")
+            elif failed_tr:
+                # 부분 실패: failed 미이동 → done 유지 + 큐로 라우팅(자동 임베드 차단).
+                # OCR·MD 성과가 failed 폴더에 묻히지 않게. (2026-05-31 정책 변경)
+                partial_fail_n = failed_tr
+                defer_embed = True
+                append_log(f"WARN: 번역 부분 실패 {failed_tr}/{_total_par} - {uf.name}: failed 미이동, 큐 보류 라우팅")
+                status_ui.update(label=f"⚠️ 부분 실패 ({failed_tr}/{_total_par}) → 큐 보류: {uf.name}", state="complete")
+            else:
+                status_ui.update(label=f"✅ 번역 완료: {uf.name}", state="complete")
+        elif do_translate and txt_path and txt_path.exists():
+            st.write("ℹ️ 한국어 문서 감지 — 번역 스킵")
+            if success:
+                status_ui.update(label=f"✅ {uf.name} (번역 스킵)", state="complete")
+        else:
+            if success:
+                status_ui.update(label=f"✅ {uf.name}", state="complete")
+
+    # Phase 2 inline
+    stages = {"ocr":"skip","txt":"skip","md":"skip","bilingual":"skip","anythingllm":"pending","wiki":"pending"}
+    is_pdf = uf.name.lower().endswith(".pdf")
+    if is_pdf:
+        stages["ocr"] = "ok" if success and txt_path and txt_path.exists() else "fail"
+    if txt_path and txt_path.exists() and txt_path.stat().st_size > 0:
+        stages["txt"] = "ok"
+    stages["md"] = "ok" if (md_src and md_src.exists()) else ("fail" if is_pdf else "skip")
+    _bil = find_bilingual(ws_name, Path(uf.name).stem)
+    if _bil is not None:
+        stages["bilingual"] = "ok"
+
+    if not success:
+        st.warning(f"⏭️ **{uf.name}** — 이전 단계 실패로 임베드/Wiki 건너뜀. FAILED 폴더로 이동됨.")
+        notify(f"{uf.name} 실패 (번역 중단)", title=ws_name)
+        stages["anythingllm"] = "skip"
+        stages["wiki"] = "skip"
+        return {"name": uf.name, "ok": False, "ws": ws_name, "stages": stages,
+                "pdf_path": str(FAILED_DIR / uf.name) if (FAILED_DIR / uf.name).exists() else "",
+                "txt_path": str(RAW_DIR / ws_name / (Path(uf.name).stem + ".txt")),
+                "md_path": "",
+                "bilingual_path": str(_bil) if _bil is not None else ""}
+
+    # ── 마무리 + Gemini 위키 (임베드/AnythingLLM 제거: 2026-06-09) ──
+    with st.status(f"마무리·Wiki 생성: {uf.name}", expanded=True) as status_ui:
+        if partial_fail_n:
+            st.warning(f"⚠️ 번역 {partial_fail_n}단락 실패 — 그래도 Gemini가 TXT(원문/부분번역)로 노트 생성.")
+        # PDF → DONE
+        done_sub = DONE_DIR / ws_name
+        done_sub.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            final_pdf = done_sub / uf.name
+            shutil.move(str(dest), str(final_pdf))
+        # TXT·MD → DONE
+        _src_txt = txt_path if (txt_path and txt_path.exists()) else None
+        md_ok = bool(md_src and md_src.exists())
+        if md_ok:
+            txt_dir(DONE_DIR, ws_name).mkdir(parents=True, exist_ok=True)
+            md_dir(DONE_DIR, ws_name).mkdir(parents=True, exist_ok=True)
+            if _src_txt:
+                final_txt = txt_dir(DONE_DIR, ws_name) / _src_txt.name
+                shutil.move(str(_src_txt), str(final_txt))
+            final_md = md_dir(DONE_DIR, ws_name) / md_src.name
+            shutil.move(str(md_src), str(final_md))
+        elif _src_txt:
+            final_txt = done_sub / _src_txt.name
+            shutil.move(str(_src_txt), str(final_txt))
+        # Gemini 위키 생성 (책 전문 TXT → 옵시디언 노트)
+        if final_txt and Path(final_txt).exists():
+            st.write(f"📝 **Gemini 위키 생성** · `{Path(final_txt).name}`")
+            stages["wiki"] = "pending" if trigger_gemini_wiki(final_txt) else "fail"
+        else:
+            st.write("⏭️ TXT 없음 — Wiki 건너뜀")
+            stages["wiki"] = "skip"
+        stages["anythingllm"] = "removed"
+        append_log(f"완료: {uf.name}")
+        status_ui.update(label=f"✅ 완료: {uf.name}", state="complete")
+
+    notify(f"{uf.name} {'완료' if success else '실패'}", title=ws_name)
+    bilingual_p = find_bilingual(ws_name, Path(uf.name).stem)
+    if bilingual_p is not None:
+        stages["bilingual"] = "ok"
+    return {
+        "name": uf.name, "ok": success, "ws": ws_name, "stages": stages,
+        "pdf_path": str(final_pdf) if final_pdf else "",
+        "txt_path": str(final_txt) if final_txt else "",
+        "md_path": str(final_md) if final_md else "",
+        "bilingual_path": str(bilingual_p) if bilingual_p is not None else "",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P6. 각주·미주·인용 번역 skip (2026-05-17 추가)
+# 학술 인용은 번역 가치 낮음 (저자명·연도·DOI·URL 형식). 원어 보존이 학술 추적
+# 에 유리. 본 PDF 검증: 단락의 ~49% skip → 번역 비용·시간 절반 절감.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_FOOTNOTE_DAGGER  = _re.compile(r"^\s*†\s")
+_CITATION_NUMBERED = _re.compile(r"^\s*\[?[0-9]+\*?\]?\s+[A-Z][^.]*,\s+[A-Z]")
+_CITATION_BULLET   = _re.compile(r"^\s*-\s+[0-9]+\*?\s+[A-Z]")
+_CITATION_URL_HEAVY = _re.compile(r"(https?://|arXiv|doi\.org|dx\.doi)", _re.IGNORECASE)
+
+_SKIP_SECTION_NAMES = {"references", "bibliography", "works cited", "참고문헌"}
+
+
+def should_skip_translation(paragraph: str) -> bool:
+    """단락이 *번역 가치가 낮은 인용·각주*인지 판정. True 시 번역 호출 생략."""
+    p = paragraph.strip()
+    if not p:
+        return True
+    if _FOOTNOTE_DAGGER.match(p):
+        return True
+    if _CITATION_NUMBERED.match(p):
+        return True
+    if _CITATION_BULLET.match(p):
+        return True
+    # 짧고 URL 들어간 단락 = 인용일 가능성 (500자 이하 + arXiv/DOI/URL)
+    if len(p) < 500 and _CITATION_URL_HEAVY.search(p):
+        return True
+    return False
+
+
+def find_skip_section_paragraphs(paragraphs: list[str]) -> set[int]:
+    """`## References` 헤더 ~ 다음 `## ` 헤더 전까지 단락 인덱스 집합 반환.
+
+    `## Glossary`는 *번역 유지* — 학술 용어 한글 번역이 본 논문 자료로 유용.
+
+    헤더가 없는 미주 영역도 tail 휴리스틱으로 자동 감지 (2026-05-18 추가):
+    PDF→MD 변환 과정에서 References/Bibliography 헤더가 누락된 경우, 단락 끝쪽의
+    마지막 *narrative* 단락(>=400자, 인용 신호 없음) 이후가 미주로 추정되면 skip.
+    """
+    skip_idxs: set[int] = set()
+    in_skip = False
+    for i, p in enumerate(paragraphs):
+        stripped = p.strip()
+        if stripped.startswith("## "):
+            section = stripped[3:].strip().lower()
+            if section in _SKIP_SECTION_NAMES:
+                in_skip = True
+                skip_idxs.add(i)
+                continue
+            in_skip = False
+            continue
+        if in_skip:
+            skip_idxs.add(i)
+
+    # tail 자동 감지: 헤더 기반 skip이 *없을 때만* 발동 (오탐 방지)
+    if not skip_idxs and len(paragraphs) >= 50:
+        scan_start = int(len(paragraphs) * 0.6)
+        last_narrative = -1
+        for i in range(len(paragraphs) - 1, scan_start - 1, -1):
+            p = paragraphs[i].strip()
+            if (
+                len(p) >= 400
+                and not _CITATION_URL_HEAVY.search(p)
+                and not _CITATION_NUMBERED.match(p)
+                and not _CITATION_BULLET.match(p)
+                and not _FOOTNOTE_DAGGER.match(p)
+            ):
+                last_narrative = i
+                break
+        if 0 <= last_narrative < len(paragraphs) - 5:
+            for i in range(last_narrative + 1, len(paragraphs)):
+                skip_idxs.add(i)
+
+    return skip_idxs
+
+
+def _move_unassigned_to_ws(stem: str, new_ws: str) -> int:
+    """_unassigned 아래의 stem 관련 파일을 new_ws로 이동. 이동 건수 반환. (2026-05-18)"""
+    src_ws_dir = DONE_DIR / "_unassigned"
+    dst_ws_dir = DONE_DIR / new_ws
+    if not src_ws_dir.exists():
+        return 0
+    moved = 0
+    pairs = [
+        (src_ws_dir / f"{stem}.pdf",                                 dst_ws_dir / f"{stem}.pdf"),
+        (src_ws_dir / MD_SUB         / f"{stem}.md",                  dst_ws_dir / MD_SUB         / f"{stem}.md"),
+        (src_ws_dir / TXT_SUB        / f"{stem}.txt",                 dst_ws_dir / TXT_SUB        / f"{stem}.txt"),
+        (src_ws_dir / TRANS_SUB / f"{stem}_bilingual.txt",       dst_ws_dir / TRANS_SUB / f"{stem}_bilingual.txt"),
+    ]
+    for src, dst in pairs:
+        if src.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.move(str(src), str(dst))
+                moved += 1
+            except Exception as e:
+                append_log(f"WARN: _unassigned→{new_ws} 이동 실패 ({src.name}): {e}")
+    return moved
+
+
+def load_pipeline_results() -> list:
+    if not RESULTS_FILE.exists():
+        return []
+    try:
+        return json.loads(RESULTS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def save_pipeline_results(results: list):
+    try:
+        RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        RESULTS_FILE.write_text(
+            json.dumps(results, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def read_log(n: int = 20) -> list:
+    if not LOG_FILE.exists():
+        return []
+    return LOG_FILE.read_text(errors="ignore").splitlines()[-n:]
+
+
+def notify(msg: str, title: str = "My Bookshelf"):
+    subprocess.run(
+        ["osascript", "-e",
+         f'display notification "{msg}" with title "{title}" sound name "Glass"'],
+        capture_output=True,
+    )
+
+
+# ── UI ────────────────────────────────────────────────────
+
+st.set_page_config(page_title="My Bookshelf", page_icon="📚", layout="wide")
+
+# ── 글로벌 스타일 (2026-05-18 v2 — Linear·Vercel 톤) ────────────
+# 잔잔한 segmented control + 모노톤 칩. 선택된 것만 도드라지는 미감.
+st.markdown("""
+<style>
+/* === 탭 — Segmented Control (macOS/iOS 영감) === */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 2px;
+    background-color: rgba(0, 0, 0, 0.04);
+    padding: 4px;
+    border-radius: 10px;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    display: inline-flex;
+    margin-bottom: 16px;
+}
+.stTabs [data-baseweb="tab-list"] [data-baseweb="tab-highlight"],
+.stTabs [data-baseweb="tab-list"] [data-baseweb="tab-border"] {
+    display: none !important;
+}
+.stTabs [data-baseweb="tab"] {
+    height: 38px;
+    padding: 0 18px;
+    background-color: transparent;
+    border: none !important;
+    border-radius: 7px;
+    color: #6b7280;
+    transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.stTabs [data-baseweb="tab"] p {
+    font-size: 14.5px !important;
+    font-weight: 500 !important;
+    margin: 0 !important;
+    letter-spacing: -0.008em;
+}
+.stTabs [data-baseweb="tab"]:hover {
+    color: #1f2937;
+    background-color: rgba(255, 255, 255, 0.55);
+}
+.stTabs [aria-selected="true"] {
+    background-color: white !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06),
+                0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.stTabs [aria-selected="true"] p {
+    color: #111827 !important;
+    font-weight: 600 !important;
+}
+
+/* === 라디오 — 모노톤 칩 (Vercel/Linear 영감) === */
+div[data-testid="stRadio"] > label > div > p {
+    font-size: 14px !important;
+    font-weight: 500 !important;
+    color: #6b7280 !important;
+    margin-bottom: 10px !important;
+    letter-spacing: -0.005em;
+    text-transform: uppercase;
+    font-size: 12px !important;
+    letter-spacing: 0.05em;
+}
+div[data-testid="stRadio"] div[role="radiogroup"] {
+    gap: 6px;
+    flex-wrap: wrap;
+}
+div[data-testid="stRadio"] label[data-baseweb="radio"] {
+    padding: 7px 13px;
+    background-color: white;
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    border-radius: 7px;
+    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+}
+div[data-testid="stRadio"] label[data-baseweb="radio"]:hover {
+    background-color: #fafafa;
+    border-color: rgba(0, 0, 0, 0.22);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.04);
+}
+div[data-testid="stRadio"] label[data-baseweb="radio"] > div:first-child {
+    display: none;
+}
+div[data-testid="stRadio"] label[data-baseweb="radio"] > div:last-child p {
+    font-size: 13.5px !important;
+    font-weight: 500 !important;
+    color: #4b5563 !important;
+    margin: 0 !important;
+    letter-spacing: -0.005em;
+}
+div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) {
+    background-color: #111827;
+    border-color: #111827;
+    box-shadow: 0 1px 3px rgba(17, 24, 39, 0.18),
+                0 1px 2px rgba(17, 24, 39, 0.12);
+}
+div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) > div:last-child p {
+    color: white !important;
+    font-weight: 600 !important;
+}
+
+/* === dataframe·container 유동 높이 (viewport 기반, 2026-05-18) === */
+[data-testid="stDataFrame"] {
+    height: calc(100vh - 280px) !important;
+    min-height: 400px !important;
+}
+[data-testid="stDataFrame"] > div {
+    height: 100% !important;
+}
+
+/* === 다크모드 자동 대응 === */
+@media (prefers-color-scheme: dark) {
+    .stTabs [data-baseweb="tab-list"] {
+        background-color: rgba(255, 255, 255, 0.04);
+        border-color: rgba(255, 255, 255, 0.07);
+    }
+    .stTabs [data-baseweb="tab"] {
+        color: #9ca3af;
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        color: #e5e7eb;
+        background-color: rgba(255, 255, 255, 0.04);
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: rgba(255, 255, 255, 0.08) !important;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4) !important;
+    }
+    .stTabs [aria-selected="true"] p {
+        color: #f3f4f6 !important;
+    }
+
+    div[data-testid="stRadio"] label[data-baseweb="radio"] {
+        background-color: rgba(255, 255, 255, 0.03);
+        border-color: rgba(255, 255, 255, 0.08);
+    }
+    div[data-testid="stRadio"] label[data-baseweb="radio"]:hover {
+        background-color: rgba(255, 255, 255, 0.06);
+        border-color: rgba(255, 255, 255, 0.16);
+    }
+    div[data-testid="stRadio"] label[data-baseweb="radio"] > div:last-child p {
+        color: #9ca3af !important;
+    }
+    div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) {
+        background-color: #f3f4f6;
+        border-color: #f3f4f6;
+    }
+    div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) > div:last-child p {
+        color: #111827 !important;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("📚 My Bookshelf")
+st.caption("PDF 업로드 → OCR/번역 → Gemini가 책 전문으로 Obsidian Wiki 자동 생성")
+
+# 상태 배너
+col_s1, col_s2, col_s3 = st.columns(3)
+_avail_providers = [info["label"] for prov, info in llm.PROVIDERS.items() if llm.has_key(prov)]
+if llm.claude_cli_available():
+    _avail_providers.append("Claude CLI")
+_gemini_key_ok = llm.has_key("gemini")
+wg_ok = wiki_generator_running()
+
+col_s1.metric("API 키", f"{len(_avail_providers)}개" if _avail_providers else "❌ 없음")
+col_s2.metric("위키 생성기", "🔄 생성 중" if wg_ok else "대기")
+col_s3.metric("Wiki 완성", sum(1 for _ in WIKI_DIR.rglob("*.md")))
+
+if not _avail_providers:
+    st.error("⚠️ 사용 가능한 API가 없습니다 — ⚙️ 설정 탭에서 키를 입력하세요.")
+elif not _gemini_key_ok:
+    st.warning("ℹ️ 위키 생성은 Gemini 키가 필요합니다 — ⚙️ 설정 탭에서 Google Gemini 키를 입력하세요.")
+
+# Wiki raw 고아 감지 게이트 (2026-05-16) — raw/processed 이동 버그 흔적 자동 표시
+_wiki_orphans = check_wiki_orphans()
+if _wiki_orphans["wiki_done_raw_remaining"] > 0:
+    with st.expander(
+        f"⚠️ Wiki 생성 후 raw 사이드카 미이동 {_wiki_orphans['wiki_done_raw_remaining']}건 "
+        f"(raw/processed 이동 버그 흔적)",
+        expanded=False,
+    ):
+        st.write(
+            "Wiki 본문(.md)은 정상 생성됐으나 RAW_DIR의 .txt가 PROCESSED_DIR로 이동되지 않았습니다. "
+            "Wiki 자체는 사용 가능합니다. 정리 명령:"
+        )
+        for f in _wiki_orphans["orphan_files"]:
+            st.code(f"mv \"{f}\" \"{PROCESSED_DIR}/\"", language="bash")
+
+# ── 사이드바 — 비움 (2026-05-18, 모든 컨트롤을 탭으로 이전) ──────
+
+# ── 데이터 사전 계산 (탭 라벨에 카운트 표시용) ────────────────
+_failed_files = []
+if FAILED_DIR.exists():
+    for p in FAILED_DIR.rglob("*"):
+        if p.is_file():
+            _failed_files.append(p)
+    _failed_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+_done_count = 0
+if DONE_DIR.exists():
+    for ws in DONE_DIR.iterdir():
+        if not ws.is_dir(): continue
+        _done_count += sum(1 for p in ws.glob("*.pdf") if p.is_file())
+_wiki_count = sum(1 for _ in WIKI_DIR.rglob("*.md"))
+
+# ── 탭 6개 — 라벨에 동적 카운트 ────────────────────────────
+_failed_label = f"⚠️ 실패 파일 ({len(_failed_files)})" if _failed_files else "⚠️ 실패 파일"
+
+tab_upload, tab_history, tab_wiki, tab_failed, tab_status, tab_settings = st.tabs([
+    "📤 파일 업로드",
+    "📁 처리 기록",
+    "📖 Wiki 목록",
+    _failed_label,
+    "📊 현황",
+    "⚙️ 설정",
+])
+
+# ── 탭 0: 현황 ───────────────────────────────────────────
+with tab_status:
+    c1, c2, c3 = st.columns(3)
+    c1.metric("완료 (PDF)", _done_count)
+    c2.metric("실패", len(_failed_files))
+    c3.metric("Wiki", _wiki_count)
+
+    # ─── 🔄 진행 중 파일 패널 (창 닫아도 복원, 2026-05-19) ─────────────
+    # bilingual.txt 갱신 시각·EN/KO 카운트로 추정. 5분 내 갱신 = 진행 중
+    import time as _t
+    _now = _t.time()
+    in_progress = []
+    recent_completed = []
+    if DONE_DIR.exists():
+        for ws_dir in DONE_DIR.iterdir():
+            if not ws_dir.is_dir(): continue
+            tr = ws_dir / TRANS_SUB
+            if not tr.exists(): continue
+            for bil in tr.glob("*_bilingual.txt"):
+                age_s = _now - bil.stat().st_mtime
+                try:
+                    text = bil.read_text(errors="ignore")
+                    en = text.count("[EN]\n")
+                    ko = text.count("\n\n[KO]\n")
+                except Exception:
+                    continue
+                if age_s < 300:  # 5분 내 갱신 = 진행 중
+                    in_progress.append({
+                        "ws": ws_dir.name, "stem": bil.stem.removesuffix("_bilingual"),
+                        "en": en, "ko": ko, "age_s": age_s,
+                        "pct": (ko / en * 100) if en else 0,
+                    })
+                elif age_s < 3600 and en > ko:  # 1시간 내 갱신 + 결손 = 최근 중단
+                    recent_completed.append({
+                        "ws": ws_dir.name, "stem": bil.stem.removesuffix("_bilingual"),
+                        "en": en, "ko": ko, "age_s": age_s,
+                        "pct": (ko / en * 100) if en else 0,
+                    })
+
+    if in_progress:
+        st.divider()
+        st.subheader(f"🔄 진행 중 ({len(in_progress)}건)")
+        st.caption("최근 5분 내 갱신된 번역 작업. 페이지 새로고침으로 진행률 갱신.")
+        if st.button("🔄 갱신", key="status_refresh_inprog"):
+            st.rerun()
+        for p in sorted(in_progress, key=lambda x: x["age_s"]):
+            age_str = f"{int(p['age_s'])}초 전" if p['age_s'] < 60 else f"{int(p['age_s']/60)}분 전"
+            _paused = is_paused(p['stem'])
+            cols = st.columns([3.5, 1, 1, 1, 1])
+            label_suffix = " ⏸️" if _paused else ""
+            cols[0].markdown(
+                f"**{p['stem'][:50]}**{label_suffix}\n\n<small>[{p['ws']}] · 갱신 {age_str}</small>",
+                unsafe_allow_html=True,
+            )
+            cols[1].metric("EN", p['en'])
+            cols[2].metric("KO", p['ko'])
+            cols[3].metric("%", f"{p['pct']:.0f}%")
+            if _paused:
+                if cols[4].button("▶️ 재개", key=f"resume_{p['ws']}_{p['stem']}", use_container_width=True):
+                    set_paused(p['stem'], False)
+                    st.rerun()
+            else:
+                if cols[4].button("⏸️ 정지", key=f"pause_{p['ws']}_{p['stem']}", use_container_width=True):
+                    set_paused(p['stem'], True)
+                    st.rerun()
+            st.progress(p['pct'] / 100 if p['en'] else 0)
+
+    if recent_completed:
+        with st.expander(f"⏸️ 최근 1시간 내 중단된 작업 ({len(recent_completed)}건)", expanded=False):
+            st.caption("결손이 있는 상태로 멈춤. Resume 가능 (📤 업로드 탭에서 동일 PDF 재업로드).")
+            for p in sorted(recent_completed, key=lambda x: x["age_s"]):
+                age_str = f"{int(p['age_s']/60)}분 전"
+                st.caption(
+                    f"• **{p['stem']}** [{p['ws']}] — "
+                    f"EN={p['en']}/KO={p['ko']} · 결손 {p['en']-p['ko']} · {age_str}"
+                )
+
+    # 위키 수동 트리거 (노트 없는 TXT를 Gemini로 일괄 생성)
+    raw_pending = check_wiki_orphans().get("raw_pending", 0)
+    if raw_pending > 0:
+        st.divider()
+        st.info(f"위키 생성 대기: {raw_pending}개")
+        if not wg_ok:
+            if st.button("▶️ 위키 생성 시작", use_container_width=True, key="status_wiki_trigger"):
+                trigger_wiki_generation()
+                st.rerun()
+        else:
+            st.caption("🔄 위키 생성 중...")
+
+
+# ── 탭 1: 업로드 ─────────────────────────────────────────
+with tab_upload:
+    do_translate = st.toggle(
+        "🌐 영→한 번역 (영어 PDF 전용)",
+        value=False,
+        help="단락별 번역 후 [EN]/[KO] 교차 TXT 생성. 한국어 PDF는 자동 스킵. "
+             "위키는 번역 여부와 무관하게 Gemini가 한국어로 생성한다.",
+    )
+    force_reembed = False   # 임베드 제거(2026-06-09) — 호환용 상수
+    defer_embed   = False
+    # 워크스페이스 선택 제거(2026-06-09) — 보관 폴더는 기본값. 노트 분류는 Gemini가 카테고리로 처리.
+    ws_name = next(iter(WORKSPACES))
+    ws_slug = ""
+    if do_translate:
+        _opts = [(eid, lbl) for eid, lbl, av, _h in translate_engine_options() if av]
+        if not _opts:
+            st.warning("⚠️ 사용 가능한 번역 엔진이 없습니다 — ⚙️ 설정 탭에서 API 키를 입력하거나 Claude CLI에 로그인하세요.")
+            translate_engine = None
+        else:
+            _lbl2id = {lbl: eid for eid, lbl in _opts}
+            _sel = st.radio("번역 엔진", list(_lbl2id.keys()), index=0,
+                            help="키가 등록된 공급자만 표시됩니다. ⚙️ 설정 탭에서 키를 관리하세요.")
+            translate_engine = _lbl2id[_sel]
+            if translate_engine.startswith("claude_cli:"):
+                st.caption("ℹ️ Claude 구독(CLI)로 호출 — 주간 한도가 차감됩니다.")
+    else:
+        translate_engine = None
+
+    if "uploader_key" not in st.session_state:
+        st.session_state.uploader_key = 0
+    if "pipeline_results" not in st.session_state:
+        st.session_state.pipeline_results = load_pipeline_results()
+
+    uploaded_files = st.file_uploader(
+        "PDF / DOCX / TXT / MD를 드래그하거나 클릭하여 선택",
+        type=["pdf", "docx", "txt", "md"],
+        accept_multiple_files=True,
+        key=f"uploader_{st.session_state.uploader_key}",
+    )
+
+    # ─── 재시도 대기 자동 감지 (UPLOAD_TMP의 모든 파일, 2026-05-18 갱신) ─
+    # UPLOAD_TMP를 *재시도 대기 큐*로 본다. session_state 의존 없이 물리적 상태 기반.
+    _allowed_ext = {".pdf", ".docx", ".doc", ".txt", ".md"}
+
+    # (임베드 큐 기반 자동정리 제거 — 2026-06-09)
+
+    retry_paths = sorted(
+        [
+            p for p in UPLOAD_TMP.glob("*")
+            if p.is_file() and p.suffix.lower() in _allowed_ext
+        ],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if retry_paths:
+        import time as _t
+        _now = _t.time()
+        sel_retry = [
+            p for p in retry_paths
+            if st.session_state.get(f"upload_retry_sel_{p}", False)
+        ]
+        sel_n = len(sel_retry)
+        with st.expander(
+            f"↩️ 재시도 대기: **{len(retry_paths)}개**"
+            + (f" · 선택 **{sel_n}건**" if sel_n else "") + " (자동 합산됨)",
+            expanded=True,
+        ):
+            # 전체 선택 토글
+            _select_all_key = "upload_retry_select_all"
+            def _toggle_all():
+                v = st.session_state.get(_select_all_key, False)
+                for p in retry_paths:
+                    st.session_state[f"upload_retry_sel_{p}"] = v
+            st.checkbox(
+                f"☑️ 전체 선택 ({len(retry_paths)}개)",
+                key=_select_all_key,
+                on_change=_toggle_all,
+            )
+
+            # 일괄 작업 버튼
+            _btn_cols = st.columns([1, 1, 1, 1])
+            if _btn_cols[0].button(
+                f"▶️ 선택 {sel_n}건 재시도" if sel_n else "▶️ 선택 재시도",
+                type="primary",
+                disabled=(sel_n == 0), use_container_width=True,
+                key="upload_retry_run_btn",
+                help="선택된 파일만 즉시 처리 (워크스페이스·토글은 상단 설정 사용)",
+            ):
+                # 선택된 파일만 _PathAsUpload로 감싸 처리
+                _to_run = list(sel_retry)
+                results = []
+                phs = [st.empty() for _ in _to_run]
+                for _i, p in enumerate(_to_run):
+                    r = _process_file_for_pipeline(
+                        _PathAsUpload(p), ws_name, ws_slug, do_translate, translate_engine,
+                        force_reembed, defer_embed, phs[_i],
+                    )
+                    results.append(r)
+                    # 처리 끝난 파일은 UPLOAD_TMP에서 사라졌을 가능성 — 체크박스 상태도 정리
+                    st.session_state.pop(f"upload_retry_sel_{p}", None)
+                st.session_state.pipeline_results = (
+                    results + st.session_state.get("pipeline_results", [])
+                )
+                save_pipeline_results(st.session_state.pipeline_results)
+                st.success(f"🏁 {len(results)}건 처리 완료")
+            if _btn_cols[1].button(
+                f"🗑️ 선택 {sel_n}건 삭제" if sel_n else "🗑️ 선택 삭제",
+                disabled=(sel_n == 0), use_container_width=True,
+                key="upload_retry_del_btn",
+            ):
+                for p in sel_retry:
+                    try: p.unlink()
+                    except Exception: pass
+                st.rerun()
+            if _btn_cols[2].button(
+                "🗑️ 전체 비우기", use_container_width=True,
+                key="upload_retry_clear_btn",
+            ):
+                for p in retry_paths:
+                    try: p.unlink()
+                    except Exception: pass
+                st.rerun()
+            # 4번째 빈 컬럼 (정렬용)
+
+            st.divider()
+
+            # 각 행: 체크박스·파일명·이유·▶️·🗑️
+            for p in retry_paths:
+                try:
+                    size_kb = p.stat().st_size // 1024
+                    age_s = _now - p.stat().st_mtime
+                except Exception:
+                    size_kb, age_s = 0, 0
+                # 이유 추정
+                if age_s < 60:
+                    reason = "🔄 방금 추가됨 (진행 중일 수)"
+                elif age_s < 300:
+                    reason = f"⏸️ {int(age_s/60)}분 전 추가 — 자동 합산 대기"
+                elif age_s < 3600:
+                    reason = f"⏳ {int(age_s/60)}분 전 — 처리 시작 안 됨"
+                elif age_s < 86400:
+                    reason = f"⏳ {int(age_s/3600)}시간 전 — 옛 대기"
+                else:
+                    reason = f"⚠️ {int(age_s/86400)}일 전 — 매우 옛 (정리 권장)"
+                cols = st.columns([0.4, 4.5, 1.6, 0.6, 0.6])
+                cols[0].checkbox(
+                    "선택", key=f"upload_retry_sel_{p}",
+                    label_visibility="collapsed",
+                )
+                cols[1].markdown(
+                    f"**{p.name[:55]}**" + ("…" if len(p.name) > 55 else "") + "\n\n"
+                    f"<small>{size_kb}KB · {reason}</small>",
+                    unsafe_allow_html=True,
+                )
+                cols[2].caption("")  # 여백 (다른 정보 자리)
+                if cols[3].button(
+                    "▶️", key=f"upload_retry_run_single_{p}",
+                    help="이 파일만 즉시 처리 (상단 워크스페이스·토글 적용)",
+                ):
+                    _ph = st.empty()
+                    r = _process_file_for_pipeline(
+                        _PathAsUpload(p), ws_name, ws_slug, do_translate, translate_engine,
+                        force_reembed, defer_embed, _ph,
+                    )
+                    st.session_state.pipeline_results = (
+                        [r] + st.session_state.get("pipeline_results", [])
+                    )
+                    save_pipeline_results(st.session_state.pipeline_results)
+                    st.success(f"🏁 {p.name} 처리 완료")
+                if cols[4].button(
+                    "🗑️", key=f"upload_retry_del_single_{p}",
+                    help="이 파일만 삭제",
+                ):
+                    try: p.unlink()
+                    except Exception: pass
+                    st.rerun()
+
+    # 업로드 파일 + 재시도 대기 파일 합치기 (file-like wrapper은 모듈 레벨에 정의됨)
+
+    all_files = list(uploaded_files or []) + [_PathAsUpload(p) for p in retry_paths]
+
+    if all_files:
+        st.info(f"**{len(all_files)}개** 파일 업로드 준비")
+
+
+        if st.button("🚀 파이프라인 실행", type="primary", use_container_width=True):
+            results = []
+            # 워커별 placeholder 미리 생성 (병렬 격리용)
+            _placeholders = [st.empty() for _ in all_files]
+
+            # 단계 2: 병렬 처리 (max 4 동시, 2026-05-19)
+            # add_script_run_ctx로 워커 스레드에 Streamlit context 전달 → 워커 안에서 st.write 등 호출 가능
+            # 워커별 placeholder 격리로 UI 충돌 차단
+            import threading
+            from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+
+            _ctx = get_script_run_ctx()
+            _results_lock = threading.Lock()
+            _sem = threading.Semaphore(4)  # 동시 4개 제한 (Claude 한도 보호)
+
+            def _worker(idx, uf):
+                with _sem:
+                    r = _process_file_for_pipeline(
+                        uf, ws_name, ws_slug, do_translate, translate_engine,
+                        force_reembed, defer_embed, _placeholders[idx],
+                    )
+                with _results_lock:
+                    results.append(r)
+
+            _threads = []
+            for _idx, uf in enumerate(all_files):
+                _t = threading.Thread(target=_worker, args=(_idx, uf))
+                add_script_run_ctx(_t, _ctx)
+                _t.start()
+                _threads.append(_t)
+
+            for _t in _threads:
+                _t.join()
+
+            st.session_state.pipeline_results = results
+            save_pipeline_results(results)
+            st.session_state.uploader_key += 1
+            # 재시도 대기 파일은 처리 완료된 것만 정리 (UPLOAD_TMP에 없으면 자동 제거)
+            st.session_state.retry_pending_files = [
+                p for p in st.session_state.get("retry_pending_files", [])
+                if Path(p).exists()
+            ]
+            # st.rerun() 제거 (2026-05-19) — 워커 placeholder UI를 그대로 두어
+            # 사용자가 멈춤 사유·진행 상태를 *영구 확인* 가능. 사용자가 탭 전환·새로고침 시 자연 rerun.
+            st.success(
+                f"🏁 일괄 처리 종료 — 총 {len(results)}건. "
+                f"위 각 워커 영역에서 결과 확인. 새 작업하려면 '🚀 파이프라인 실행' 다시."
+            )
+
+    if st.session_state.pipeline_results:
+        st.divider()
+        st.subheader("📂 처리 결과")
+
+        _STAGE_ICONS = {"ok": "✅", "fail": "❌", "skip": "⏭️", "pending": "⏳", "queued": "⏸️"}
+        _STAGE_LABELS = [
+            ("ocr",         "① PDF OCR"),
+            ("txt",         "② TXT 변환"),
+            ("md",          "③ MD 변환"),
+            ("bilingual",   "④ Bilingual"),
+            ("wiki",        "⑤ Gemini Wiki"),
+        ]
+
+        # Wiki 산출물 stem 집합 — 매번 rglob 안 하도록 한 번만 빌드 (2026-05-18)
+        _wiki_md_stem_set = {p.stem for p in WIKI_DIR.rglob("*.md")}
+
+        def _live_stages(r: dict) -> dict:
+            """저장된 stages를 베이스로 현재 파일시스템 상태로 보강.
+            특히 wiki는 파이프라인 종료 후 비동기로 진행되므로 파일 위치로 갱신.
+
+            Wiki 판정 (2026-05-18 수정):
+            - WIKI_DIR에 stem.md가 있으면 ok (raw→processed 이동 버그 비의존)
+            - 보조: PROCESSED_DIR에 stem.txt 있으면 ok (호환)
+            - RAW_DIR에 대기 중이면 pending
+            """
+            s = dict(r.get("stages") or {})
+            for k, _ in _STAGE_LABELS:
+                s.setdefault(k, "skip" if r.get("ok") is None else "pending")
+            ws = r.get("ws", "")
+            stem = Path(r.get("name", "")).stem
+            # Wiki 상태 갱신 — *진짜 산출물*인 WIKI_DIR의 .md 존재로 판정 (1순위)
+            if stem in _wiki_md_stem_set:
+                s["wiki"] = "ok"
+            elif (PROCESSED_DIR / f"{stem}.txt").exists():
+                s["wiki"] = "ok"
+            elif (RAW_DIR / ws / f"{stem}.txt").exists() and s.get("wiki") in (None, "pending", "skip"):
+                s["wiki"] = "pending"
+            return s
+
+        for idx, r in enumerate(list(st.session_state.pipeline_results)):
+            name = r["name"]
+            with st.container(border=True):
+                if r.get("ok") is None:
+                    head_cols = st.columns([6, 1])
+                    head_cols[0].markdown(f"**⚠️ {name} — 중복 (건너뜀)**")
+                    if head_cols[1].button("🗑️", key=f"del_{idx}_{name}"):
+                        st.session_state.pipeline_results.pop(idx)
+                        save_pipeline_results(st.session_state.pipeline_results)
+                        st.rerun()
+                    continue
+
+                head_cols = st.columns([6, 1])
+                head_cols[0].markdown(f"**{'✅' if r['ok'] else '❌'} {name}**  ·  `{r.get('ws','')}`")
+                if head_cols[1].button("🗑️", key=f"del_{idx}_{name}", help="이 항목만 결과 목록에서 제거 (실제 파일은 유지)"):
+                    st.session_state.pipeline_results.pop(idx)
+                    save_pipeline_results(st.session_state.pipeline_results)
+                    st.rerun()
+
+                # 7단계 체크리스트
+                s = _live_stages(r)
+                stage_cols = st.columns(len(_STAGE_LABELS))
+                for col, (key, label) in zip(stage_cols, _STAGE_LABELS):
+                    val = s.get(key, "pending")
+                    col.markdown(f"{_STAGE_ICONS.get(val, '·')} {label}")
+
+                # 파일 열기 버튼 행
+                pdf_p = Path(r["pdf_path"]) if r.get("pdf_path") else None
+                txt_p = Path(r["txt_path"]) if r.get("txt_path") else None
+                md_p  = Path(r["md_path"])  if r.get("md_path")  else None
+                bil_p = Path(r["bilingual_path"]) if r.get("bilingual_path") else None
+
+                btn_cols = st.columns(4)
+                if pdf_p and pdf_p.exists():
+                    if btn_cols[0].button("📄 PDF", key=f"open_pdf_{idx}_{name}"):
+                        subprocess.run(["open", "-R", str(pdf_p)])
+                if txt_p and txt_p.exists():
+                    if btn_cols[1].button("📝 TXT", key=f"open_txt_{idx}_{name}"):
+                        subprocess.run(["open", str(txt_p)])
+                if md_p and md_p.exists():
+                    if btn_cols[2].button("📜 MD", key=f"open_md_{idx}_{name}"):
+                        subprocess.run(["open", str(md_p)])
+                if bil_p and bil_p.exists():
+                    if btn_cols[3].button("📘 번역본", key=f"open_bil_{idx}_{name}"):
+                        subprocess.run(["open", str(bil_p)])
+                    st.caption(f"📘 번역본: `{bil_p.name}` ({bil_p.stat().st_size // 1024} KB)")
+
+        if st.button("🗑️ 결과 지우기", use_container_width=True):
+            st.session_state.pipeline_results = []
+            save_pipeline_results([])
+            st.rerun()
+
+# ── 탭 2: 처리 기록 ──────────────────────────────────────
+with tab_history:
+    # 토글: 0KB 항목 숨김
+    hide_zero = st.toggle("⚠️ 0KB(빈 파일) 숨김", value=True, key="history_hide_zero")
+    rows = []
+    zero_count = 0
+    for f in sorted((f for f in DONE_DIR.rglob("*") if f.is_file()), key=lambda x: x.stat().st_mtime, reverse=True):
+        sz = f.stat().st_size
+        if sz == 0: zero_count += 1
+        if sz == 0 and hide_zero: continue
+        status = "⚠️ 0KB" if sz == 0 else "✅ 완료"
+        rows.append({
+            "파일명": f.name,
+            "시각": datetime.fromtimestamp(f.stat().st_mtime).strftime("%m-%d %H:%M"),
+            "상태": status,
+            "크기": f"{sz // 1024} KB" if sz > 0 else "0 KB ⚠️",
+            "경로": str(f.parent.relative_to(DONE_DIR)),
+        })
+    for f in sorted(FAILED_DIR.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True):
+        sz = f.stat().st_size
+        rows.append({
+            "파일명": f.name,
+            "시각": datetime.fromtimestamp(f.stat().st_mtime).strftime("%m-%d %H:%M"),
+            "상태": "❌ 실패",
+            "크기": f"{sz // 1024} KB",
+            "경로": "failed",
+        })
+    if zero_count:
+        st.caption(
+            f"⚠️ 0KB 파일 **{zero_count}건** 감지됨 "
+            f"({'숨김' if hide_zero else '표시'} — 처리 중 흔적, 완료 아님)"
+        )
+    if rows:
+        st.dataframe(
+            pd.DataFrame(rows), use_container_width=True, hide_index=True,
+        )
+    else:
+        st.info("처리된 파일이 없습니다.")
+
+# ── 탭 3: Wiki 목록 ───────────────────────────────────────
+with tab_wiki:
+    st.caption("ℹ️ 표에서 행을 클릭하면 아래에 Wiki 본문이 표시됩니다.")
+    wiki_files = sorted(WIKI_DIR.rglob("*.md"), key=lambda x: x.stat().st_mtime, reverse=True)
+    wiki_rows = []
+    for wf in wiki_files:
+        cat = wf.parent.name
+        icon = CATEGORY_ICONS.get(cat, "📄")
+        wiki_rows.append({
+            "카테고리": f"{icon} {cat}",
+            "파일명":   wf.stem,
+            "생성 시각": datetime.fromtimestamp(wf.stat().st_mtime).strftime("%m-%d %H:%M"),
+        })
+    if wiki_rows:
+        wiki_event = st.dataframe(
+            pd.DataFrame(wiki_rows), use_container_width=True, hide_index=True,
+            on_select="rerun", selection_mode="single-row", key="wiki_list_table",
+        )
+        sel_rows = wiki_event.selection.rows if wiki_event and hasattr(wiki_event, "selection") else []
+        if sel_rows:
+            wf = wiki_files[sel_rows[0]]
+            st.divider()
+            st.markdown(f"### 📖 {wf.stem}")
+            st.caption(f"경로: `{wf}` · {wf.stat().st_size // 1024}KB")
+            try:
+                content = wf.read_text(errors="ignore")
+                with st.container(height=600, border=True):
+                    st.markdown(content)
+            except Exception as e:
+                st.error(f"읽기 실패: {e}")
+    else:
+        st.info("생성된 Wiki 페이지가 없습니다.")
+
+# ── 탭 4: 실패 파일 ──────────────────────────────────────
+with tab_failed:
+    st.subheader(f"⚠️ 실패 파일 ({len(_failed_files)})")
+    if not _failed_files:
+        st.info("실패 파일 없음. 파이프라인 실패 시 자동으로 여기 모입니다.")
+    else:
+        st.caption(
+            "✓ 체크한 파일을 *재시도*하면 **/tmp/pipeline_uploads로 이동 + 📤 파일 업로드 탭에 자동 합산**됩니다. "
+            "업로드 탭으로 가서 🚀 파이프라인 실행을 누르세요."
+        )
+
+        if "retry_pending_files" not in st.session_state:
+            st.session_state.retry_pending_files = []
+
+        # 선택 상태 수집
+        selected_paths = [
+            p for p in _failed_files
+            if st.session_state.get(f"failed_sel_{p}", False)
+        ]
+        sel_n = len(selected_paths)
+
+        col_retry, col_del = st.columns(2)
+        if col_retry.button(
+            f"↩️ 선택 {sel_n}건 재시도" if sel_n else "↩️ 선택 재시도",
+            type="primary", use_container_width=True, disabled=(sel_n == 0),
+            help="UPLOAD_TMP로 이동 + 업로드 탭에 자동 합산",
+        ):
+            moved = 0
+            for p in selected_paths:
+                target = UPLOAD_TMP / p.name
+                try:
+                    shutil.move(str(p), str(target))
+                    st.session_state.retry_pending_files.append(str(target))
+                    moved += 1
+                except Exception as e:
+                    st.error(f"{p.name}: {e}")
+            st.success(f"{moved}개 파일 재시도 대기 — '📤 파일 업로드' 탭으로 이동해 🚀 누르세요")
+            st.rerun()
+
+        if col_del.button(
+            f"🗑️ 선택 {sel_n}건 삭제" if sel_n else "🗑️ 선택 삭제",
+            use_container_width=True, disabled=(sel_n == 0),
+            help="실패 파일 영구 삭제",
+        ):
+            removed = 0
+            for p in selected_paths:
+                try:
+                    p.unlink()
+                    removed += 1
+                except Exception:
+                    pass
+            st.success(f"{removed}개 삭제")
+            st.rerun()
+
+        st.divider()
+        with st.container(height=700, border=True):
+            for ff in _failed_files[:200]:
+                cols = st.columns([0.5, 5.5, 1, 1])
+                sel_key = f"failed_sel_{ff}"
+                cols[0].checkbox("선택", key=sel_key, label_visibility="collapsed")
+                try:
+                    size_kb = ff.stat().st_size // 1024
+                    mtime = datetime.fromtimestamp(ff.stat().st_mtime).strftime("%m-%d %H:%M")
+                except Exception:
+                    size_kb, mtime = 0, ""
+                cols[1].markdown(
+                    f"**{ff.name}**\n\n<small>{size_kb}KB · {mtime}</small>",
+                    unsafe_allow_html=True,
+                )
+                if cols[2].button("↩️", key=f"retry_single_{ff}", help="이 파일만 재시도"):
+                    target = UPLOAD_TMP / ff.name
+                    try:
+                        shutil.move(str(ff), str(target))
+                        st.session_state.retry_pending_files.append(str(target))
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+                if cols[3].button("🗑️", key=f"del_single_{ff}", help="삭제"):
+                    try:
+                        ff.unlink()
+                    except Exception:
+                        pass
+                    st.rerun()
+            if len(_failed_files) > 200:
+                st.caption(f"… 외 {len(_failed_files) - 200}개")
+
+
+# ── 탭: 설정 (API 키) ─────────────────────────────────────
+with tab_settings:
+    st.subheader("⚙️ API 키 설정")
+    st.caption(
+        "키는 이 컴퓨터의 `~/.config/mybookshelf/keys.json` 에만 저장되며, "
+        "저장소나 외부로 전송되지 않습니다. (Gemini 키는 위키 생성기와 자동 공유됩니다.)"
+    )
+
+    # 🧠 위키 생성 모델 (공급자/모델)
+    _wp, _wm = llm.wiki_provider_model()
+    st.markdown(f"**🧠 위키 생성 모델** — 현재: `{_wp} · {_wm}`")
+    _avail = [(p, m) for p, info in llm.PROVIDERS.items() if llm.has_key(p) for m in info["models"]]
+    if _avail:
+        _labels = [f"{llm.PROVIDERS[p]['label']} · {m}" for p, m in _avail]
+        _curlbl = f"{llm.PROVIDERS.get(_wp, {}).get('label', _wp)} · {_wm}"
+        _idx = _labels.index(_curlbl) if _curlbl in _labels else 0
+        _sel = st.selectbox("위키 노트를 생성할 모델", _labels, index=_idx, key="wiki_model_sel")
+        _p, _m = _avail[_labels.index(_sel)]
+        if (_p, _m) != (_wp, _wm) and st.button("✅ 이 모델로 위키 생성", use_container_width=True):
+            llm.set_wiki_model(_p, _m); st.success(f"위키 모델 = {_p} · {_m}"); st.rerun()
+    else:
+        st.info("키 등록된 공급자가 없어 Gemini 기본값을 씁니다. 아래에서 키를 입력하세요.")
+    st.caption("번역과 별개로, 위키 노트 생성에 쓸 모델입니다. 구조화 출력은 공급자별로 자동 처리됩니다.")
+    st.divider()
+
+    for _prov, _info in llm.PROVIDERS.items():
+        _cur = llm.masked(_prov)
+        with st.expander(f"{_info['label']}  —  {('✅ ' + _cur) if _cur else '미설정'}",
+                         expanded=not bool(_cur)):
+            with st.form(f"keyform_{_prov}", clear_on_submit=True):
+                _newk = st.text_input(f"{_info['label']} API 키", type="password",
+                                      placeholder=_info["hint"], key=f"keyin_{_prov}")
+                _c1, _c2 = st.columns(2)
+                _save = _c1.form_submit_button("💾 저장", use_container_width=True)
+                _del = _c2.form_submit_button("🗑 삭제", use_container_width=True)
+                if _save:
+                    if _newk.strip():
+                        llm.save_key(_prov, _newk.strip())
+                        st.success("저장됨")
+                        st.rerun()
+                    else:
+                        st.warning("키를 입력하세요.")
+                if _del:
+                    llm.save_key(_prov, "")
+                    st.info("삭제됨")
+                    st.rerun()
+            st.caption(f"모델: {', '.join(_info['models'])}")
+    st.divider()
+    st.markdown("**Claude CLI (구독)** — API 키 대신 Claude 구독으로 사용")
+    if llm.claude_cli_available():
+        st.success(f"✅ 감지됨: `{llm.claude_cli_path()}` — 구독 로그인 상태면 키 없이 번역에 사용 가능")
+    else:
+        st.info("미설치. Claude Code를 설치·로그인하면 구독으로 쓸 수 있습니다. (또는 위에서 Anthropic API 키 입력)")

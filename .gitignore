@@ -1,0 +1,10 @@
+# 가상환경·캐시
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# 키·로컬 설정 — 절대 커밋 금지
+*.key
+keys.json
+config.json
