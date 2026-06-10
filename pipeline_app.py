@@ -342,8 +342,18 @@ def translate(text: str, engine: str) -> str | None:
 
 
 def wiki_generator_running() -> bool:
-    r = subprocess.run(["pgrep", "-f", "gemini_wiki.py"], capture_output=True)
-    return r.returncode == 0
+    if sys.platform == "darwin":
+        r = subprocess.run(["pgrep", "-f", "gemini_wiki.py"], capture_output=True)
+        return r.returncode == 0
+    # 윈도우: pgrep 없음 — psutil로 커맨드라인 검사 (2026-06-11 윈도우 크래시 수정)
+    try:
+        import psutil
+        return any(
+            "gemini_wiki.py" in " ".join(p.info.get("cmdline") or [])
+            for p in psutil.process_iter(["cmdline"])
+        )
+    except Exception:
+        return False
 
 
 def trigger_wiki_generation() -> int:
@@ -909,6 +919,20 @@ def read_log(n: int = 20) -> list:
     if not LOG_FILE.exists():
         return []
     return LOG_FILE.read_text(errors="ignore").splitlines()[-n:]
+
+
+def open_path(p: Path, reveal: bool = False):
+    """파일을 OS 기본 앱으로 열기. reveal=폴더에서 선택 표시.
+    (2026-06-11 윈도우 수정 — 'open'은 맥 전용)"""
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", "-R", str(p)] if reveal else ["open", str(p)])
+        elif reveal:
+            subprocess.run(["explorer", f"/select,{p}"])
+        else:
+            os.startfile(str(p))
+    except Exception as e:
+        append_log(f"WARN: 파일 열기 실패 ({type(e).__name__}) {str(e)[:120]}")
 
 
 def notify(msg: str, title: str = "My Bookshelf"):
@@ -1537,16 +1561,16 @@ with tab_upload:
                 btn_cols = st.columns(4)
                 if pdf_p and pdf_p.exists():
                     if btn_cols[0].button("📄 PDF", key=f"open_pdf_{idx}_{name}"):
-                        subprocess.run(["open", "-R", str(pdf_p)])
+                        open_path(pdf_p, reveal=True)
                 if txt_p and txt_p.exists():
                     if btn_cols[1].button("📝 TXT", key=f"open_txt_{idx}_{name}"):
-                        subprocess.run(["open", str(txt_p)])
+                        open_path(txt_p)
                 if md_p and md_p.exists():
                     if btn_cols[2].button("📜 MD", key=f"open_md_{idx}_{name}"):
-                        subprocess.run(["open", str(md_p)])
+                        open_path(md_p)
                 if bil_p and bil_p.exists():
                     if btn_cols[3].button("📘 번역본", key=f"open_bil_{idx}_{name}"):
-                        subprocess.run(["open", str(bil_p)])
+                        open_path(bil_p)
                     st.caption(f"📘 번역본: `{bil_p.name}` ({bil_p.stat().st_size // 1024} KB)")
 
         if st.button("🗑️ 결과 지우기", use_container_width=True):
