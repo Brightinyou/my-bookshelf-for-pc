@@ -20,7 +20,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.2.10"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.2.11"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -514,6 +514,8 @@ class _PathAsUpload:
         self.name = self._p.name
     def read(self) -> bytes:
         return self._p.read_bytes()
+    def seek(self, pos: int):
+        pass   # read()가 매번 디스크에서 새로 읽음 — UploadedFile.seek 호환용 (2026-06-11)
 
 
 # ─── 일시정지 플래그 (워커 thread ↔ 메인 UI 통신, 2026-05-19) ──────────
