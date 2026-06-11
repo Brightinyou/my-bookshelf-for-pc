@@ -20,7 +20,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.2.12"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.2.13"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -1368,6 +1368,11 @@ with tab_upload:
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
+    # 같은 이름의 PDF가 대기 중이면 그 부산물(.md/.txt 사이드카)은 숨김 —
+    # 실패 잔재이며 PDF 재처리가 같은 자리에 다시 만든다. (2026-06-11)
+    _pdf_stems = {p.stem for p in retry_paths if p.suffix.lower() == ".pdf"}
+    retry_paths = [p for p in retry_paths
+                   if not (p.suffix.lower() in {".md", ".txt"} and p.stem in _pdf_stems)]
     if retry_paths:
         import time as _t
         _now = _t.time()
