@@ -20,7 +20,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.2.15"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.2.16"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -256,6 +256,9 @@ _TRANSLATE_SYSTEM = (
     "endings such as -다, -이다, -한다, -였다, -이었다. "
     "DO NOT use any polite/honorific forms — never use -습니다, -입니다, "
     "-해요, -이에요, -지요, -군요, -네요, or any other -요/-니다 endings. "
+    "The text may be an incomplete fragment cut mid-sentence (PDF page breaks): "
+    "translate it as-is anyway — NEVER comment on it, NEVER ask for more context, "
+    "NEVER say the text is incomplete. "
     "Output ONLY the Korean translation, nothing else."
 )
 
@@ -287,6 +290,23 @@ def engine_label(engine_id) -> str:
     return engine_id
 
 
+def _merge_dangling(paras: list[str], max_chunk: int = 3000) -> list[str]:
+    """PDF 페이지 경계·각주 번호 때문에 문장 중간에서 끊긴 단락을 병합. (2026-06-11)
+    이전 단락이 종결부호 없이 끝났거나 현재 단락이 소문자로 시작하면 같은 문장으로 본다."""
+    _terminal = _re.compile(r'[.!?:;"”’)\]]\s*$')
+    merged: list[str] = []
+    for p in paras:
+        if merged:
+            prev = merged[-1]
+            if (not prev.lstrip().startswith("#")          # 제목은 단독 유지
+                    and len(prev) + len(p) + 1 <= max_chunk
+                    and (not _terminal.search(prev) or _re.match(r"^[a-z]", p))):
+                merged[-1] = prev.rstrip() + " " + p.lstrip()
+                continue
+        merged.append(p)
+    return merged
+
+
 def _split_paragraphs_robust(text_raw: str, target_chunk: int = 1500, min_para: int = 5) -> list[str]:
     """단락 분할 보강. \\n\\n 의존이 실패하면 단일 줄바꿈·문장 단위 fallback.
     OCR 출력 형식에 무관하게 작동. (2026-05-16 신설)
@@ -299,7 +319,7 @@ def _split_paragraphs_robust(text_raw: str, target_chunk: int = 1500, min_para: 
     if len(primary) >= min_para:
         avg = sum(len(p) for p in primary) / len(primary)
         if avg <= target_chunk * 2:
-            return primary
+            return _merge_dangling(primary)
 
     # 2차 — 단일 줄바꿈 후 누적 청크
     lines = [ln.strip() for ln in text_raw.split("\n") if ln.strip()]
@@ -987,6 +1007,27 @@ def ensure_obsidian_vault(folder: Path) -> bool:
         return False
 
 
+def list_obsidian_vaults() -> list[str]:
+    """옵시디언에 등록된 금고 경로 목록. (2026-06-11)"""
+    try:
+        data = json.loads(_obsidian_config().read_text(encoding="utf-8"))
+        return [v.get("path", "") for v in data.get("vaults", {}).values() if v.get("path")]
+    except Exception:
+        return []
+
+
+def set_wiki_dir(path_str: str) -> None:
+    """~/.config/mybookshelf/config.json의 dirs.wiki 갱신 — 앱 재시작 후 적용. (2026-06-11)"""
+    f = cfg.CONFIG_FILE
+    try:
+        d = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    except Exception:
+        d = {}
+    d.setdefault("dirs", {})["wiki"] = path_str
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def open_wiki_vault():
     """위키 폴더를 옵시디언 금고로 등록 후 옵시디언으로 열기. 실패 시 폴더라도 연다."""
     ensure_obsidian_vault(WIKI_DIR)
@@ -1161,6 +1202,28 @@ div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) > div:
     div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) > div:last-child p {
         color: #111827 !important;
     }
+}
+
+/* === 우상단 툴바 (2026-06-11) === */
+/* Deploy 버튼 숨김 — 로컬 앱에는 의미 없음 */
+[data-testid="stAppDeployButton"] { display: none !important; }
+/* 실행 중 Stop 버튼 — 한글 라벨 + 눈에 띄는 빨강 */
+[data-testid="stStatusWidget"] button {
+    font-size: 0 !important;
+    background: #e5484d !important;
+    border: none !important;
+    border-radius: 8px !important;
+    padding: 4px 12px !important;
+    min-height: 28px;
+}
+[data-testid="stStatusWidget"] button::after {
+    content: "⏹ 중지";
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #ffffff;
+}
+[data-testid="stStatusWidget"] button:hover {
+    background: #d93036 !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1895,3 +1958,33 @@ with tab_settings:
         st.success(f"✅ 감지됨: `{llm.claude_cli_path()}` — 구독 로그인 상태면 키 없이 번역에 사용 가능")
     else:
         st.info("미설치. Claude Code를 설치·로그인하면 구독으로 쓸 수 있습니다. (또는 위에서 Anthropic API 키 입력)")
+
+    # ── 위키 저장 폴더(옵시디언 금고) 선택 (2026-06-11) ──
+    st.divider()
+    st.subheader("📓 위키 저장 폴더 (옵시디언 금고)")
+    st.caption(
+        f"현재: `{WIKI_DIR}` — 생성된 위키 노트가 여기 저장되고, "
+        "Wiki 목록 탭의 [옵시디언에서 위키 금고 열기]도 이 폴더를 엽니다."
+    )
+    _default_wiki = str(cfg.BASE_DIR / "wiki")
+    _wiki_cands: list[str] = []
+    for _c in [_default_wiki] + list_obsidian_vaults():
+        if _c and _c not in _wiki_cands:
+            _wiki_cands.append(_c)
+    _cur_wiki = str(WIKI_DIR)
+    _wd_sel = st.selectbox(
+        "폴더 선택 — 기본값 + 옵시디언에 등록된 금고들",
+        _wiki_cands,
+        index=_wiki_cands.index(_cur_wiki) if _cur_wiki in _wiki_cands else 0,
+        key="wiki_dir_sel",
+    )
+    _wd_custom = st.text_input("또는 폴더 경로 직접 입력 (비우면 위 선택 사용)", value="", key="wiki_dir_custom")
+    _wd_target = (_wd_custom.strip() or _wd_sel).strip()
+    if st.button("💾 위키 폴더 저장", use_container_width=True, key="wiki_dir_save"):
+        if _wd_target == _cur_wiki:
+            st.info("이미 이 폴더를 쓰고 있습니다.")
+        else:
+            set_wiki_dir(_wd_target)
+            st.success(f"저장됨: `{_wd_target}`")
+            st.warning("⚠️ 앱을 재시작해야 적용됩니다 — stop-app.bat 실행 후 start-app.vbs.")
+    st.caption("ℹ️ 기존에 만든 노트는 자동으로 옮겨지지 않습니다. 옮기려면 폴더에서 직접 이동하세요.")
