@@ -20,7 +20,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.2.16"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.2.17"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -685,19 +685,28 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
             failed_tr = cache_hits = api_calls = skipped_n = 0
             consecutive_fail = 0
             RATE_LIMIT_THRESHOLD = 3
+            # 각주·인용은 본문 뒤로 모아 미주(尾註)로 — 읽기 흐름 보존 (2026-06-11)
+            _iter_order = [i for i in range(N) if i not in skip_all_idxs] + \
+                          [i for i in range(N) if i in skip_all_idxs]
+            _endnote_marked = False
             try:
                 import time as _time2
-                for idx, para in enumerate(paragraphs):
+                for _seq, idx in enumerate(_iter_order):
+                    para = paragraphs[idx]
                     # 일시정지 플래그 체크 (워커가 폴링)
                     while is_paused(txt_path.stem):
-                        prog.progress(idx / N, text=f"⏸️ 일시정지 중 ({idx}/{N}) — ▶️ 재개 누르면 이어감")
+                        prog.progress(_seq / N, text=f"⏸️ 일시정지 중 ({_seq}/{N}) — ▶️ 재개 누르면 이어감")
                         _time2.sleep(2)
                     if idx in skip_all_idxs:
+                        if not _endnote_marked:
+                            bilingual.append("[EN]\n## Endnotes — collected footnotes & citations"
+                                             "\n\n[KO]\n## 미주 — 각주·인용 모음 (원문 보존)")
+                            _endnote_marked = True
                         bilingual.append(f"[EN]\n{para}\n\n[KO]\n(원문 보존: 각주·인용)")
                         skipped_n += 1
                         _save_bilingual_atomic(bilingual_path, bilingual)
                         _save_en_ko_split(bilingual_path, bilingual)
-                        done = idx + 1
+                        done = _seq + 1
                         prog.progress(done / N, text=f"{done}/{N} ({done/N*100:.1f}%) — ♻️ {cache_hits} / 🌐 {api_calls} / ⏭️ {skipped_n}" + (f" / ❌ {failed_tr}" if failed_tr else ""))
                         continue
                     ko = cached.get(para)
@@ -717,12 +726,12 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
                     if consecutive_fail >= RATE_LIMIT_THRESHOLD:
                         _save_bilingual_atomic(bilingual_path, bilingual)
                         _save_en_ko_split(bilingual_path, bilingual)
-                        append_log(f"RATE_LIMIT: 연속 {consecutive_fail}회 실패 — 자동 일시정지 ({uf.name}, {idx+1}/{N})")
-                        st.warning(f"⏸️ **Claude 한도 임박 추정** — 연속 {consecutive_fail}회 실패. 진행분({idx+1}/{N}) 저장 후 자동 일시정지.")
+                        append_log(f"RATE_LIMIT: 연속 {consecutive_fail}회 실패 — 자동 일시정지 ({uf.name}, {_seq+1}/{N})")
+                        st.warning(f"⏸️ **Claude 한도 임박 추정** — 연속 {consecutive_fail}회 실패. 진행분({_seq+1}/{N}) 저장 후 자동 일시정지.")
                         break
                     _save_bilingual_atomic(bilingual_path, bilingual)
                     _save_en_ko_split(bilingual_path, bilingual)
-                    done = idx + 1
+                    done = _seq + 1
                     prog.progress(done / N, text=f"{done}/{N} ({done/N*100:.1f}%) — ♻️ {cache_hits} / 🌐 {api_calls} / ⏭️ {skipped_n}" + (f" / ❌ {failed_tr}" if failed_tr else ""))
             except Exception as e:
                 _save_bilingual_atomic(bilingual_path, bilingual)
