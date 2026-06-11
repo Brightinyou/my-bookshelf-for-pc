@@ -20,7 +20,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.2.14"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.2.15"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -202,6 +202,11 @@ def pdf_to_txt(pdf_path: Path) -> tuple[Path | None, Path | None, str]:
             # 죽는다 — pypdfium2 백엔드는 둘 다 정상 (2026-06-11 실기 확인).
             ocr_args = ["--ocr-engine", "easyocr", "--ocr-lang", "ko,en",
                         "--pdf-backend", "pypdfium2"]
+        # 이전 실행이 남긴 같은 이름 MD가 있으면 제거 — 변환 실패를 잔재가
+        # 성공으로 가리는 것 방지 (2026-06-11, 0바이트 PDF '완료' 오판 원인)
+        _stale = out_dir / (pdf_path.stem + ".md")
+        if _stale.exists():
+            _stale.unlink()
         try:
             r = subprocess.run(
                 [str(docling_bin), str(pdf_path), "--to", "md",
@@ -559,9 +564,13 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
     # 중복 검사 생략 (AnythingLLM 제거) — Gemini 노트는 동일 파일명 덮어쓰기
 
     dest = UPLOAD_TMP / uf.name
-    uf.seek(0)   # 같은 업로드로 재실행 시 포인터가 끝에 있어 0바이트 저장되는 것 방지 (2026-06-11)
-    with open(dest, "wb") as f:
-        f.write(uf.read())
+    # 재시도 파일은 이미 UPLOAD_TMP에 있음 — 자기 자신에 덮어쓰면 open("wb")가
+    # 먼저 비워서 0바이트로 잘린다. 같은 파일이면 복사 생략. (2026-06-11)
+    _src = getattr(uf, "_p", None)
+    if not (_src is not None and Path(_src).resolve() == dest.resolve()):
+        uf.seek(0)   # 같은 업로드로 재실행 시 포인터가 끝에 있어 0바이트 저장되는 것 방지
+        with open(dest, "wb") as f:
+            f.write(uf.read())
 
     success     = True
     txt_path    = None
