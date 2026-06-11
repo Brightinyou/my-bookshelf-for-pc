@@ -20,7 +20,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.2.13"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.2.14"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -1318,10 +1318,11 @@ with tab_status:
 with tab_upload:
     do_translate = st.toggle(
         "🌐 영→한 번역 (영어 PDF 전용)",
-        value=False,
+        value=bool(llm.get_pref("do_translate", False)),   # 마지막 선택 기억 (2026-06-11)
         help="단락별 번역 후 [EN]/[KO] 교차 TXT 생성. 한국어 PDF는 자동 스킵. "
              "위키는 번역 여부와 무관하게 Gemini가 한국어로 생성한다.",
     )
+    llm.set_pref("do_translate", bool(do_translate))
     force_reembed = False   # 임베드 제거(2026-06-09) — 호환용 상수
     defer_embed   = False
     # 워크스페이스 선택 제거(2026-06-09) — 보관 폴더는 기본값. 노트 분류는 Gemini가 카테고리로 처리.
@@ -1334,9 +1335,13 @@ with tab_upload:
             translate_engine = None
         else:
             _lbl2id = {lbl: eid for eid, lbl in _opts}
-            _sel = st.radio("번역 엔진", list(_lbl2id.keys()), index=0,
+            _labels = list(_lbl2id.keys())
+            _saved_eng = llm.get_pref("translate_engine")
+            _idx = next((i for i, l in enumerate(_labels) if _lbl2id[l] == _saved_eng), 0)
+            _sel = st.radio("번역 엔진", _labels, index=_idx,
                             help="키가 등록된 공급자만 표시됩니다. ⚙️ 설정 탭에서 키를 관리하세요.")
             translate_engine = _lbl2id[_sel]
+            llm.set_pref("translate_engine", translate_engine)   # 마지막 선택 기억
             if translate_engine.startswith("claude_cli:"):
                 st.caption("ℹ️ Claude 구독(CLI)로 호출 — 주간 한도가 차감됩니다.")
     else:

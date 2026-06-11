@@ -124,6 +124,24 @@ def set_wiki_model(provider: str, model: str) -> None:
         pass
 
 
+# ── UI 선호 설정 (번역 토글 등 — 재시작해도 유지, 2026-06-11) ──
+def get_pref(key: str, default=None):
+    return _load_all().get("pref_" + key, default)
+
+
+def set_pref(key: str, value) -> None:
+    d = _load_all()
+    if d.get("pref_" + key) == value:
+        return
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    d["pref_" + key] = value
+    KEYS_FILE.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        os.chmod(KEYS_FILE, 0o600)
+    except Exception:
+        pass
+
+
 # ── Claude CLI (구독) ──
 def claude_cli_path() -> str | None:
     p = shutil.which("claude")
