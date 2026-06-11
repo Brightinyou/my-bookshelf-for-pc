@@ -12,7 +12,8 @@ config.json 예 (모든 키 선택 사항):
   "dirs": {
     "raw": "...", "wiki": "...", "done": "...", "failed": "...",
     "pause": "...", "wiki_log": "...",
-    "old_done": "...", "old_translated": "..."
+    "old_done": "...", "old_translated": "...",
+    "upload_tmp": "...  (업로드/재시도 대기 폴더 — 내장 디스크가 작으면 외장으로)"
   },
   "files": {
     "log_file": "...", "results_file": "...", "gemini_done": "..."
@@ -80,10 +81,13 @@ LOG_FILE         = _file("log_file",     LOG_DIR / "upload.log")
 RESULTS_FILE     = _file("results_file", LOG_DIR / "pipeline_results.json")
 GEMINI_DONE_FILE = _file("gemini_done",  LOG_DIR / "gemini_done.txt")
 
-# 업로드 대기 파일은 재시작 후에도 다시 찾아야 하므로 맥은 기존 /tmp 경로 유지(호환),
-# 윈도우는 %TEMP% 사용.
-UPLOAD_TMP = (Path("/tmp") if sys.platform == "darwin" else Path(tempfile.gettempdir())) \
-             / "pipeline_uploads"
+# 업로드/재시도 대기 폴더. 대량 배치 시 내장 디스크를 채울 수 있어(2026-06-11
+# 설교 300편 디스크풀 사고) config.json dirs.upload_tmp로 외장 등 다른 볼륨 지정 가능.
+# 기본값: 맥=/tmp(기존 호환), 윈도우=%TEMP%.
+UPLOAD_TMP = _dir(
+    "upload_tmp",
+    (Path("/tmp") if sys.platform == "darwin" else Path(tempfile.gettempdir())) / "pipeline_uploads",
+)
 
 
 # ── 분류 폴더(워크스페이스) ───────────────────────────────
