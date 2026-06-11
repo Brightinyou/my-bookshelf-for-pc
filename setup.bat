@@ -79,6 +79,7 @@ echo [확인] 옵시디언이 이미 설치되어 있습니다.
 
 :done
 echo.
-echo [완료] 설치 끝! 이제 start.bat 를 더블클릭하면 앱이 열립니다.
+echo [완료] 설치 끝! 이제 start-app.vbs 를 더블클릭하면 창 없이 앱이 열립니다.
+echo        (끌 때는 stop-app.bat, 오류 메시지를 봐야 할 때는 start.bat)
 echo 아무 키나 누르면 창이 닫힙니다.
 pause >nul
