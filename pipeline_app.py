@@ -20,7 +20,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.2.8"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.2.9"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -373,7 +373,8 @@ def trigger_wiki_generation() -> int:
     try:
         subprocess.Popen(
             [cfg.PYTHON, "-u", str(GEMINI_WIKI), "--all"],
-            stdout=open(log_path, "a"), stderr=subprocess.STDOUT,
+            stdout=open(log_path, "a", encoding="utf-8"), stderr=subprocess.STDOUT,
+            env={**os.environ, "PYTHONUTF8": "1"},   # 윈도우 cp949에서 이모지 출력 크래시 방지
         )
         append_log("Gemini Wiki 일괄 생성(--all) 트리거")
     except Exception as e:
@@ -397,7 +398,9 @@ def trigger_gemini_wiki(txt_path: Path) -> bool:
     else:
         cmd = [cfg.PYTHON, "-u", str(GEMINI_WIKI), "--file", str(txt_path)]
     try:
-        subprocess.Popen(cmd, stdout=open(log_path, "a"), stderr=subprocess.STDOUT)
+        subprocess.Popen(cmd, stdout=open(log_path, "a", encoding="utf-8"),
+                         stderr=subprocess.STDOUT,
+                         env={**os.environ, "PYTHONUTF8": "1"})   # 윈도우 cp949 이모지 크래시 방지
         append_log(f"Wiki 트리거({'챕터auto' if CHAPTER_WIKI.exists() else 'gemini'}): {Path(txt_path).name}")
         return True
     except Exception as e:
@@ -941,6 +944,50 @@ def open_path(p: Path, reveal: bool = False):
             os.startfile(str(p))
     except Exception as e:
         append_log(f"WARN: 파일 열기 실패 ({type(e).__name__}) {str(e)[:120]}")
+
+
+def _obsidian_config() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "obsidian" / "obsidian.json"
+    return Path(os.environ.get("APPDATA", "")) / "obsidian" / "obsidian.json"
+
+
+def ensure_obsidian_vault(folder: Path) -> bool:
+    """folder를 옵시디언 금고 목록에 등록(이미 있으면 그대로). (2026-06-11)"""
+    cfgf = _obsidian_config()
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        data = json.loads(cfgf.read_text(encoding="utf-8")) if cfgf.exists() else {}
+        vaults = data.setdefault("vaults", {})
+        for v in vaults.values():
+            try:
+                if Path(v.get("path", "")).resolve() == folder.resolve():
+                    return True
+            except Exception:
+                continue
+        import secrets
+        vaults[secrets.token_hex(8)] = {"path": str(folder.resolve()),
+                                        "ts": int(datetime.now().timestamp() * 1000)}
+        cfgf.parent.mkdir(parents=True, exist_ok=True)
+        cfgf.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        return True
+    except Exception as e:
+        append_log(f"WARN: 옵시디언 금고 등록 실패 ({type(e).__name__}) {str(e)[:120]}")
+        return False
+
+
+def open_wiki_vault():
+    """위키 폴더를 옵시디언 금고로 등록 후 옵시디언으로 열기. 실패 시 폴더라도 연다."""
+    ensure_obsidian_vault(WIKI_DIR)
+    from urllib.parse import quote
+    uri = "obsidian://open?path=" + quote(str(WIKI_DIR.resolve()))
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", uri])
+        else:
+            os.startfile(uri)
+    except Exception:
+        open_path(WIKI_DIR)
 
 
 def notify(msg: str, title: str = "My Bookshelf"):
@@ -1646,6 +1693,9 @@ with tab_history:
 
 # ── 탭 3: Wiki 목록 ───────────────────────────────────────
 with tab_wiki:
+    if st.button("📓 옵시디언에서 위키 금고 열기", key="open_obsidian_vault"):
+        open_wiki_vault()
+        st.caption("⚠️ 옵시디언이 이미 실행 중이었다면 금고가 바로 안 보일 수 있습니다 — 옵시디언을 껐다 켜 주세요.")
     st.caption("ℹ️ 표에서 행을 클릭하면 아래에 Wiki 본문이 표시됩니다.")
     wiki_files = sorted(WIKI_DIR.rglob("*.md"), key=lambda x: x.stat().st_mtime, reverse=True)
     wiki_rows = []
