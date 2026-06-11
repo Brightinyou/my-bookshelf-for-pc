@@ -20,7 +20,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.2.17"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.2.18"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -251,7 +251,10 @@ def is_english(txt_path: Path, threshold: float = 0.3) -> bool:
 _TRANSLATE_SYSTEM = (
     "You are a professional theological translator (English → Korean). "
     "Translate the user's text into Korean. "
-    "Preserve proper nouns, technical terms, and scripture references as-is. "
+    "Proper nouns (personal names, place names): on FIRST mention write the Korean "
+    "transliteration followed by the original in parentheses, e.g. 알브레히트 딜레(Albrecht Dihle); "
+    "if a name is listed below as already introduced, write the Korean form ONLY. "
+    "Preserve technical terms and scripture references as-is. "
     "Use ONLY plain declarative academic Korean (평서체/하다체): "
     "endings such as -다, -이다, -한다, -였다, -이었다. "
     "DO NOT use any polite/honorific forms — never use -습니다, -입니다, "
@@ -355,14 +358,20 @@ def _split_paragraphs_robust(text_raw: str, target_chunk: int = 1500, min_para: 
     return chunks if chunks else primary  # 정말 아무것도 안 잡히면 1차 반환
 
 
-def translate(text: str, engine: str) -> str | None:
-    """단락 하나를 'provider:model' 엔진으로 영→한 번역. 실패 시 None(영어 유지)."""
+def translate(text: str, engine: str, glossary: dict | None = None) -> str | None:
+    """단락 하나를 'provider:model' 엔진으로 영→한 번역. 실패 시 None(영어 유지).
+    glossary: 앞 단락들에서 이미 소개된 고유명사 {원어: 한글} — 한글만 쓰게 지시."""
     global _translate_error_logged
     if not engine or ":" not in engine:
         return None
     provider, model = engine.split(":", 1)
+    sys_prompt = _TRANSLATE_SYSTEM
+    if glossary:
+        # 이미 소개된 고유명사 — 한글만 쓰게 지시 (최근 80개로 제한해 프롬프트 비대 방지)
+        _pairs = "; ".join(f"{en} = {ko}" for en, ko in list(glossary.items())[-80:])
+        sys_prompt += " Already-introduced proper nouns (Korean only, no parentheses): " + _pairs
     try:
-        out = llm.complete(provider, model, _TRANSLATE_SYSTEM, text, max_tokens=8192)
+        out = llm.complete(provider, model, sys_prompt, text, max_tokens=8192)
         return out.strip() or None
     except Exception as e:
         if not _translate_error_logged:
@@ -668,7 +677,9 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
                     append_log(f"♻️ cross-ws 캐시 합침: {txt_path.stem} +{_added}건")
                     st.caption(f"♻️ 다른 워크스페이스 캐시 {_added}건 추가 합침")
 
-            _tr_fn = lambda p, _e=translate_engine: translate(p, _e)
+            # 고유명사 용어집 — 단락이 진행되며 누적, 이후 단락엔 한글만 쓰게 전달 (2026-06-11)
+            _name_glossary: dict[str, str] = {}
+            _tr_fn = lambda p, _e=translate_engine, _g=_name_glossary: translate(p, _e, _g)
             _tr_label = engine_label(translate_engine)
             skip_section_idxs = find_skip_section_paragraphs(paragraphs)
             skip_individual_idxs = {i for i, p in enumerate(paragraphs) if should_skip_translation(p)}
@@ -716,6 +727,10 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
                     else:
                         cache_hits += 1
                     if ko:
+                        # 번역 결과에서 '한글명(원어)' 패턴 수집 → 이후 단락은 한글만
+                        for _ko_n, _en_n in _re.findall(
+                                r"([가-힣]{2,}(?:[·\s][가-힣]{2,}){0,4})\(([A-Za-z][A-Za-z .'\-]{1,40})\)", ko):
+                            _name_glossary.setdefault(_en_n.strip(), _ko_n.strip())
                         bilingual.append(f"[EN]\n{para}\n\n[KO]\n{ko}")
                         consecutive_fail = 0
                     else:
