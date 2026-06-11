@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import unicodedata
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +22,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.3.1"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.3.2"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -77,6 +79,39 @@ def md_dir(base: Path, ws_name: str) -> Path:
 def translated_dir(base: Path, ws_name: str) -> Path:
     """bilingual.txt를 두는 폴더. done/<ws>/_translated/. (2026-05-18 통합)"""
     return base / ws_name / TRANS_SUB
+
+def _nfc(s: str) -> str:
+    """맥 파일명은 NFD라 비교 전 NFC 정규화 필수 (한글)."""
+    return unicodedata.normalize("NFC", s)
+
+
+_PROC_STEMS_CACHE: dict = {"t": 0.0, "stems": set()}
+
+
+def processed_stems(max_age: float = 60.0) -> set[str]:
+    """이미 처리된 파일의 NFC stem 집합 — done 폴더 산출물 + 위키 완료 기록.
+    업로드 중복 건너뛰기용. 대량 배치 중 파일마다 rglob하지 않게 60초 캐시. (v0.3.2)"""
+    now = time.time()
+    if now - _PROC_STEMS_CACHE["t"] < max_age and _PROC_STEMS_CACHE["stems"]:
+        return _PROC_STEMS_CACHE["stems"]
+    stems: set[str] = set()
+    try:
+        if DONE_DIR.exists():
+            for p in DONE_DIR.rglob("*"):
+                if p.is_file() and p.suffix.lower() in {".pdf", ".txt", ".md", ".docx", ".doc"}:
+                    stems.add(_nfc(p.stem))
+        gd = cfg.GEMINI_DONE_FILE
+        if gd.exists():
+            for line in gd.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = line.strip()
+                if line:
+                    stems.add(_nfc(Path(line).stem))
+    except Exception as e:
+        append_log(f"WARN: processed_stems 수집 실패 ({type(e).__name__}) {str(e)[:120]}")
+    _PROC_STEMS_CACHE["t"] = now
+    _PROC_STEMS_CACHE["stems"] = stems
+    return stems
+
 
 def _bilingual_candidates(stem: str, exclude_ws: str | None = None) -> list[Path]:
     """모든 워크스페이스에서 같은 stem의 bilingual.txt 후보 경로 수집. (2026-05-18 cross-ws resume)"""
@@ -602,8 +637,24 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
                          force_reembed, defer_embed):
     """실제 처리 본문."""
     st.subheader(f"📄 {uf.name}")
-    check_name = Path(uf.name).stem + ".txt" if uf.name.lower().endswith(".pdf") else uf.name
-    # 중복 검사 생략 (AnythingLLM 제거) — Gemini 노트는 동일 파일명 덮어쓰기
+
+    # ── 이미 처리된 파일 건너뛰기 (2026-06-11 v0.3.2) ──
+    # done 폴더 산출물·위키 완료 기록과 stem(NFC) 대조. 토글 끄면 강제 재처리.
+    if st.session_state.get("skip_processed_flag", True) \
+            and _nfc(Path(uf.name).stem) in processed_stems():
+        st.info("⏭️ **이미 처리된 파일** — 건너뜁니다. 재처리하려면 '이미 처리된 파일 건너뛰기' 토글을 끄세요.")
+        append_log(f"건너뜀(이미 처리됨): {uf.name}")
+        _src = getattr(uf, "_p", None)
+        if _src is not None:                       # 재시도 대기열이면 큐에서 제거
+            try:
+                Path(_src).unlink()
+            except Exception:
+                pass
+        _stages = {"ocr": "skip", "txt": "skip", "md": "skip",
+                   "bilingual": "skip", "anythingllm": "skip", "wiki": "skip"}
+        return {"name": uf.name, "ok": True, "ws": ws_name, "stages": _stages,
+                "pdf_path": "", "txt_path": "", "md_path": "", "bilingual_path": "",
+                "skipped": True}
 
     dest = UPLOAD_TMP / uf.name
     # 재시도 파일은 이미 UPLOAD_TMP에 있음 — 자기 자신에 덮어쓰면 open("wb")가
@@ -1455,6 +1506,16 @@ with tab_upload:
                 st.caption("ℹ️ Claude 구독(CLI)로 호출 — 주간 한도가 차감됩니다.")
     else:
         translate_engine = None
+
+    # ── 이미 처리된 파일 건너뛰기 토글 (2026-06-11 v0.3.2) ──
+    _skip_proc = st.toggle(
+        "⏭️ 이미 처리된 파일 건너뛰기",
+        value=bool(llm.get_pref("skip_processed", True)),
+        help="완료 폴더 산출물·위키 기록과 파일명을 대조해 이미 처리한 파일은 OCR·위키를 다시 돌리지 않습니다. "
+             "끄면 같은 파일도 강제로 재처리합니다(노트는 같은 이름으로 덮어씀).",
+    )
+    llm.set_pref("skip_processed", bool(_skip_proc))
+    st.session_state["skip_processed_flag"] = bool(_skip_proc)
 
     # ── 위키 저장 금고 선택 (2026-06-11) — 이번 업로드의 노트가 들어갈 곳 ──
     _vault_opts = [str(WIKI_DIR)]
