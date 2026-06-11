@@ -20,7 +20,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.2.9"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.2.10"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -100,7 +100,7 @@ def _bilingual_candidates(stem: str, exclude_ws: str | None = None) -> list[Path
 
 def _ko_block_count(p: Path) -> int:
     try:
-        return p.read_text(errors="ignore").count("\n\n[KO]\n")
+        return p.read_text(encoding="utf-8", errors="ignore").count("\n\n[KO]\n")
     except Exception:
         return 0
 
@@ -120,7 +120,7 @@ def collect_cross_ws_cache(stem: str, exclude_ws: str) -> dict:
     cache: dict = {}
     for p in _bilingual_candidates(stem, exclude_ws=exclude_ws):
         try:
-            for block in p.read_text(errors="ignore").split("\n\n---\n\n"):
+            for block in p.read_text(encoding="utf-8", errors="ignore").split("\n\n---\n\n"):
                 block = block.strip()
                 if not block.startswith("[EN]") or "\n\n[KO]\n" not in block:
                     continue
@@ -238,7 +238,7 @@ def pdf_to_txt(pdf_path: Path) -> tuple[Path | None, Path | None, str]:
 
 def is_english(txt_path: Path, threshold: float = 0.3) -> bool:
     """한글 비율이 threshold 미만이면 영문 문서로 판단."""
-    sample = txt_path.read_text(errors="ignore")[:3000]
+    sample = txt_path.read_text(encoding="utf-8", errors="ignore")[:3000]
     korean = sum(1 for c in sample if "가" <= c <= "힣")
     return (korean / max(len(sample), 1)) < threshold
 
@@ -432,9 +432,9 @@ def check_wiki_orphans() -> dict:
     }
 
 
-def append_log(msg: str):
+def append_log(msg: str):   # encoding 미지정이면 윈도우 cp949 → 이모지에서 크래시 (2026-06-11)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(LOG_FILE, "a") as f:
+    with open(LOG_FILE, "a", encoding="utf-8", errors="replace") as f:
         f.write(f"[{ts}] {msg}\n")
 
 
@@ -598,7 +598,7 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
             st.caption(f"🔍 언어 감지: {'영어 → 번역 진행' if _is_en else '한국어 → 번역 스킵'}")
 
         if will_translate:
-            text_raw = txt_path.read_text(errors="ignore")
+            text_raw = txt_path.read_text(encoding="utf-8", errors="ignore")
             paragraphs = _split_paragraphs_robust(text_raw)
             if len(paragraphs) < 5:
                 st.warning(f"⚠️ 단락 분할 결과가 {len(paragraphs)}개에 그쳤습니다 (원본 {len(text_raw)}자).")
@@ -622,7 +622,7 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
 
             cached: dict = {}
             if bilingual_path.exists():
-                for block in bilingual_path.read_text(errors="ignore").split("\n\n---\n\n"):
+                for block in bilingual_path.read_text(encoding="utf-8", errors="ignore").split("\n\n---\n\n"):
                     block = block.strip()
                     if not block.startswith("[EN]") or "\n\n[KO]\n" not in block: continue
                     en_part, ko_part = block.split("\n\n[KO]\n", 1)
@@ -927,7 +927,7 @@ def save_pipeline_results(results: list):
 def read_log(n: int = 20) -> list:
     if not LOG_FILE.exists():
         return []
-    return LOG_FILE.read_text(errors="ignore").splitlines()[-n:]
+    return LOG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()[-n:]
 
 
 def open_path(p: Path, reveal: bool = False):
@@ -1243,7 +1243,7 @@ with tab_status:
             for bil in tr.glob("*_bilingual.txt"):
                 age_s = _now - bil.stat().st_mtime
                 try:
-                    text = bil.read_text(errors="ignore")
+                    text = bil.read_text(encoding="utf-8", errors="ignore")
                     en = text.count("[EN]\n")
                     ko = text.count("\n\n[KO]\n")
                 except Exception:
@@ -1724,7 +1724,7 @@ with tab_wiki:
             if wc2.button("📁 폴더에서 보기", use_container_width=True, key="wiki_open_folder"):
                 open_path(wf, reveal=True)
             try:
-                content = wf.read_text(errors="ignore")
+                content = wf.read_text(encoding="utf-8", errors="ignore")
                 with st.container(height=600, border=True):
                     st.markdown(content)
             except Exception as e:
