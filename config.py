@@ -22,6 +22,7 @@ config.json 예 (모든 키 선택 사항):
 }
 """
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -61,7 +62,10 @@ BASE_DIR = _p(_cfg.get("base_dir") or "~/Documents/My Bookshelf")
 
 RAW_DIR       = _dir("raw",    BASE_DIR / "raw")
 PROCESSED_DIR = RAW_DIR / "processed"
-WIKI_DIR      = _dir("wiki",   BASE_DIR / "wiki")
+# MYBOOKSHELF_WIKI_DIR 환경변수가 있으면 그 금고로 출력(업로드별 금고 선택, 2026-06-11).
+# 앱이 위키 생성기를 띄울 때 선택 금고를 이 변수로 전달한다.
+_env_wiki = os.environ.get("MYBOOKSHELF_WIKI_DIR", "").strip()
+WIKI_DIR      = _p(_env_wiki) if _env_wiki else _dir("wiki", BASE_DIR / "wiki")
 DONE_DIR      = _dir("done",   BASE_DIR / "done")
 FAILED_DIR    = _dir("failed", BASE_DIR / "failed")
 PAUSE_DIR     = _dir("pause",  BASE_DIR / ".pause")

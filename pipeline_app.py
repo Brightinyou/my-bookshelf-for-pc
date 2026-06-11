@@ -20,7 +20,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.2.18"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.3.0"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -395,6 +395,16 @@ def wiki_generator_running() -> bool:
         return False
 
 
+def _wiki_env() -> dict:
+    """위키 생성기 자식 프로세스 환경. 업로드 탭에서 고른 금고가 있으면
+    MYBOOKSHELF_WIKI_DIR로 전달(config.py가 WIKI_DIR로 해석). (2026-06-11)"""
+    env = {**os.environ, "PYTHONUTF8": "1"}   # 윈도우 cp949에서 이모지 출력 크래시 방지
+    target = (st.session_state.get("wiki_target_dir") or "").strip()
+    if target and Path(target).expanduser().resolve() != WIKI_DIR.resolve():
+        env["MYBOOKSHELF_WIKI_DIR"] = target
+    return env
+
+
 def trigger_wiki_generation() -> int:
     """미처리 책을 Gemini 위키 생성기로 일괄 생성(--all). (2026-06-09 Gemini화)
     add_pdf/raw/processed의 *.txt 중 gemini_done에 없는 것을 처리한다."""
@@ -405,12 +415,14 @@ def trigger_wiki_generation() -> int:
         return 0
     log_path = WIKI_LOG / f"gemini_wiki_{datetime.now().strftime('%Y%m%d')}.log"
     try:
+        env = _wiki_env()
         subprocess.Popen(
             [cfg.PYTHON, "-u", str(GEMINI_WIKI), "--all"],
             stdout=open(log_path, "a", encoding="utf-8"), stderr=subprocess.STDOUT,
-            env={**os.environ, "PYTHONUTF8": "1"},   # 윈도우 cp949에서 이모지 출력 크래시 방지
+            env=env,
         )
-        append_log("Gemini Wiki 일괄 생성(--all) 트리거")
+        append_log("Gemini Wiki 일괄 생성(--all) 트리거"
+                   + (f" → 금고 {env['MYBOOKSHELF_WIKI_DIR']}" if "MYBOOKSHELF_WIKI_DIR" in env else ""))
     except Exception as e:
         append_log(f"ERROR: gemini_wiki --all Popen 실패 ({type(e).__name__}) {str(e)[:200]}")
     return 0
@@ -432,10 +444,11 @@ def trigger_gemini_wiki(txt_path: Path) -> bool:
     else:
         cmd = [cfg.PYTHON, "-u", str(GEMINI_WIKI), "--file", str(txt_path)]
     try:
+        env = _wiki_env()
         subprocess.Popen(cmd, stdout=open(log_path, "a", encoding="utf-8"),
-                         stderr=subprocess.STDOUT,
-                         env={**os.environ, "PYTHONUTF8": "1"})   # 윈도우 cp949 이모지 크래시 방지
-        append_log(f"Wiki 트리거({'챕터auto' if CHAPTER_WIKI.exists() else 'gemini'}): {Path(txt_path).name}")
+                         stderr=subprocess.STDOUT, env=env)
+        append_log(f"Wiki 트리거({'챕터auto' if CHAPTER_WIKI.exists() else 'gemini'}): {Path(txt_path).name}"
+                   + (f" → 금고 {env['MYBOOKSHELF_WIKI_DIR']}" if "MYBOOKSHELF_WIKI_DIR" in env else ""))
         return True
     except Exception as e:
         append_log(f"ERROR: gemini_wiki Popen 실패 ({type(e).__name__}) {str(e)[:200]}")
@@ -1443,6 +1456,25 @@ with tab_upload:
     else:
         translate_engine = None
 
+    # ── 위키 저장 금고 선택 (2026-06-11) — 이번 업로드의 노트가 들어갈 곳 ──
+    _vault_opts = [str(WIKI_DIR)]
+    for _v in list_obsidian_vaults():
+        if _v and str(Path(_v)) not in _vault_opts:
+            _vault_opts.append(str(Path(_v)))
+    if len(_vault_opts) > 1:
+        if "wiki_target_dir" not in st.session_state:
+            _saved_v = (llm.get_pref("wiki_target_dir") or "").strip()
+            st.session_state.wiki_target_dir = _saved_v if _saved_v in _vault_opts else _vault_opts[0]
+        st.selectbox(
+            "📓 위키 저장 금고 — 생성되는 노트가 들어갈 옵시디언 금고",
+            _vault_opts, key="wiki_target_dir",
+            help="첫 항목이 기본(⚙️ 설정의 위키 폴더), 나머지는 옵시디언에 등록된 금고들. "
+                 "여기서 고른 금고는 다음에도 기억됩니다.",
+        )
+        llm.set_pref("wiki_target_dir", st.session_state.wiki_target_dir)
+        if st.session_state.wiki_target_dir != _vault_opts[0]:
+            st.caption(f"ℹ️ 이번 생성 노트는 `{st.session_state.wiki_target_dir}` 금고로 들어갑니다.")
+
     if "uploader_key" not in st.session_state:
         st.session_state.uploader_key = 0
     if "pipeline_results" not in st.session_state:
@@ -1831,6 +1863,48 @@ with tab_wiki:
                 open_path(wf)
             if wc2.button("📁 폴더에서 보기", use_container_width=True, key="wiki_open_folder"):
                 open_path(wf, reveal=True)
+
+            # ── 다른 금고로 복사 (2026-06-11) ──
+            _other_vaults = [
+                v for v in list_obsidian_vaults()
+                if v and Path(v).expanduser().resolve() != WIKI_DIR.resolve()
+            ]
+            if _other_vaults:
+                with st.expander("📤 다른 금고로 복사"):
+                    _cp_target = st.selectbox("대상 금고", _other_vaults, key="wiki_copy_target")
+                    _cp_over = st.checkbox("이미 있으면 덮어쓰기", value=False, key="wiki_copy_overwrite")
+                    cpc1, cpc2 = st.columns(2)
+                    if cpc1.button("📤 이 노트 복사", use_container_width=True, key="wiki_copy_one"):
+                        _rel = wf.relative_to(WIKI_DIR)        # 카테고리 하위 구조 보존
+                        _dst = Path(_cp_target) / _rel
+                        if _dst.exists() and not _cp_over:
+                            st.warning(f"대상에 이미 있음: `{_dst}` — 덮어쓰려면 체크 후 다시.")
+                        else:
+                            try:
+                                _dst.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.copy2(wf, _dst)
+                                append_log(f"위키 노트 복사: {_rel} → {_cp_target}")
+                                st.success(f"복사됨: `{_dst}`")
+                            except Exception as e:
+                                st.error(f"복사 실패: {type(e).__name__} {str(e)[:150]}")
+                    if cpc2.button(f"📦 전체 {len(wiki_files)}개 복사", use_container_width=True,
+                                   key="wiki_copy_all",
+                                   help="현재 금고의 모든 노트를 카테고리 구조 그대로 대상 금고에 복사"):
+                        _ok = _skip = _err = 0
+                        for _wf2 in wiki_files:
+                            _dst = Path(_cp_target) / _wf2.relative_to(WIKI_DIR)
+                            if _dst.exists() and not _cp_over:
+                                _skip += 1
+                                continue
+                            try:
+                                _dst.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.copy2(_wf2, _dst)
+                                _ok += 1
+                            except Exception:
+                                _err += 1
+                        append_log(f"위키 노트 전체 복사 → {_cp_target}: 복사 {_ok}·건너뜀 {_skip}·실패 {_err}")
+                        st.success(f"복사 {_ok}개 · 이미 있어 건너뜀 {_skip}개"
+                                   + (f" · 실패 {_err}개" if _err else ""))
             try:
                 content = wf.read_text(encoding="utf-8", errors="ignore")
                 with st.container(height=600, border=True):
