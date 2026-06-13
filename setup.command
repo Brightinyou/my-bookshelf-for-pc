@@ -38,7 +38,7 @@ if [ ! -d .venv ]; then
 fi
 echo "📦 패키지 설치 중 — Docling이 커서 10~20분 걸릴 수 있습니다. 창을 닫지 마세요."
 .venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install -r core/requirements.txt
 
 # ── 3. pdftotext(폴백 변환기) 안내 — 없어도 Docling만으로 동작 ──
 if ! command -v pdftotext >/dev/null 2>&1; then
@@ -69,4 +69,5 @@ fi
 
 echo
 echo "🎉 설치 완료! 이제 start.command 를 더블클릭하면 앱이 열립니다."
+echo "   (고급) 내부 파이썬 파일은 core/ 폴더 안에 있습니다."
 read -n 1 -s -r -p "아무 키나 누르면 창이 닫힙니다…"

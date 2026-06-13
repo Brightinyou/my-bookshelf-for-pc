@@ -36,7 +36,7 @@ if not exist .venv (
 )
 echo [진행] 패키지 설치 중 — Docling이 커서 10~20분 걸릴 수 있습니다. 창을 닫지 마세요.
 .venv\Scripts\python -m pip install --upgrade pip
-.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m pip install -r core\requirements.txt
 if errorlevel 1 (
     echo [실패] 패키지 설치 실패 — 인터넷 연결을 확인하고 다시 실행해 주세요.
     echo 아무 키나 누르면 창이 닫힙니다.
@@ -112,6 +112,7 @@ echo [확인] 옵시디언이 이미 설치되어 있습니다.
 :done
 echo.
 echo [완료] 설치 끝! 이제 start-app.vbs 를 더블클릭하면 창 없이 앱이 열립니다.
+echo        (고급) 내부 파이썬 파일은 core\ 폴더 안에 있습니다.
 echo        (끌 때는 stop-app.bat, 오류 메시지를 봐야 할 때는 start.bat)
 echo 아무 키나 누르면 창이 닫힙니다.
 pause >nul

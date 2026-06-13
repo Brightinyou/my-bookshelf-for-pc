@@ -15,6 +15,6 @@ source .venv/bin/activate
 
 echo "📚 My Bookshelf 를 시작합니다 — 잠시 후 브라우저가 열립니다."
 echo "   끝낼 때는 이 창에서 Ctrl+C 를 누르거나 창을 닫으세요."
-exec python -m streamlit run pipeline_app.py \
+exec python -m streamlit run core/pipeline_app.py \
     --server.port 8501 \
     --browser.gatherUsageStats false

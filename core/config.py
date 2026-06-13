@@ -115,10 +115,13 @@ def find_binary(name: str, extra: tuple = ()) -> str | None:
     return None
 
 
+_PARENT = _HERE.parent   # core/ → 상위 폴더 (.venv가 여기 있을 수도 있음)
 PDFTOTEXT = find_binary("pdftotext")
 DOCLING   = find_binary("docling", extra=(
-    str(_HERE / ".venv" / "bin" / "docling"),              # 배포본: 앱 폴더 venv (맥)
-    str(_HERE / ".venv" / "Scripts" / "docling.exe"),      # 배포본: 앱 폴더 venv (윈도우)
+    str(_HERE / ".venv" / "bin" / "docling"),              # Inno Setup 설치: {app}/.venv
+    str(_HERE / ".venv" / "Scripts" / "docling.exe"),
+    str(_PARENT / ".venv" / "bin" / "docling"),            # zip 배포: root/.venv/bin/docling
+    str(_PARENT / ".venv" / "Scripts" / "docling.exe"),    # zip 배포: root/.venv (Windows)
     str(BASE_DIR / ".venv" / "bin" / "docling"),           # 옛 레이아웃 호환
 ))
 PYTHON    = sys.executable   # 보조 스크립트는 앱과 같은 인터프리터로 실행

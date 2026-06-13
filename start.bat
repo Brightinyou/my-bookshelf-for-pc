@@ -13,6 +13,6 @@ if not exist .venv\Scripts\python.exe (
 
 echo [My Bookshelf] 시작합니다 — 잠시 후 브라우저가 열립니다.
 echo 끝낼 때는 이 창에서 Ctrl+C 를 누르거나 창을 닫으세요.
-.venv\Scripts\python -m streamlit run pipeline_app.py --server.port 8501 --browser.gatherUsageStats false
+.venv\Scripts\python -m streamlit run core\pipeline_app.py --server.port 8501 --browser.gatherUsageStats false
 echo 아무 키나 누르면 창이 닫힙니다.
 pause >nul

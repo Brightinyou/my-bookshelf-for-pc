@@ -10,4 +10,4 @@ If Not fso.FileExists(dir_ & "\.venv\Scripts\python.exe") Then
     WScript.Quit
 End If
 
-sh.Run "cmd /c "".venv\Scripts\python.exe"" -m streamlit run pipeline_app.py --server.port 8501 --browser.gatherUsageStats false", 0, False
+sh.Run "cmd /c "".venv\Scripts\python.exe"" -m streamlit run core\pipeline_app.py --server.port 8501 --browser.gatherUsageStats false", 0, False
