@@ -22,7 +22,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.4.1"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.4.2"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -723,15 +723,15 @@ def set_paused(stem: str, paused: bool):
 
 # ─── 한 파일 통째 처리 함수 (Phase 1 + Phase 2, 2026-05-19 추출) ────
 def _process_file_for_pipeline(uf, ws_name, ws_slug, do_translate, translate_engine,
-                                force_reembed, defer_embed, placeholder):
+                                force_reembed, defer_embed, placeholder, do_wiki=True):
     """한 파일 Phase 1+2 통째 처리. UI는 placeholder.container() 안에서.
     result dict 반환. 워커 스레드에서도 안전 (placeholder 격리)."""
     with placeholder.container():
         return _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
-                                    force_reembed, defer_embed)
+                                    force_reembed, defer_embed, do_wiki=do_wiki)
 
 def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
-                         force_reembed, defer_embed):
+                         force_reembed, defer_embed, do_wiki=True):
     """실제 처리 본문."""
     st.subheader(f"📄 {uf.name}")
 
@@ -997,7 +997,10 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
             final_txt = done_sub / _src_txt.name
             shutil.move(str(_src_txt), str(final_txt))
         # Gemini 위키 생성 (책 전문 TXT → 옵시디언 노트)
-        if final_txt and Path(final_txt).exists():
+        if not do_wiki:
+            st.write("⏭️ 위키 저장 꺼짐 — Wiki 건너뜀")
+            stages["wiki"] = "skip"
+        elif final_txt and Path(final_txt).exists():
             st.write(f"📝 **Gemini 위키 생성** · `{Path(final_txt).name}`")
             stages["wiki"] = "pending" if trigger_gemini_wiki(final_txt) else "fail"
         else:
@@ -1585,70 +1588,71 @@ with tab_status:
 
 # ── 탭 1: 업로드 ─────────────────────────────────────────
 with tab_upload:
+    force_reembed = False   # 임베드 제거(2026-06-09) — 호환용 상수
+    defer_embed   = False
+    ws_name = next(iter(WORKSPACES))
+    ws_slug = ""
+
+    # ── ① 번역 ───────────────────────────────────────────
+    st.markdown("#### ① 번역")
     do_translate = st.toggle(
-        f"🌐 번역 — 원문 자동 감지 → {LANGS[target_lang()][0]} (목표 언어는 ⚙️ 설정)",
-        value=bool(llm.get_pref("do_translate", False)),   # 마지막 선택 기억 (2026-06-11)
-        help="단락별 번역 후 [EN]/[KO] 교차 TXT 생성. 한국어 PDF는 자동 스킵. "
+        "🌐 번역",
+        value=bool(llm.get_pref("do_translate", False)),
+        help="단락별 번역 후 [EN]/[목표언어] 교차 TXT 생성. 목표 언어 문자가 이미 많으면 자동 스킵. "
              "위키는 번역 여부와 무관하게 Gemini가 한국어로 생성한다.",
     )
     llm.set_pref("do_translate", bool(do_translate))
-    force_reembed = False   # 임베드 제거(2026-06-09) — 호환용 상수
-    defer_embed   = False
-    # 워크스페이스 선택 제거(2026-06-09) — 보관 폴더는 기본값. 노트 분류는 Gemini가 카테고리로 처리.
-    ws_name = next(iter(WORKSPACES))
-    ws_slug = ""
     if do_translate:
+        _tc1, _tc2, _tc3 = st.columns([1.2, 1.5, 2.0])
+        _cur_tgt2 = target_lang()
+        _cur_region2 = next(
+            (r for r, codes in LANG_REGIONS.items() if _cur_tgt2 in codes),
+            list(LANG_REGIONS.keys())[0]
+        )
+        _sel_region2 = _tc1.selectbox(
+            "지역", list(LANG_REGIONS.keys()),
+            index=list(LANG_REGIONS.keys()).index(_cur_region2),
+            key="upload_region_sel",
+        )
+        _region_codes2 = LANG_REGIONS[_sel_region2]
+        _def_idx2 = _region_codes2.index(_cur_tgt2) if _cur_tgt2 in _region_codes2 else 0
+        _tgt_sel2 = _tc2.selectbox(
+            "목표 언어", _region_codes2, index=_def_idx2,
+            format_func=lambda c: f"→ {LANGS[c][0]}",
+            key="upload_lang_sel",
+            help="문서가 이미 목표 언어면 자동 스킵됩니다. "
+                 "라틴 문자 언어(영어·독일어 등)는 스킵 판정 불가 — 같은 언어 PDF는 번역 토글을 끄세요.",
+        )
+        if _tgt_sel2 != _cur_tgt2:
+            llm.set_pref("target_lang", _tgt_sel2)
         _opts = [(eid, lbl) for eid, lbl, av, _h in translate_engine_options() if av]
         if not _opts:
-            st.warning("⚠️ 사용 가능한 번역 엔진이 없습니다 — ⚙️ 설정 탭에서 API 키를 입력하거나 Claude CLI에 로그인하세요.")
+            _tc3.warning("⚠️ 번역 엔진 없음 — ⚙️ 설정에서 API 키 입력")
             translate_engine = None
         else:
             _lbl2id = {lbl: eid for eid, lbl in _opts}
             _labels = list(_lbl2id.keys())
             _saved_eng = llm.get_pref("translate_engine")
             _idx = next((i for i, l in enumerate(_labels) if _lbl2id[l] == _saved_eng), 0)
-            _sel = st.radio("번역 엔진", _labels, index=_idx,
-                            help="키가 등록된 공급자만 표시됩니다. ⚙️ 설정 탭에서 키를 관리하세요.")
+            _sel = _tc3.selectbox(
+                "번역 엔진", _labels, index=_idx,
+                key="upload_engine_sel",
+                help="키가 등록된 공급자만 표시됩니다. ⚙️ 설정 탭에서 키를 관리하세요.",
+            )
             translate_engine = _lbl2id[_sel]
-            llm.set_pref("translate_engine", translate_engine)   # 마지막 선택 기억
+            llm.set_pref("translate_engine", translate_engine)
             if translate_engine.startswith("claude_cli:"):
                 st.caption("ℹ️ Claude 구독(CLI)로 호출 — 주간 한도가 차감됩니다.")
     else:
         translate_engine = None
 
-    # ── 이미 처리된 파일 건너뛰기 토글 (2026-06-11 v0.3.2) ──
-    _skip_proc = st.toggle(
-        "⏭️ 이미 처리된 파일 건너뛰기",
-        value=bool(llm.get_pref("skip_processed", True)),
-        help="완료 폴더 산출물·위키 기록과 파일명을 대조해 이미 처리한 파일은 OCR·위키를 다시 돌리지 않습니다. "
-             "끄면 같은 파일도 강제로 재처리합니다(노트는 같은 이름으로 덮어씀).",
-    )
-    llm.set_pref("skip_processed", bool(_skip_proc))
-    st.session_state["skip_processed_flag"] = bool(_skip_proc)
-
-    # ── 위키 저장 금고 선택 (2026-06-11) — 이번 업로드의 노트가 들어갈 곳 ──
-    _vault_opts = [str(WIKI_DIR)]
-    for _v in list_obsidian_vaults():
-        if _v and str(Path(_v)) not in _vault_opts:
-            _vault_opts.append(str(Path(_v)))
-    if len(_vault_opts) > 1:
-        if "wiki_target_dir" not in st.session_state:
-            _saved_v = (llm.get_pref("wiki_target_dir") or "").strip()
-            st.session_state.wiki_target_dir = _saved_v if _saved_v in _vault_opts else _vault_opts[0]
-        st.selectbox(
-            "📓 위키 저장 금고 — 생성되는 노트가 들어갈 옵시디언 금고",
-            _vault_opts, key="wiki_target_dir",
-            help="첫 항목이 기본(⚙️ 설정의 위키 폴더), 나머지는 옵시디언에 등록된 금고들. "
-                 "여기서 고른 금고는 다음에도 기억됩니다.",
-        )
-        llm.set_pref("wiki_target_dir", st.session_state.wiki_target_dir)
-        if st.session_state.wiki_target_dir != _vault_opts[0]:
-            st.caption(f"ℹ️ 이번 생성 노트는 `{st.session_state.wiki_target_dir}` 금고로 들어갑니다.")
-
+    st.divider()
+    # ── ② 파일 업로드 ─────────────────────────────────────
+    st.markdown("#### ② 파일 업로드")
     if "uploader_key" not in st.session_state:
         st.session_state.uploader_key = 0
     if "pipeline_results" not in st.session_state:
-        st.session_state.pipeline_results = load_pipeline_results()
+        st.session_state.pipeline_results = []   # 새 세션은 항상 빈 결과 (이전 기록은 📁 처리기록 탭)
 
     uploaded_files = st.file_uploader(
         "PDF / DOCX / TXT / MD를 드래그하거나 클릭하여 선택",
@@ -1717,7 +1721,7 @@ with tab_upload:
                 for _i, p in enumerate(_to_run):
                     r = _process_file_for_pipeline(
                         _PathAsUpload(p), ws_name, ws_slug, do_translate, translate_engine,
-                        force_reembed, defer_embed, phs[_i],
+                        force_reembed, defer_embed, phs[_i], do_wiki=do_wiki,
                     )
                     results.append(r)
                     # 처리 끝난 파일은 UPLOAD_TMP에서 사라졌을 가능성 — 체크박스 상태도 정리
@@ -1784,7 +1788,7 @@ with tab_upload:
                     _ph = st.empty()
                     r = _process_file_for_pipeline(
                         _PathAsUpload(p), ws_name, ws_slug, do_translate, translate_engine,
-                        force_reembed, defer_embed, _ph,
+                        force_reembed, defer_embed, _ph, do_wiki=do_wiki,
                     )
                     st.session_state.pipeline_results = (
                         [r] + st.session_state.get("pipeline_results", [])
@@ -1799,6 +1803,46 @@ with tab_upload:
                     except Exception: pass
                     st.rerun()
 
+    st.divider()
+    # ── ③ 처리 옵션 ──────────────────────────────────────
+    st.markdown("#### ③ 처리 옵션")
+    _oc1, _oc2 = st.columns(2)
+    _oc1.checkbox("📄 TXT 추출 (항상 실행)", value=True, disabled=True,
+                  help="PDF·DOCX를 텍스트로 변환합니다 (기본, 해제 불가).")
+    do_wiki = _oc2.toggle(
+        "📓 위키 저장",
+        value=bool(llm.get_pref("do_wiki", True)),
+        help="처리 완료 후 Gemini가 노트를 생성합니다. 끄면 TXT/MD만 만들고 위키는 건너뜁니다.",
+    )
+    llm.set_pref("do_wiki", bool(do_wiki))
+    if do_wiki:
+        _vault_opts = [str(WIKI_DIR)]
+        for _v in list_obsidian_vaults():
+            if _v and str(Path(_v)) not in _vault_opts:
+                _vault_opts.append(str(Path(_v)))
+        if len(_vault_opts) > 1:
+            if "wiki_target_dir" not in st.session_state:
+                _saved_v = (llm.get_pref("wiki_target_dir") or "").strip()
+                st.session_state.wiki_target_dir = _saved_v if _saved_v in _vault_opts else _vault_opts[0]
+            st.selectbox(
+                "📓 위키 저장 금고",
+                _vault_opts, key="wiki_target_dir",
+                help="첫 항목이 기본(⚙️ 설정의 위키 폴더), 나머지는 옵시디언에 등록된 금고들.",
+            )
+            llm.set_pref("wiki_target_dir", st.session_state.wiki_target_dir)
+            if st.session_state.wiki_target_dir != _vault_opts[0]:
+                st.caption(f"ℹ️ 이번 생성 노트는 `{st.session_state.wiki_target_dir}` 금고로 들어갑니다.")
+    with st.expander("⚙️ 고급 설정"):
+        _skip_proc = st.toggle(
+            "⏭️ 이미 처리된 파일 건너뛰기",
+            value=bool(llm.get_pref("skip_processed", True)),
+            help="완료 폴더 산출물·위키 기록과 파일명을 대조해 이미 처리한 파일은 다시 돌리지 않습니다. "
+                 "끄면 같은 파일도 강제로 재처리합니다(노트는 같은 이름으로 덮어씀).",
+        )
+        llm.set_pref("skip_processed", bool(_skip_proc))
+        st.session_state["skip_processed_flag"] = bool(_skip_proc)
+
+    st.divider()
     # 업로드 파일 + 재시도 대기 파일 합치기 (file-like wrapper은 모듈 레벨에 정의됨)
 
     all_files = list(uploaded_files or []) + [_PathAsUpload(p) for p in retry_paths]
@@ -1826,7 +1870,7 @@ with tab_upload:
                 with _sem:
                     r = _process_file_for_pipeline(
                         uf, ws_name, ws_slug, do_translate, translate_engine,
-                        force_reembed, defer_embed, _placeholders[idx],
+                        force_reembed, defer_embed, _placeholders[idx], do_wiki=do_wiki,
                     )
                 with _results_lock:
                     results.append(r)
@@ -2029,8 +2073,27 @@ with tab_wiki:
             st.markdown(f"### 📖 {wf.stem}")
             st.caption(f"경로: `{wf}` · {wf.stat().st_size // 1024}KB")
             wc1, wc2 = st.columns(2)
-            if wc1.button("📄 파일 열기 (옵시디언/기본 앱)", use_container_width=True, key="wiki_open_file"):
-                open_path(wf)
+            _wvaults = [v for v in list_obsidian_vaults() if v]
+            _in_vault = next(
+                (v for v in _wvaults
+                 if wf.resolve().is_relative_to(Path(v).expanduser().resolve())),
+                None,
+            )
+            if _in_vault:
+                from urllib.parse import quote as _uq
+                _vname = Path(_in_vault).expanduser().resolve().name
+                _rel_wf = wf.resolve().relative_to(Path(_in_vault).expanduser().resolve())
+                _obs_uri = f"obsidian://open?vault={_uq(_vname)}&file={_uq(str(_rel_wf))}"
+                if wc1.button("📓 Obsidian에서 열기", type="primary",
+                              use_container_width=True, key="wiki_open_obsidian"):
+                    if sys.platform == "darwin":
+                        subprocess.run(["open", _obs_uri])
+                    else:
+                        import webbrowser
+                        webbrowser.open(_obs_uri)
+            else:
+                if wc1.button("📄 파일 열기", use_container_width=True, key="wiki_open_file"):
+                    open_path(wf)
             if wc2.button("📁 폴더에서 보기", use_container_width=True, key="wiki_open_folder"):
                 open_path(wf, reveal=True)
 
