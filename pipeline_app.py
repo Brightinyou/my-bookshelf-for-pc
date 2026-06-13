@@ -22,7 +22,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.4.2"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.4.3"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -235,10 +235,26 @@ def pdf_to_txt(pdf_path: Path) -> tuple[Path | None, Path | None, str]:
             _ocr_langs = (llm.get_pref("ocr_langs_mac") or "ko-KR,en-US").strip()
             ocr_args = ["--ocr-engine", "ocrmac", "--ocr-lang", _ocr_langs]
         else:
-            # 기본 PDF 백엔드(dlparse)는 윈도우에서 한글 파일명을 못 열고
-            # (Inconsistent number of pages: N!=-1) ASCII 이름이어도 std::bad_alloc로
-            # 죽는다 — pypdfium2 백엔드는 둘 다 정상 (2026-06-11 실기 확인).
+            # Windows: 스캔 PDF는 WinRT→Tesseract 라우터, 디지털 PDF는 EasyOCR via Docling.
+            # 기본 PDF 백엔드(dlparse)는 윈도우 한글 파일명·std::bad_alloc 크래시
+            # → pypdfium2 백엔드 강제 (2026-06-11 실기 확인).
             _ocr_langs = (llm.get_pref("ocr_langs_other") or "ko,en").strip()
+            _lang_code  = target_lang()
+            # 스캔 여부 감지 → WinRT/Tesseract 라우터 시도
+            try:
+                from ocr_windows import is_scanned, ocr_windows_scanned
+                if is_scanned(pdf_path, pdftotext):
+                    st.caption("🔍 스캔 PDF 감지 — WinRT/Tesseract OCR 시도 중…")
+                    _win_text, _win_err = ocr_windows_scanned(
+                        pdf_path, _lang_code, str(docling_bin), _ocr_langs
+                    )
+                    if _win_text:
+                        txt_path.write_text(_win_text, encoding="utf-8")
+                        return txt_path, None, ""
+                    elif _win_err and "EasyOCR 폴백" not in _win_err:
+                        st.caption(f"⚠️ WinRT/Tesseract 실패 ({_win_err[:80]}) — EasyOCR로 폴백")
+            except Exception as _we:
+                st.caption(f"⚠️ OCR 라우터 오류 ({type(_we).__name__}) — EasyOCR로 폴백")
             ocr_args = ["--ocr-engine", "easyocr", "--ocr-lang", _ocr_langs,
                         "--pdf-backend", "pypdfium2"]
         # 이전 실행이 남긴 같은 이름 MD가 있으면 제거 — 변환 실패를 잔재가
@@ -1596,10 +1612,11 @@ with tab_upload:
     # ── ① 번역 ───────────────────────────────────────────
     st.markdown("#### ① 번역")
     do_translate = st.toggle(
-        "🌐 번역",
+        f"🌐 번역  →  {LANGS[target_lang()][0]}",
         value=bool(llm.get_pref("do_translate", False)),
-        help="단락별 번역 후 [EN]/[목표언어] 교차 TXT 생성. 목표 언어 문자가 이미 많으면 자동 스킵. "
-             "위키는 번역 여부와 무관하게 Gemini가 한국어로 생성한다.",
+        help="원문을 목표 언어로 번역한 파일을 함께 만듭니다. "
+             "원문이 이미 목표 언어이면 자동으로 건너뜁니다. "
+             "위키 노트는 번역 여부와 무관하게 항상 한국어로 생성됩니다.",
     )
     llm.set_pref("do_translate", bool(do_translate))
     if do_translate:
