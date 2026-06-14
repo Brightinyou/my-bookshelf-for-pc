@@ -28,7 +28,8 @@ PrivilegesRequired=lowest
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "바탕화면에 바로가기 만들기"; GroupDescription: "추가 옵션:"
+Name: "desktopicon";   Description: "바탕화면에 바로가기 만들기"; GroupDescription: "추가 옵션:"
+Name: "uninstallicon"; Description: "바탕화면에 제거 바로가기 만들기"; GroupDescription: "추가 옵션:"
 
 [Files]
 ; ── 앱 핵심 파일 (core/) ──────────────────────────────────
@@ -48,7 +49,8 @@ Source: "stop-app.bat";            DestDir: "{app}"; Flags: ignoreversion
 Name: "{userprograms}\{#MyAppName}\{#MyAppName} 시작";    Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"
 Name: "{userprograms}\{#MyAppName}\{#MyAppName} 종료";    Filename: "{app}\stop-app.bat"; WorkingDir: "{app}"
 Name: "{userprograms}\{#MyAppName}\프로그램 제거";         Filename: "{uninstallexe}"
-Name: "{userdesktop}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{userdesktop}\{#MyAppName}";        Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{userdesktop}\{#MyAppName} 제거"; Filename: "{uninstallexe}"; Tasks: uninstallicon
 
 [Run]
 ; 패키지 설치 (pip — 10~20분 소요, 진행 창 표시)
@@ -64,8 +66,14 @@ Filename: "{sys}\wscript.exe"; \
     Flags: nowait postinstall skipifsilent; \
     Description: "지금 My Bookshelf 시작"
 
+[UninstallDelete]
+; pip으로 설치된 패키지(.venv) 및 앱 생성 파일 완전 제거
+Type: filesandordirs; Name: "{app}\.venv"
+Type: filesandordirs; Name: "{app}\__pycache__"
+Type: dirifempty;     Name: "{app}"
+
 [UninstallRun]
-; 제거 시 실행 중인 앱 종료
+; 제거 전 실행 중인 앱 종료
 Filename: "powershell.exe"; \
     Parameters: "-NoProfile -Command ""Get-Process python -ErrorAction SilentlyContinue | Where-Object {{ $_.MainWindowTitle -eq '' }} | Stop-Process -Force"""; \
     Flags: runhidden
