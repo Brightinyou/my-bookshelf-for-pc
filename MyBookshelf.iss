@@ -45,9 +45,9 @@ Source: "start.bat";               DestDir: "{app}"; Flags: ignoreversion
 Source: "stop-app.bat";            DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName} 시작";    Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"
-Name: "{group}\{#MyAppName} 종료";    Filename: "{app}\stop-app.bat"; WorkingDir: "{app}"
-Name: "{group}\프로그램 제거";         Filename: "{uninstallexe}"
+Name: "{userprograms}\{#MyAppName}\{#MyAppName} 시작";    Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"
+Name: "{userprograms}\{#MyAppName}\{#MyAppName} 종료";    Filename: "{app}\stop-app.bat"; WorkingDir: "{app}"
+Name: "{userprograms}\{#MyAppName}\프로그램 제거";         Filename: "{uninstallexe}"
 Name: "{userdesktop}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
