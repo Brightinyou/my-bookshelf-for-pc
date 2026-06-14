@@ -28,7 +28,7 @@ PrivilegesRequired=lowest
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "바탕화면에 바로가기 만들기"; GroupDescription: "추가 옵션:"; Flags: checked
+Name: "desktopicon"; Description: "바탕화면에 바로가기 만들기"; GroupDescription: "추가 옵션:"
 
 [Files]
 ; ── 앱 핵심 파일 (core/) ──────────────────────────────────
