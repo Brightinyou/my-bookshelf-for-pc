@@ -309,122 +309,43 @@ def pdf_to_txt(pdf_path: Path) -> tuple[Path | None, Path | None, str]:
     return txt_path, md_path_out, ""
 
 
-# ── 다국어 번역 (2026-06-13 v0.4.0) ──────────────────────────
-# 원문 언어는 LLM이 자동 감지. 목표 언어만 설정탭에서 고른다(기본 한국어).
-# script_re가 있는 언어는 "문서가 이미 목표 언어인지"를 문자 비율로 판정해 번역을 건너뛴다.
-# 라틴 문자 언어(en·de·fr 등)는 문자만으로 구별 불가 → 항상 번역 시도(원문=목표어면 낭비지만 무해).
-# fmt: (한국어명, English name, Unicode script regex | None)
-LANGS: dict[str, tuple[str, str, str | None]] = {
-    # ── 동아시아 ──────────────────────────────────
-    "ko":    ("한국어",                   "Korean",              r"[가-힣]"),
-    "zh":    ("중국어 (간체)",             "Simplified Chinese",  r"[一-鿿]"),
-    "zh-tw": ("중국어 (번체)",             "Traditional Chinese", r"[一-鿿]"),
-    "ja":    ("일본어",                   "Japanese",            r"[぀-ヿ]"),
-    "mn":    ("몽골어",                   "Mongolian",           r"[᠀-᢯]"),
-    # ── 동남아시아 ────────────────────────────────
-    "th":    ("태국어",                   "Thai",                r"[฀-๿]"),
-    "km":    ("크메르어 (캄보디아)",        "Khmer",               r"[ក-៿]"),
-    "vi":    ("베트남어",                 "Vietnamese",          None),
-    "id":    ("인도네시아어",              "Indonesian",          None),
-    "ms":    ("말레이어",                 "Malay",               None),
-    "tl":    ("타갈로그어 (필리핀)",       "Filipino/Tagalog",    None),
-    "my":    ("미얀마어",                 "Burmese/Myanmar",     r"[က-႟]"),
-    "lo":    ("라오어",                   "Lao",                 r"[຀-໿]"),
-    # ── 남아시아 ──────────────────────────────────
-    "hi":    ("힌디어",                   "Hindi",               r"[ऀ-ॿ]"),
-    "ne":    ("네팔어",                   "Nepali",              r"[ऀ-ॿ]"),
-    "bn":    ("벵골어 (방글라데시)",       "Bengali",             r"[ঀ-৿]"),
-    "si":    ("싱할라어 (스리랑카)",       "Sinhala",             r"[඀-෿]"),
-    "ur":    ("우르두어 (파키스탄)",       "Urdu",                r"[؀-ۿ]"),
-    # ── 중앙아시아 · 러시아 ───────────────────────
-    "ru":    ("러시아어",                 "Russian",             r"[Ѐ-ӿ]"),
-    "kk":    ("카자흐어",                 "Kazakh",              None),
-    "uz":    ("우즈베크어",               "Uzbek",               None),
-    "ky":    ("키르기스어",               "Kyrgyz",              None),
-    "tg":    ("타지크어",                 "Tajik",               None),
-    # ── 중동 ──────────────────────────────────────
-    "ar":    ("아랍어",                   "Arabic",              r"[؀-ۿ]"),
-    "fa":    ("페르시아어 (이란)",         "Persian/Farsi",       r"[؀-ۿ]"),
-    "tr":    ("터키어",                   "Turkish",             None),
-    "he":    ("히브리어",                 "Hebrew",              r"[֐-׿]"),
-    "ku":    ("쿠르드어",                 "Kurdish",             None),
-    # ── 아프리카 ──────────────────────────────────
-    "am":    ("암하라어 (에티오피아)",     "Amharic",             r"[ሀ-፿]"),
-    "ti":    ("티그리냐어 (에리트레아)",   "Tigrinya",            r"[ሀ-፿]"),
-    "sw":    ("스와힐리어",               "Swahili",             None),
-    "ha":    ("하우사어 (나이지리아)",     "Hausa",               None),
-    "yo":    ("요루바어 (나이지리아)",     "Yoruba",              None),
-    "ig":    ("이그보어 (나이지리아)",     "Igbo",                None),
-    "so":    ("소말리아어",               "Somali",              None),
-    "mg":    ("말라가시어 (마다가스카르)", "Malagasy",            None),
-    # ── 서방 · 유럽 ───────────────────────────────
-    "en":    ("영어",                     "English",             None),
-    "de":    ("독일어",                   "German",              None),
-    "fr":    ("프랑스어",                 "French",              None),
-    "es":    ("스페인어",                 "Spanish",             None),
-    "pt":    ("포르투갈어",               "Portuguese",          None),
-    "nl":    ("네덜란드어",               "Dutch",               None),
-}
-
-# 지역별 언어 그룹 (설정 UI 2단계 선택용)
-LANG_REGIONS: dict[str, list[str]] = {
-    "🌏 동아시아":          ["ko", "zh", "zh-tw", "ja", "mn"],
-    "🌴 동남아시아":        ["th", "km", "vi", "id", "ms", "tl", "my", "lo"],
-    "🕌 남아시아":          ["hi", "ne", "bn", "si", "ur"],
-    "🏔 중앙아시아·러시아":  ["ru", "kk", "uz", "ky", "tg"],
-    "☪️ 중동":              ["ar", "fa", "tr", "he", "ku"],
-    "🌍 아프리카":          ["am", "ti", "sw", "ha", "yo", "ig", "so", "mg"],
-    "🌎 서방·유럽":         ["en", "de", "fr", "es", "pt", "nl"],
-}
+# ── 번역: 영어→한국어 고정 ────────────────────────────────
+_KO_SCRIPT = _re.compile(r"[가-힣]")
 
 
 def target_lang() -> str:
-    code = (llm.get_pref("target_lang") or "ko").strip()
-    return code if code in LANGS else "ko"
+    return "ko"
 
 
 def needs_translation(txt_path: Path, threshold: float = 0.3) -> bool:
-    """문서가 목표 언어 문자로 threshold 이상이면 이미 목표 언어로 보고 번역 스킵."""
-    script = LANGS[target_lang()][2]
-    if not script:
-        return True   # 라틴계 목표 언어: 문자 비율로 판정 불가 → 번역 시도
+    """한글 비율이 낮으면 번역 필요로 판단."""
     sample = txt_path.read_text(encoding="utf-8", errors="ignore")[:3000]
-    hits = len(_re.findall(script, sample))
-    return (hits / max(len(sample), 1)) < threshold
+    ko_ratio = len(_KO_SCRIPT.findall(sample)) / max(len(sample), 1)
+    return ko_ratio < threshold
 
 
 def is_english(txt_path: Path, threshold: float = 0.3) -> bool:
-    """(구버전 호환) 목표 언어 기준 번역 필요 여부."""
     return needs_translation(txt_path, threshold)
 
 
-def build_translate_system(code: str) -> str:
-    """목표 언어별 번역 시스템 프롬프트. 한국어일 때만 평서체 규칙 추가."""
-    _, en_name, _ = LANGS[code]
-    p = (
-        f"You are a professional theological/academic translator. "
-        f"Detect the source language automatically and translate the user's text into {en_name}. "
-        f"Proper nouns (personal names, place names): on FIRST mention write the {en_name} "
-        f"rendering followed by the original in parentheses; "
-        f"if a name is listed below as already introduced, write the {en_name} form ONLY. "
+def build_translate_system() -> str:
+    """한국어 번역 시스템 프롬프트."""
+    return (
+        "You are a professional theological/academic translator. "
+        "Detect the source language automatically and translate the user's text into Korean. "
+        "Proper nouns (personal names, place names): on FIRST mention write the Korean "
+        "rendering followed by the original in parentheses; "
+        "if a name is listed below as already introduced, write the Korean form ONLY. "
         "Preserve technical terms and scripture references as-is. "
-    )
-    if code == "ko":
-        p += (
-            "Use ONLY plain declarative academic Korean (평서체/하다체): "
-            "endings such as -다, -이다, -한다, -였다, -이었다. "
-            "DO NOT use any polite/honorific forms — never use -습니다, -입니다, "
-            "-해요, -이에요, -지요, -군요, -네요, or any other -요/-니다 endings. "
-        )
-    else:
-        p += f"Use a formal academic register appropriate for scholarly prose in {en_name}. "
-    p += (
+        "Use ONLY plain declarative academic Korean (평서체/하다체): "
+        "endings such as -다, -이다, -한다, -였다, -이었다. "
+        "DO NOT use any polite/honorific forms — never use -습니다, -입니다, "
+        "-해요, -이에요, -지요, -군요, -네요, or any other -요/-니다 endings. "
         "The text may be an incomplete fragment cut mid-sentence (PDF page breaks): "
         "translate it as-is anyway — NEVER comment on it, NEVER ask for more context, "
         "NEVER say the text is incomplete. "
-        f"Output ONLY the {en_name} translation, nothing else."
+        "Output ONLY the Korean translation, nothing else."
     )
-    return p
 
 # 번역 엔진 ID (UI 라디오와 1:1)
 # 번역 엔진 id = "provider:model". 공급자는 llm_providers.PROVIDERS + Claude CLI(구독).
@@ -526,7 +447,7 @@ def translate(text: str, engine: str, glossary: dict | None = None) -> str | Non
     if not engine or ":" not in engine:
         return None
     provider, model = engine.split(":", 1)
-    sys_prompt = build_translate_system(target_lang())
+    sys_prompt = build_translate_system()
     if glossary:
         # 이미 소개된 고유명사 — 목표 언어 표기만 쓰게 지시 (최근 80개 제한)
         _pairs = "; ".join(f"{en} = {ko}" for en, ko in list(glossary.items())[-80:])
@@ -820,7 +741,7 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
         _is_en = (txt_path is not None and txt_path.exists() and needs_translation(txt_path))
         will_translate = do_translate and success and _is_en
         if do_translate and success and txt_path and txt_path.exists():
-            _tgt_name = LANGS[target_lang()][0]
+            _tgt_name = "한국어"
             st.caption(f"🔍 언어 감지: {f'외국어 → {_tgt_name} 번역 진행' if _is_en else f'이미 {_tgt_name} → 번역 스킵'}")
 
         if will_translate:
@@ -1229,15 +1150,11 @@ _SKIP_SECTION_NAMES = {
 
 
 def _paragraph_already_target(paragraph: str, threshold: float = 0.6) -> bool:
-    """단락 문자의 threshold 이상이 이미 목표 언어 스크립트면 True (API 호출 불필요).
-    라틴계 목표 언어(영·불·독 등)는 소스 언어와 구분이 어려우므로 항상 False."""
-    script = LANGS[target_lang()][2]
-    if not script:
-        return False
+    """단락에 한글 비율이 threshold 이상이면 이미 번역된 것으로 간주."""
     p = paragraph.strip()
     if not p:
         return False
-    hits = len(_re.findall(script, p))
+    hits = len(_KO_SCRIPT.findall(p))
     return (hits / max(len(p), 1)) >= threshold
 
 
@@ -1810,46 +1727,23 @@ with tab_upload:
     # ── ① 번역 ───────────────────────────────────────────
     st.markdown("#### ① 번역")
     do_translate = st.toggle(
-        f"🌐 번역  →  {LANGS[target_lang()][0]}",
+        "🌐 번역  →  한국어",
         value=bool(llm.get_pref("do_translate", False)),
-        help="원문을 목표 언어로 번역한 파일을 함께 만듭니다. "
-             "원문이 이미 목표 언어이면 자동으로 건너뜁니다. "
-             "위키 노트는 번역 여부와 무관하게 항상 한국어로 생성됩니다.",
+        help="원문을 한국어로 번역한 파일을 함께 만듭니다. "
+             "원문이 이미 한국어이면 자동으로 건너뜁니다.",
     )
     llm.set_pref("do_translate", bool(do_translate))
     if do_translate:
-        _tc1, _tc2, _tc3 = st.columns([1.2, 1.5, 2.0])
-        _cur_tgt2 = target_lang()
-        _cur_region2 = next(
-            (r for r, codes in LANG_REGIONS.items() if _cur_tgt2 in codes),
-            list(LANG_REGIONS.keys())[0]
-        )
-        _sel_region2 = _tc1.selectbox(
-            "지역", list(LANG_REGIONS.keys()),
-            index=list(LANG_REGIONS.keys()).index(_cur_region2),
-            key="upload_region_sel",
-        )
-        _region_codes2 = LANG_REGIONS[_sel_region2]
-        _def_idx2 = _region_codes2.index(_cur_tgt2) if _cur_tgt2 in _region_codes2 else 0
-        _tgt_sel2 = _tc2.selectbox(
-            "목표 언어", _region_codes2, index=_def_idx2,
-            format_func=lambda c: f"→ {LANGS[c][0]}",
-            key="upload_lang_sel",
-            help="문서가 이미 목표 언어면 자동 스킵됩니다. "
-                 "라틴 문자 언어(영어·독일어 등)는 스킵 판정 불가 — 같은 언어 PDF는 번역 토글을 끄세요.",
-        )
-        if _tgt_sel2 != _cur_tgt2:
-            llm.set_pref("target_lang", _tgt_sel2)
         _opts = [(eid, lbl) for eid, lbl, av, _h in translate_engine_options() if av]
         if not _opts:
-            _tc3.warning("⚠️ 번역 엔진 없음 — ⚙️ 설정에서 API 키 입력")
+            st.warning("⚠️ 번역 엔진 없음 — ⚙️ 설정에서 API 키 입력")
             translate_engine = None
         else:
             _lbl2id = {lbl: eid for eid, lbl in _opts}
             _labels = list(_lbl2id.keys())
             _saved_eng = llm.get_pref("translate_engine")
             _idx = next((i for i, l in enumerate(_labels) if _lbl2id[l] == _saved_eng), 0)
-            _sel = _tc3.selectbox(
+            _sel = st.selectbox(
                 "번역 엔진", _labels, index=_idx,
                 key="upload_engine_sel",
                 help="키가 등록된 공급자만 표시됩니다. ⚙️ 설정 탭에서 키를 관리하세요.",
@@ -2501,60 +2395,6 @@ with tab_settings:
         st.success(f"✅ 감지됨: `{llm.claude_cli_path()}` — 구독 로그인 상태면 키 없이 번역에 사용 가능")
     else:
         st.info("미설치. Claude Code를 설치·로그인하면 구독으로 쓸 수 있습니다. (또는 위에서 Anthropic API 키 입력)")
-
-    # ── 위키 저장 폴더(옵시디언 금고) 선택 (2026-06-11) ──
-    st.divider()
-    # ── 번역 목표 언어 + OCR 언어 (2026-06-13 v0.4.1 선교지 다국어) ──
-    st.subheader("🌍 번역 언어")
-    st.caption(
-        "원문 언어는 자동 감지됩니다. **목표 언어**만 선택하세요.  \n"
-        "예) 태국어 원서→한국어, 영어 신학서→베트남어, 크메르어 설교→한국어"
-    )
-    _cur_tgt = target_lang()
-
-    # 현재 선택 언어가 속한 지역 찾기
-    _cur_region = next(
-        (r for r, codes in LANG_REGIONS.items() if _cur_tgt in codes),
-        list(LANG_REGIONS.keys())[0]
-    )
-    _rl1, _rl2 = st.columns([1, 2])
-    _sel_region = _rl1.selectbox(
-        "지역",
-        list(LANG_REGIONS.keys()),
-        index=list(LANG_REGIONS.keys()).index(_cur_region),
-    )
-    _region_codes = LANG_REGIONS[_sel_region]
-    _def_idx = _region_codes.index(_cur_tgt) if _cur_tgt in _region_codes else 0
-    _tgt_sel = _rl2.selectbox(
-        "번역 목표 언어",
-        _region_codes,
-        index=_def_idx,
-        format_func=lambda c: f"{LANGS[c][0]}",
-        help="문서가 이미 목표 언어면 번역을 건너뜁니다. "
-             "라틴 문자 기반 언어(영어·독일어 등)는 자동 스킵 불가 — 원문이 같은 언어인 PDF는 번역 토글을 끄세요.",
-    )
-    if _tgt_sel != _cur_tgt:
-        llm.set_pref("target_lang", _tgt_sel)
-        st.success(f"목표 언어 저장: {LANGS[_tgt_sel][0]} — 다음 업로드부터 적용")
-
-    with st.expander("🔬 OCR 언어 설정 (스캔 PDF 문자인식)", expanded=False):
-        st.caption(
-            "디지털(텍스트 레이어 있는) PDF는 OCR 불필요 — 스캔 이미지 PDF일 때만 영향.  \n"
-            "**맥 Vision 언어 코드**: `th-TH`, `km-KH`, `vi-VN`, `id-ID`, `my-MM`, `hi-IN`, `ar-SA`, `ru-RU`  \n"
-            "**EasyOCR 코드**: `th`, `vi`, `id`, `ms`, `my`, `hi`, `bn`, `ar`, `ru`, `en`  \n"
-            "※ 크메르어(km)·라오어(lo)·암하라어(am) 등은 EasyOCR 미지원 — 맥(Vision)에서 처리하세요."
-        )
-        _oc1, _oc2 = st.columns(2)
-        _om = _oc1.text_input("OCR 언어 (맥, Vision 형식)",
-                              value=(llm.get_pref("ocr_langs_mac") or "ko-KR,en-US"),
-                              help="쉼표 구분. 예: th-TH,en-US")
-        _ow = _oc2.text_input("OCR 언어 (윈도우, EasyOCR 형식)",
-                              value=(llm.get_pref("ocr_langs_other") or "ko,en"),
-                              help="쉼표 구분. 예: th,en")
-        if _om.strip() and _om.strip() != (llm.get_pref("ocr_langs_mac") or "ko-KR,en-US"):
-            llm.set_pref("ocr_langs_mac", _om.strip())
-        if _ow.strip() and _ow.strip() != (llm.get_pref("ocr_langs_other") or "ko,en"):
-            llm.set_pref("ocr_langs_other", _ow.strip())
 
     st.divider()
     st.subheader("📓 위키 저장 폴더 (옵시디언 금고)")
