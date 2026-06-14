@@ -67,5 +67,5 @@ Filename: "{sys}\wscript.exe"; \
 [UninstallRun]
 ; 제거 시 실행 중인 앱 종료
 Filename: "powershell.exe"; \
-    Parameters: "-NoProfile -Command ""Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -eq '' } | Stop-Process -Force"""; \
+    Parameters: "-NoProfile -Command ""Get-Process python -ErrorAction SilentlyContinue | Where-Object {{ $_.MainWindowTitle -eq '' }} | Stop-Process -Force"""; \
     Flags: runhidden
