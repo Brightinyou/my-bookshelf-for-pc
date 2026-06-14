@@ -46,11 +46,15 @@ Source: "start.bat";               DestDir: "{app}"; Flags: ignoreversion
 Source: "stop-app.bat";            DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{userprograms}\{#MyAppName}\{#MyAppName} 시작";    Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"
-Name: "{userprograms}\{#MyAppName}\{#MyAppName} 종료";    Filename: "{app}\stop-app.bat"; WorkingDir: "{app}"
-Name: "{userprograms}\{#MyAppName}\프로그램 제거";         Filename: "{uninstallexe}"
-Name: "{userdesktop}\{#MyAppName}";        Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"
-Name: "{userdesktop}\{#MyAppName} 제거"; Filename: "{uninstallexe}"; Tasks: uninstallicon
+; 시작 메뉴 최상위 — Windows 11 "모든 앱"에서 M 항목으로 바로 보임
+Name: "{userprograms}\{#MyAppName}";          Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"
+; 시작 메뉴 서브폴더 — 종료·제거 항목
+Name: "{userprograms}\{#MyAppName} (폴더)\{#MyAppName} 시작";  Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"
+Name: "{userprograms}\{#MyAppName} (폴더)\{#MyAppName} 종료";  Filename: "{app}\stop-app.bat"; WorkingDir: "{app}"
+Name: "{userprograms}\{#MyAppName} (폴더)\프로그램 제거";       Filename: "{uninstallexe}"
+; 바탕화면
+Name: "{userdesktop}\{#MyAppName}";           Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"
+Name: "{userdesktop}\{#MyAppName} 제거";      Filename: "{uninstallexe}"; Tasks: uninstallicon
 
 [Run]
 ; 패키지 설치 (pip — 10~20분 소요, 진행 창 표시)
