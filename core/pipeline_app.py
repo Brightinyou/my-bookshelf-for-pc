@@ -2265,100 +2265,97 @@ with tab_wiki:
     if st.button("📓 옵시디언에서 위키 금고 열기", key="open_obsidian_vault"):
         open_wiki_vault()
         st.caption("⚠️ 옵시디언이 이미 실행 중이었다면 금고가 바로 안 보일 수 있습니다 — 옵시디언을 껐다 켜 주세요.")
-    st.caption("ℹ️ 표에서 행을 클릭하면 아래에 Wiki 본문이 표시됩니다.")
     wiki_files = sorted(WIKI_DIR.rglob("*.md"), key=lambda x: x.stat().st_mtime, reverse=True)
-    wiki_rows = []
-    for wf in wiki_files:
-        cat = wf.parent.name
-        icon = CATEGORY_ICONS.get(cat, "📚")
-        wiki_rows.append({
-            "카테고리": f"{icon} {cat}",
-            "파일명":   wf.stem,
-            "생성 시각": datetime.fromtimestamp(wf.stat().st_mtime).strftime("%m-%d %H:%M"),
-        })
-    if wiki_rows:
-        wiki_event = st.dataframe(
-            pd.DataFrame(wiki_rows), use_container_width=True, hide_index=True,
-            on_select="rerun", selection_mode="single-row", key="wiki_list_table",
-        )
-        sel_rows = wiki_event.selection.rows if wiki_event and hasattr(wiki_event, "selection") else []
-        if sel_rows:
-            wf = wiki_files[sel_rows[0]]
-            st.divider()
-            st.markdown(f"### 📖 {wf.stem}")
-            st.caption(f"경로: `{wf}` · {wf.stat().st_size // 1024}KB")
-            wc1, wc2 = st.columns(2)
-            _wvaults = [v for v in list_obsidian_vaults() if v]
-            _in_vault = next(
-                (v for v in _wvaults
-                 if wf.resolve().is_relative_to(Path(v).expanduser().resolve())),
-                None,
-            )
-            if _in_vault:
-                from urllib.parse import quote as _uq
-                _vname = Path(_in_vault).expanduser().resolve().name
-                _rel_wf = wf.resolve().relative_to(Path(_in_vault).expanduser().resolve())
-                _obs_uri = f"obsidian://open?vault={_uq(_vname)}&file={_uq(str(_rel_wf))}"
-                if wc1.button("📓 Obsidian에서 열기", type="primary",
-                              use_container_width=True, key="wiki_open_obsidian"):
-                    if sys.platform == "darwin":
-                        subprocess.run(["open", _obs_uri])
-                    else:
-                        import webbrowser
-                        webbrowser.open(_obs_uri)
-            else:
-                if wc1.button("📄 파일 열기", use_container_width=True, key="wiki_open_file"):
-                    open_path(wf)
-            if wc2.button("📁 폴더에서 보기", use_container_width=True, key="wiki_open_folder"):
-                open_path(wf, reveal=True)
+    if wiki_files:
+        if "wiki_sel" not in st.session_state:
+            st.session_state.wiki_sel = 0
+        st.session_state.wiki_sel = min(st.session_state.wiki_sel, len(wiki_files) - 1)
 
-            # ── 다른 금고로 복사 (2026-06-11) ──
-            _other_vaults = [
-                v for v in list_obsidian_vaults()
-                if v and Path(v).expanduser().resolve() != WIKI_DIR.resolve()
-            ]
-            if _other_vaults:
-                with st.expander("📤 다른 금고로 복사"):
-                    _cp_target = st.selectbox("대상 금고", _other_vaults, key="wiki_copy_target")
-                    _cp_over = st.checkbox("이미 있으면 덮어쓰기", value=False, key="wiki_copy_overwrite")
-                    cpc1, cpc2 = st.columns(2)
-                    if cpc1.button("📤 이 노트 복사", use_container_width=True, key="wiki_copy_one"):
-                        _rel = wf.relative_to(WIKI_DIR)        # 카테고리 하위 구조 보존
-                        _dst = Path(_cp_target) / _rel
+        with st.container(height=280, border=True):
+            for _i, _wf in enumerate(wiki_files):
+                _mtime = datetime.fromtimestamp(_wf.stat().st_mtime).strftime("%m-%d %H:%M")
+                _c1, _c2 = st.columns([7, 2])
+                if _c1.button(_wf.stem, key=f"wiki_btn_{_i}", use_container_width=True,
+                              type="primary" if st.session_state.wiki_sel == _i else "secondary"):
+                    st.session_state.wiki_sel = _i
+                _c2.caption(_mtime)
+
+        wf = wiki_files[st.session_state.wiki_sel]
+        st.divider()
+        st.markdown(f"### 📖 {wf.stem}")
+        st.caption(f"경로: `{wf}` · {wf.stat().st_size // 1024}KB")
+        wc1, wc2 = st.columns(2)
+        _wvaults = [v for v in list_obsidian_vaults() if v]
+        _in_vault = next(
+            (v for v in _wvaults
+             if wf.resolve().is_relative_to(Path(v).expanduser().resolve())),
+            None,
+        )
+        if _in_vault:
+            from urllib.parse import quote as _uq
+            _vname = Path(_in_vault).expanduser().resolve().name
+            _rel_wf = wf.resolve().relative_to(Path(_in_vault).expanduser().resolve())
+            _obs_uri = f"obsidian://open?vault={_uq(_vname)}&file={_uq(str(_rel_wf))}"
+            if wc1.button("📓 Obsidian에서 열기", type="primary",
+                          use_container_width=True, key="wiki_open_obsidian"):
+                if sys.platform == "darwin":
+                    subprocess.run(["open", _obs_uri])
+                else:
+                    import webbrowser
+                    webbrowser.open(_obs_uri)
+        else:
+            if wc1.button("📄 파일 열기", use_container_width=True, key="wiki_open_file"):
+                open_path(wf)
+        if wc2.button("📁 폴더에서 보기", use_container_width=True, key="wiki_open_folder"):
+            open_path(wf, reveal=True)
+
+        # ── 다른 금고로 복사 (2026-06-11) ──
+        _other_vaults = [
+            v for v in list_obsidian_vaults()
+            if v and Path(v).expanduser().resolve() != WIKI_DIR.resolve()
+        ]
+        if _other_vaults:
+            with st.expander("📤 다른 금고로 복사"):
+                _cp_target = st.selectbox("대상 금고", _other_vaults, key="wiki_copy_target")
+                _cp_over = st.checkbox("이미 있으면 덮어쓰기", value=False, key="wiki_copy_overwrite")
+                cpc1, cpc2 = st.columns(2)
+                if cpc1.button("📤 이 노트 복사", use_container_width=True, key="wiki_copy_one"):
+                    _rel = wf.relative_to(WIKI_DIR)
+                    _dst = Path(_cp_target) / _rel
+                    if _dst.exists() and not _cp_over:
+                        st.warning(f"대상에 이미 있음: `{_dst}` — 덮어쓰려면 체크 후 다시.")
+                    else:
+                        try:
+                            _dst.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(wf, _dst)
+                            append_log(f"위키 노트 복사: {_rel} → {_cp_target}")
+                            st.success(f"복사됨: `{_dst}`")
+                        except Exception as e:
+                            st.error(f"복사 실패: {type(e).__name__} {str(e)[:150]}")
+                if cpc2.button(f"📦 전체 {len(wiki_files)}개 복사", use_container_width=True,
+                               key="wiki_copy_all",
+                               help="현재 금고의 모든 노트를 카테고리 구조 그대로 대상 금고에 복사"):
+                    _ok = _skip = _err = 0
+                    for _wf2 in wiki_files:
+                        _dst = Path(_cp_target) / _wf2.relative_to(WIKI_DIR)
                         if _dst.exists() and not _cp_over:
-                            st.warning(f"대상에 이미 있음: `{_dst}` — 덮어쓰려면 체크 후 다시.")
-                        else:
-                            try:
-                                _dst.parent.mkdir(parents=True, exist_ok=True)
-                                shutil.copy2(wf, _dst)
-                                append_log(f"위키 노트 복사: {_rel} → {_cp_target}")
-                                st.success(f"복사됨: `{_dst}`")
-                            except Exception as e:
-                                st.error(f"복사 실패: {type(e).__name__} {str(e)[:150]}")
-                    if cpc2.button(f"📦 전체 {len(wiki_files)}개 복사", use_container_width=True,
-                                   key="wiki_copy_all",
-                                   help="현재 금고의 모든 노트를 카테고리 구조 그대로 대상 금고에 복사"):
-                        _ok = _skip = _err = 0
-                        for _wf2 in wiki_files:
-                            _dst = Path(_cp_target) / _wf2.relative_to(WIKI_DIR)
-                            if _dst.exists() and not _cp_over:
-                                _skip += 1
-                                continue
-                            try:
-                                _dst.parent.mkdir(parents=True, exist_ok=True)
-                                shutil.copy2(_wf2, _dst)
-                                _ok += 1
-                            except Exception:
-                                _err += 1
-                        append_log(f"위키 노트 전체 복사 → {_cp_target}: 복사 {_ok}·건너뜀 {_skip}·실패 {_err}")
-                        st.success(f"복사 {_ok}개 · 이미 있어 건너뜀 {_skip}개"
-                                   + (f" · 실패 {_err}개" if _err else ""))
-            try:
-                content = wf.read_text(encoding="utf-8", errors="ignore")
-                with st.container(height=600, border=True):
-                    st.markdown(content)
-            except Exception as e:
-                st.error(f"읽기 실패: {e}")
+                            _skip += 1
+                            continue
+                        try:
+                            _dst.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(_wf2, _dst)
+                            _ok += 1
+                        except Exception:
+                            _err += 1
+                    append_log(f"위키 노트 전체 복사 → {_cp_target}: 복사 {_ok}·건너뜀 {_skip}·실패 {_err}")
+                    st.success(f"복사 {_ok}개 · 이미 있어 건너뜀 {_skip}개"
+                               + (f" · 실패 {_err}개" if _err else ""))
+        try:
+            content = wf.read_text(encoding="utf-8", errors="ignore")
+            with st.container(height=600, border=True):
+                st.markdown(content)
+        except Exception as e:
+            st.error(f"읽기 실패: {e}")
     else:
         st.info("생성된 Wiki 페이지가 없습니다.")
 
