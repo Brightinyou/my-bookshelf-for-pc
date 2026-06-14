@@ -3,7 +3,7 @@
 ; 결과물: dist\MyBookshelf-Setup.exe
 
 #define MyAppName      "My Bookshelf"
-#define MyAppVersion   "0.4.4"
+#define MyAppVersion   "0.4.5"
 #define MyAppExe       "start-app.vbs"
 
 [Setup]

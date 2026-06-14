@@ -22,7 +22,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.4.4"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.4.5"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -49,13 +49,7 @@ for _d in [DONE_DIR, FAILED_DIR, RAW_DIR, WIKI_DIR, PROCESSED_DIR, UPLOAD_TMP,
            LOG_FILE.parent, RESULTS_FILE.parent]:
     _d.mkdir(parents=True, exist_ok=True)
 
-CATEGORY_ICONS = {
-    "신학자":   "🧑‍🏫",
-    "AI개념":   "🤖",
-    "윤리":     "⚖️",
-    "교회":     "⛪",
-    "사회학":   "🏛️",
-}
+CATEGORY_ICONS: dict[str, str] = {}  # 워크스페이스 이름 → 이모지. 빈 경우 기본 📚 사용
 
 GEMINI_WIKI    = cfg.find_script("gemini_wiki.py")    # 2026-06-09 위키=Gemini로 교체
 CHAPTER_WIKI   = cfg.find_script("chapter_wiki.py")   # 2026-06-09 챕터 모드(긴 책 자동 장별)
@@ -2276,7 +2270,7 @@ with tab_wiki:
     wiki_rows = []
     for wf in wiki_files:
         cat = wf.parent.name
-        icon = CATEGORY_ICONS.get(cat, "📄")
+        icon = CATEGORY_ICONS.get(cat, "📚")
         wiki_rows.append({
             "카테고리": f"{icon} {cat}",
             "파일명":   wf.stem,
