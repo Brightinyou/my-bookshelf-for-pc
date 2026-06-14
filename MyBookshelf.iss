@@ -48,7 +48,7 @@ Source: "stop-app.bat";            DestDir: "{app}"; Flags: ignoreversion
 Name: "{group}\{#MyAppName} 시작";    Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"
 Name: "{group}\{#MyAppName} 종료";    Filename: "{app}\stop-app.bat"; WorkingDir: "{app}"
 Name: "{group}\프로그램 제거";         Filename: "{uninstallexe}"
-Name: "{commondesktop}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{userdesktop}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
 ; 패키지 설치 (pip — 10~20분 소요, 진행 창 표시)
