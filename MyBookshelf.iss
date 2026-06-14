@@ -32,13 +32,13 @@ Name: "desktopicon";   Description: "바탕화면에 바로가기 만들기"; Gr
 Name: "uninstallicon"; Description: "바탕화면에 제거 바로가기 만들기"; GroupDescription: "추가 옵션:"
 
 [Files]
-; ── 앱 핵심 파일 (core/) ──────────────────────────────────
-Source: "core\pipeline_app.py";    DestDir: "{app}"; Flags: ignoreversion
-Source: "core\config.py";          DestDir: "{app}"; Flags: ignoreversion
-Source: "core\llm_providers.py";   DestDir: "{app}"; Flags: ignoreversion
-Source: "core\gemini_wiki.py";     DestDir: "{app}"; Flags: ignoreversion
-Source: "core\chapter_wiki.py";    DestDir: "{app}"; Flags: ignoreversion
-Source: "core\ocr_windows.py";     DestDir: "{app}"; Flags: ignoreversion
+; ── 앱 핵심 파일 → {app}\core\ (start-app.vbs 경로 기준) ──
+Source: "core\pipeline_app.py";    DestDir: "{app}\core"; Flags: ignoreversion
+Source: "core\config.py";          DestDir: "{app}\core"; Flags: ignoreversion
+Source: "core\llm_providers.py";   DestDir: "{app}\core"; Flags: ignoreversion
+Source: "core\gemini_wiki.py";     DestDir: "{app}\core"; Flags: ignoreversion
+Source: "core\chapter_wiki.py";    DestDir: "{app}\core"; Flags: ignoreversion
+Source: "core\ocr_windows.py";     DestDir: "{app}\core"; Flags: ignoreversion
 Source: "core\requirements.txt";   DestDir: "{app}"; Flags: ignoreversion
 ; ── 실행·종료 스크립트 ────────────────────────────────────
 Source: "start-app.vbs";           DestDir: "{app}"; Flags: ignoreversion
@@ -49,7 +49,7 @@ Source: "stop-app.bat";            DestDir: "{app}"; Flags: ignoreversion
 Name: "{userprograms}\{#MyAppName}\{#MyAppName} 시작";    Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"
 Name: "{userprograms}\{#MyAppName}\{#MyAppName} 종료";    Filename: "{app}\stop-app.bat"; WorkingDir: "{app}"
 Name: "{userprograms}\{#MyAppName}\프로그램 제거";         Filename: "{uninstallexe}"
-Name: "{userdesktop}\{#MyAppName}";        Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{userdesktop}\{#MyAppName}";        Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"
 Name: "{userdesktop}\{#MyAppName} 제거"; Filename: "{uninstallexe}"; Tasks: uninstallicon
 
 [Run]
