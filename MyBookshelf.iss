@@ -53,8 +53,8 @@ Name: "{userdesktop}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: "
 [Run]
 ; 패키지 설치 (pip — 10~20분 소요, 진행 창 표시)
 Filename: "cmd.exe"; \
-    Parameters: "/k cd /d ""{app}"" && python -m venv .venv && .venv\Scripts\python.exe -m pip install --upgrade pip && .venv\Scripts\python.exe -m pip install -r requirements.txt && echo. && echo 설치 완료! 이 창을 닫으세요. && pause"; \
-    StatusMsg: "패키지를 설치합니다 (10~20분 소요) — 창을 닫지 마세요."; \
+    Parameters: "/c cd /d ""{app}"" && python -m venv .venv && .venv\Scripts\python.exe -m pip install --upgrade pip && .venv\Scripts\python.exe -m pip install -r requirements.txt && (echo. && echo 설치가 완료되었습니다. 5초 후 창이 닫힙니다. && timeout /t 5 /nobreak ^>nul) || (echo. && echo 오류가 발생했습니다. 위 내용을 확인하세요. && pause)"; \
+    StatusMsg: "패키지를 설치합니다 (10~20분 소요)..."; \
     Flags: waituntilterminated
 
 ; 설치 완료 후 앱 즉시 실행 (선택)
