@@ -22,7 +22,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.4.3"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.4.4"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -133,9 +133,30 @@ def _bilingual_candidates(stem: str, exclude_ws: str | None = None) -> list[Path
     return paths
 
 
+def _parse_bilingual_block(block: str) -> tuple[str, str] | None:
+    """[EN]/[KO] 구형 또는 태그 없는 교차 신형 블록을 (원문, 번역) 으로 파싱."""
+    block = block.strip()
+    if not block:
+        return None
+    if "\n\n[KO]\n" in block:                          # 구형: [EN]\n...\n\n[KO]\n...
+        en_part, tgt = block.split("\n\n[KO]\n", 1)
+        src = en_part[len("[EN]\n"):].strip() if en_part.startswith("[EN]\n") else en_part.strip()
+        return src, tgt.strip()
+    if not block.startswith("[") and "\n\n" in block:  # 신형: 원문\n\n번역
+        src, tgt = block.split("\n\n", 1)
+        return src.strip(), tgt.strip()
+    if block.startswith("[EN]\n"):                      # 미번역 구형 단독 블록
+        return block[len("[EN]\n"):].strip(), ""
+    return None
+
+
 def _ko_block_count(p: Path) -> int:
     try:
-        return p.read_text(encoding="utf-8", errors="ignore").count("\n\n[KO]\n")
+        text = p.read_text(encoding="utf-8", errors="ignore")
+        if "\n\n[KO]\n" in text:
+            return text.count("\n\n[KO]\n")            # 구형
+        blocks = [b.strip() for b in text.split("\n\n---\n\n") if b.strip()]
+        return sum(1 for b in blocks if "\n\n" in b and not b.startswith("["))  # 신형
     except Exception:
         return 0
 
@@ -151,20 +172,18 @@ def find_cross_ws_bilingual(stem: str, exclude_ws: str) -> Path | None:
 
 
 def collect_cross_ws_cache(stem: str, exclude_ws: str) -> dict:
-    """다른 모든 ws의 bilingual.txt에서 [EN]→[KO] 매핑 합쳐 dict 반환. 보존마커 제외."""
+    """다른 모든 ws의 bilingual.txt에서 원문→번역 매핑 합쳐 dict 반환. 보존마커 제외."""
     cache: dict = {}
     for p in _bilingual_candidates(stem, exclude_ws=exclude_ws):
         try:
             for block in p.read_text(encoding="utf-8", errors="ignore").split("\n\n---\n\n"):
-                block = block.strip()
-                if not block.startswith("[EN]") or "\n\n[KO]\n" not in block:
+                parsed = _parse_bilingual_block(block)
+                if not parsed:
                     continue
-                en_part, ko_part = block.split("\n\n[KO]\n", 1)
-                en = en_part[len("[EN]\n"):].strip()
-                ko = ko_part.strip()
-                if not en or not ko or ko.startswith("(원문 보존"):
+                src, tgt = parsed
+                if not src or not tgt or tgt.startswith("(원문 보존"):
                     continue
-                cache.setdefault(en, ko)
+                cache.setdefault(src, tgt)
         except Exception:
             continue
     return cache
@@ -682,18 +701,13 @@ def _save_en_ko_split(bilingual_path: Path, blocks: list[str]):
     for b in blocks:
         b = b.strip()
         if not b: continue
-        if "\n\n[KO]\n" in b:
-            en_part, ko_part = b.split("\n\n[KO]\n", 1)
-            en_text = en_part[len("[EN]\n"):].strip() if en_part.startswith("[EN]\n") else en_part.strip()
-            ko_text = ko_part.strip()
-            if en_text:
-                en_lines.append(en_text)
-            if ko_text and not ko_text.startswith("(원문 보존"):
-                ko_lines.append(ko_text)
-        elif b.startswith("[EN]\n"):
-            en_text = b[len("[EN]\n"):].strip()
-            if en_text:
-                en_lines.append(en_text)
+        parsed = _parse_bilingual_block(b)
+        if parsed:
+            src_text, tgt_text = parsed
+            if src_text:
+                en_lines.append(src_text)
+            if tgt_text and not tgt_text.startswith("(원문 보존"):
+                ko_lines.append(tgt_text)
     try:
         en_path.write_text("\n\n".join(en_lines), encoding="utf-8")
         ko_path.write_text("\n\n".join(ko_lines), encoding="utf-8")
@@ -842,9 +856,9 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
             if bilingual_path.exists():
                 for block in bilingual_path.read_text(encoding="utf-8", errors="ignore").split("\n\n---\n\n"):
                     block = block.strip()
-                    if not block.startswith("[EN]") or "\n\n[KO]\n" not in block: continue
-                    en_part, ko_part = block.split("\n\n[KO]\n", 1)
-                    cached[en_part[len("[EN]\n"):].strip()] = ko_part.strip()
+                    parsed = _parse_bilingual_block(block)
+                    if not parsed or not parsed[1]: continue
+                    cached[parsed[0]] = parsed[1]
             _cross_cache = collect_cross_ws_cache(txt_path.stem, ws_name)
             if _cross_cache:
                 _before = len(cached)
@@ -859,12 +873,25 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
             _name_glossary: dict[str, str] = {}
             _tr_fn = lambda p, _e=translate_engine, _g=_name_glossary: translate(p, _e, _g)
             _tr_label = engine_label(translate_engine)
-            skip_section_idxs = find_skip_section_paragraphs(paragraphs)
+            skip_section_idxs   = find_skip_section_paragraphs(paragraphs)
             skip_individual_idxs = {i for i, p in enumerate(paragraphs) if should_skip_translation(p)}
-            skip_all_idxs = skip_section_idxs | skip_individual_idxs
+            skip_sequential_idxs = find_sequential_footnotes(paragraphs)
+            # 페이지번호·그래프레이블 → bilingual에서 완전 제외 (미주로도 안 가고 삭제)
+            drop_idxs = {i for i, p in enumerate(paragraphs) if should_drop_paragraph(p)}
+            skip_all_idxs = (skip_section_idxs | skip_individual_idxs | skip_sequential_idxs) - drop_idxs
+            # 이미 목표 언어인 단락 → 캐시에 사전 입력 (API 호출 없이 원문 그대로 보존)
+            already_target_n = 0
+            for p in paragraphs:
+                if p not in cached and _paragraph_already_target(p):
+                    cached[p] = p
+                    already_target_n += 1
             resume_n = sum(1 for p in paragraphs if p in cached)
-            if resume_n:
-                st.write(f"♻️ 이전 번역 재사용: {resume_n}/{len(paragraphs)} 단락 — 신규 호출 {len(paragraphs)-resume_n}개")
+            if already_target_n:
+                st.write(f"✅ 이미 목표 언어: {already_target_n}개 단락 — API 호출 생략")
+            if resume_n - already_target_n > 0:
+                st.write(f"♻️ 이전 번역 재사용: {resume_n - already_target_n}/{len(paragraphs)} 단락 — 신규 호출 {len(paragraphs)-resume_n}개")
+            if drop_idxs:
+                st.write(f"🗑️ 제외(페이지번호·레이블): {len(drop_idxs)}개 단락")
             if skip_all_idxs:
                 st.write(f"⏭️ 번역 skip 대상: {len(skip_all_idxs)}/{len(paragraphs)} 단락")
             st.write(f"🌐 **2단계** · 영→한 번역 중 ({len(paragraphs)}단락, {_tr_label})…")
@@ -875,7 +902,8 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
             consecutive_fail = 0
             RATE_LIMIT_THRESHOLD = 3
             # 각주·인용은 본문 뒤로 모아 미주(尾註)로 — 읽기 흐름 보존 (2026-06-11)
-            _iter_order = [i for i in range(N) if i not in skip_all_idxs] + \
+            # drop_idxs(페이지번호·레이블)는 iter_order에서 아예 제외
+            _iter_order = [i for i in range(N) if i not in skip_all_idxs and i not in drop_idxs] + \
                           [i for i in range(N) if i in skip_all_idxs]
             _endnote_marked = False
             try:
@@ -888,10 +916,10 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
                         _time2.sleep(2)
                     if idx in skip_all_idxs:
                         if not _endnote_marked:
-                            bilingual.append("[EN]\n## Endnotes — collected footnotes & citations"
-                                             "\n\n[KO]\n## 미주 — 각주·인용 모음 (원문 보존)")
+                            bilingual.append("## Endnotes — collected footnotes & citations"
+                                             "\n\n## 미주 — 각주·인용 모음 (원문 보존)")
                             _endnote_marked = True
-                        bilingual.append(f"[EN]\n{para}\n\n[KO]\n(원문 보존: 각주·인용)")
+                        bilingual.append(f"{para}\n\n(원문 보존: 각주·인용)")
                         skipped_n += 1
                         _save_bilingual_atomic(bilingual_path, bilingual)
                         _save_en_ko_split(bilingual_path, bilingual)
@@ -909,10 +937,10 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
                         for _ko_n, _en_n in _re.findall(
                                 r"([가-힣]{2,}(?:[·\s][가-힣]{2,}){0,4})\(([A-Za-z][A-Za-z .'\-]{1,40})\)", ko):
                             _name_glossary.setdefault(_en_n.strip(), _ko_n.strip())
-                        bilingual.append(f"[EN]\n{para}\n\n[KO]\n{ko}")
+                        bilingual.append(f"{para}\n\n{ko}")
                         consecutive_fail = 0
                     else:
-                        bilingual.append(f"[EN]\n{para}")
+                        bilingual.append(para)
                         failed_tr += 1
                         if cached.get(para) is None:
                             consecutive_fail += 1
@@ -1045,10 +1073,152 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
 # 에 유리. 본 PDF 검증: 단락의 ~49% skip → 번역 비용·시간 절반 절감.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_FOOTNOTE_DAGGER  = _re.compile(r"^\s*†\s")
-_CITATION_NUMBERED = _re.compile(r"^\s*\[?[0-9]+\*?\]?\s+[A-Z][^.]*,\s+[A-Z]")
-_CITATION_BULLET   = _re.compile(r"^\s*-\s+[0-9]+\*?\s+[A-Z]")
+_FOOTNOTE_DAGGER    = _re.compile(r"^\s*†\s")
+_CITATION_NUMBERED  = _re.compile(r"^\s*\[?[0-9]+\*?\]?\s+[A-Z][^.]*,\s+[A-Z]")
+_CITATION_BULLET    = _re.compile(r"^\s*-\s+[0-9]+\*?\s+[A-Z]")
 _CITATION_URL_HEAVY = _re.compile(r"(https?://|arXiv|doi\.org|dx\.doi)", _re.IGNORECASE)
+# 단독 페이지번호·그래프 레이블: 숫자·공백·쉼표·점·하이픈만으로 이루어진 짧은 단락
+# "100", "80", "3,000 4,000 5,000", "1-10" 등 → 번역 불필요
+_PAGE_NUMBER_ONLY   = _re.compile(r"^[\d\s,.\-–—%]+$")
+# OCR 분리 또는 일반 각주 번호로 시작하는 단락 감지
+# "1 ", "[1] ", "1.", "1)", "1 0 " (OCR split 10), "1 2 " (OCR split 12) 등
+_FOOTNOTE_NUM_START = _re.compile(
+    r"^\s*(?:"
+    r"\[?\d{1,3}\]?[\s.,):]"    # 일반: [1] · 1. · 1) · 1:
+    r"|"
+    r"\d\s\d[\s.,):]"           # OCR 분리 두 자리: "1 0 " "2 3." 등
+    r")\s*\S"
+)
+# 소제목·목차 오탐 방지: 인용 마커(숫자·참조 키워드) 없는 짧은 텍스트를 각주로 처리 안 함
+_RE_CITE_MARKER = _re.compile(
+    r"\d|같은|참조|ibid|op\.|p\.|각주|위의|앞의|출처|see\s|cf\.", _re.IGNORECASE
+)
+_RE_EDITION_INFO = _re.compile(r"^판\s*\d")   # "판 1 쇄…" 등 출판 판수 정보
+# 명시적 인용 마커: 쪽수·연도·저자이니셜·성경책·URL 등 — 소제목과 구별
+_RE_EXPLICIT_CITE = _re.compile(
+    r"같은\s*책|위의\s*책|앞의\s*책|ibid|op\.\s*cit|"
+    r"p\.\s*\d+|pp\.\s*\d+|각주\s*\d|"
+    r"\d+\s*쪽|쪽[,. ]|"
+    r"[A-Z][a-z]{1,15},\s+[A-Z]|"          # Author, I. 패턴
+    r"\b(19|20)\d{2}[),]|"                 # (2020) 또는 2020) 연도
+    r"마태|누가복음|요한복음|로마서|고린도|갈라디|에베|"
+    r"시편\s*\d|잠언\s*\d|창세기|출애굽|이사야|예레미야|"
+    r"https?://|doi:\s*10|www\.",
+    _re.IGNORECASE
+)
+
+
+def _is_short_heading(text: str) -> bool:
+    """목차·소제목(각주 아님) 판별: 20자 이하이고 인용 마커가 없으면 True."""
+    text = text.strip()
+    if _RE_EDITION_INFO.match(text):   # "판 N 쇄" 형태 = 출판 정보
+        return True
+    if len(text) > 20:
+        return False
+    return not _RE_CITE_MARKER.search(text)
+
+
+def _parse_footnote_number(p: str) -> int | None:
+    """단락 선두 각주 번호를 정수로 반환. OCR 분리 숫자("1 0"→10) 포함. 없으면 None.
+
+    오탐 방지:
+    - 줄바꿈 포함 → 섹션 제목+본문 합체, None
+    - "1.3.4" 형태 소단원 번호 → None
+    - 20자 이하 + 인용 마커 없음 → 목차·소제목, None
+    """
+    p = p.strip()
+    # 줄바꿈 포함 = 섹션 본문(제목+내용) → 각주 아님
+    if "\n" in p:
+        return None
+    # OCR 분리 두 자리 숫자 우선 ("1 0 text" → 10)
+    m = _re.match(r"^(\d)\s(\d)[\s.,):]\s*\S", p)
+    if m:
+        remaining = p[m.end() - 1:].strip()
+        if _is_short_heading(remaining):
+            return None
+        return int(m.group(1) + m.group(2))
+    # 일반 숫자 (최대 3자리): 구분자가 "."이고 바로 뒤가 숫자면 소수점 → 제외
+    m = _re.match(r"^\[?(\d{1,3})\]?([\s.,):])(.)", p)
+    if m:
+        sep, nxt = m.group(2), m.group(3)
+        if sep == "." and nxt.isdigit():   # "1.3.4" 같은 소단원 번호
+            return None
+        remaining = p[m.end() - 1:].strip()
+        if _is_short_heading(remaining):
+            return None
+        return int(m.group(1))
+    return None
+
+
+def find_sequential_footnotes(paragraphs: list[str], min_run: int = 3,
+                               max_len: int = 300) -> set[int]:
+    """연속 번호(1,2,3…)로 이루어진 각주 단락 인덱스를 반환.
+
+    조건:
+    - 단락이 각주 번호로 시작하고 max_len 이하
+    - 3개 이상 연속 증가 번호 묶음(run)이 존재
+    OCR 분리 숫자("1 0" = 10)도 처리.
+
+    오탐 방지 (Q&A 문답/목차 구조):
+    - 첫 번째 런 위치가 문서 앞 50% 이내 AND 감지 비율 > 15% → 본문 구조로 판정, 빈 셋 반환
+    """
+    total = len(paragraphs)
+    # (index, number) 후보 수집
+    candidates: list[tuple[int, int]] = []
+    for i, p in enumerate(paragraphs):
+        if len(p.strip()) > max_len:
+            continue
+        n = _parse_footnote_number(p)
+        if n is not None and 1 <= n <= 999:
+            candidates.append((i, n))
+
+    if len(candidates) < min_run:
+        return set()
+
+    skip: set[int] = set()
+    # 연속 run 탐지: n, n+1, n+2 … 가 연달아 나오는 구간 찾기
+    run_start = 0
+    first_run_idx: int | None = None
+    for k in range(1, len(candidates)):
+        prev_n = candidates[k - 1][1]
+        curr_n = candidates[k][1]
+        if curr_n != prev_n + 1:
+            run_len = k - run_start
+            if run_len >= min_run:
+                if first_run_idx is None:
+                    first_run_idx = candidates[run_start][0]
+                for j in range(run_start, k):
+                    skip.add(candidates[j][0])
+            run_start = k
+    # 마지막 run 처리
+    run_len = len(candidates) - run_start
+    if run_len >= min_run:
+        if first_run_idx is None:
+            first_run_idx = candidates[run_start][0]
+        for j in range(run_start, len(candidates)):
+            skip.add(candidates[j][0])
+
+    if not skip:
+        return set()
+
+    # Q&A 문답·목차 오탐 방지: 첫 런이 앞 50%에 있고 감지 비율이 15% 초과면 제외
+    if first_run_idx is not None and total > 0:
+        position_ratio = first_run_idx / total
+        detect_ratio   = len(skip) / total
+        if position_ratio < 0.5 and detect_ratio > 0.15:
+            return set()
+
+    # 명시적 인용 마커 부재 시 오탐 처리: 소제목·통계표 등 비인용 구조
+    # 정상 각주는 반드시 쪽수·저자·성경책명·URL 등 하나 이상 포함
+    has_any_cite = any(
+        _RE_EXPLICIT_CITE.search(paragraphs[i])
+        for i in skip
+        if i < total
+    )
+    if not has_any_cite:
+        return set()
+
+    return skip
 
 _SKIP_SECTION_NAMES = {
     "references", "bibliography", "works cited", "참고문헌",
@@ -1064,8 +1234,21 @@ _SKIP_SECTION_NAMES = {
 }
 
 
+def _paragraph_already_target(paragraph: str, threshold: float = 0.6) -> bool:
+    """단락 문자의 threshold 이상이 이미 목표 언어 스크립트면 True (API 호출 불필요).
+    라틴계 목표 언어(영·불·독 등)는 소스 언어와 구분이 어려우므로 항상 False."""
+    script = LANGS[target_lang()][2]
+    if not script:
+        return False
+    p = paragraph.strip()
+    if not p:
+        return False
+    hits = len(_re.findall(script, p))
+    return (hits / max(len(p), 1)) >= threshold
+
+
 def should_skip_translation(paragraph: str) -> bool:
-    """단락이 *번역 가치가 낮은 인용·각주*인지 판정. True 시 번역 호출 생략."""
+    """단락 번역 생략 조건: 인용·각주 (이미 목표 언어 단락은 캐시로 별도 처리)."""
     p = paragraph.strip()
     if not p:
         return True
@@ -1075,8 +1258,23 @@ def should_skip_translation(paragraph: str) -> bool:
         return True
     if _CITATION_BULLET.match(p):
         return True
+    # OCR 분리 포함 각주 번호 시작 + 짧은 단락
+    if len(p) < 500 and _FOOTNOTE_NUM_START.match(p):
+        return True
     # 짧고 URL 들어간 단락 = 인용일 가능성 (500자 이하 + arXiv/DOI/URL)
     if len(p) < 500 and _CITATION_URL_HEAVY.search(p):
+        return True
+    return False
+
+
+def should_drop_paragraph(paragraph: str) -> bool:
+    """bilingual에서 완전 제외할 단락 — 번역·미주 어디에도 포함하지 않음.
+    페이지 번호, 그래프 Y축 레이블 등 번역 결과물에 불필요한 OCR 잡음."""
+    p = paragraph.strip()
+    if not p:
+        return True
+    # 숫자·공백·구두점만으로 이루어진 80자 이하 단락 (페이지번호·그래프레이블)
+    if len(p) <= 80 and _PAGE_NUMBER_ONLY.match(p):
         return True
     return False
 
@@ -1117,6 +1315,7 @@ def find_skip_section_paragraphs(paragraphs: list[str]) -> set[int]:
                 and not _CITATION_NUMBERED.match(p)
                 and not _CITATION_BULLET.match(p)
                 and not _FOOTNOTE_DAGGER.match(p)
+                and not _FOOTNOTE_NUM_START.match(p)
             ):
                 last_narrative = i
                 break
@@ -1534,8 +1733,13 @@ with tab_status:
                 age_s = _now - bil.stat().st_mtime
                 try:
                     text = bil.read_text(encoding="utf-8", errors="ignore")
-                    en = text.count("[EN]\n")
-                    ko = text.count("\n\n[KO]\n")
+                    if "\n\n[KO]\n" in text:         # 구형
+                        en = text.count("[EN]\n")
+                        ko = text.count("\n\n[KO]\n")
+                    else:                             # 신형 태그 없는 형식
+                        all_blocks = [b.strip() for b in text.split("\n\n---\n\n") if b.strip()]
+                        en = len(all_blocks)
+                        ko = sum(1 for b in all_blocks if "\n\n" in b and not b.startswith("["))
                 except Exception:
                     continue
                 if age_s < 300:  # 5분 내 갱신 = 진행 중

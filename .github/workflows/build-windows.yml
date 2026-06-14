@@ -1,0 +1,50 @@
+name: Windows Installer Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'core/**'
+      - 'MyBookshelf.iss'
+      - 'start-app.vbs'
+      - 'start.bat'
+      - 'stop-app.bat'
+  workflow_dispatch:
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+        shell: cmd
+
+      - name: Build installer
+        run: iscc "MyBookshelf.iss"
+        shell: cmd
+
+      - name: Get version
+        id: ver
+        run: |
+          $v = (Select-String '#define MyAppVersion\s+"(.+)"' MyBookshelf.iss).Matches[0].Groups[1].Value
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyBookshelf-Setup-v${{ steps.ver.outputs.version }}
+          path: dist/MyBookshelf-Setup.exe
+          retention-days: 30
+
+      - name: Create Release (on tag push)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/MyBookshelf-Setup.exe
+          generate_release_notes: true
