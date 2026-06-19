@@ -124,7 +124,7 @@ cp "$SCRIPT_DIR/core/"*.py "$RESOURCES/"
 cp "$SCRIPT_DIR/core/requirements.txt" "$RESOURCES/"
 
 # ── 메뉴바 앱 + 아이콘 포함 (통합) ────────────────────────
-[ -f "$HOME/.local/bin/menubar_app.py"       ] && cp "$HOME/.local/bin/menubar_app.py"       "$RESOURCES/"
+[ -f "$SCRIPT_DIR/core/menubar_app.py"       ] && cp "$SCRIPT_DIR/core/menubar_app.py"       "$RESOURCES/"
 [ -f "$HOME/.local/bin/menubar_icon.png"     ] && cp "$HOME/.local/bin/menubar_icon.png"     "$RESOURCES/"
 [ -f "$HOME/.local/bin/menubar_icon@2x.png"  ] && cp "$HOME/.local/bin/menubar_icon@2x.png"  "$RESOURCES/"
 
