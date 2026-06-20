@@ -1,6 +1,6 @@
-"""llm_providers.py — 멀티 공급자 LLM 통일 호출 + 키 관리 (2026-06-09)
+"""llm_providers.py — 멀티 공급자 LLM 통일 호출 + 키 관리 (2026-06-15)
 
-OpenAI(GPT) / Google(Gemini) / Anthropic(Claude API) + Claude CLI(구독).
+OpenAI(GPT) / Google(Gemini) / Anthropic(Claude API) + Claude CLI(구독) + Codex CLI(구독).
 키 우선순위: 환경변수 → ~/.config/mybookshelf/keys.json → (gemini는 ~/.config/gemini_wiki.key).
 키는 이 컴퓨터 로컬에만 저장하며 저장소/외부로 전송하지 않는다.
 """
@@ -34,10 +34,32 @@ PROVIDERS: dict[str, dict] = {
     },
     "anthropic": {
         "label": "Anthropic Claude (API)",
-        "models": ["claude-sonnet-4-6", "claude-haiku-4-5"],
+        "models": ["claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
         "env": "ANTHROPIC_API_KEY",
         "hint": "sk-ant-…",
     },
+    "claude_cli": {
+        "label": "Claude CLI (구독)",
+        "models": ["claude-sonnet-4-6", "claude-opus-4-8"],
+        "env": "",
+        "hint": "",
+    },
+    "codex_cli": {
+        "label": "Codex CLI (ChatGPT)",
+        "models": ["gpt-5.5", "o3", "o4-mini"],  # ChatGPT 계정은 gpt-5.5만 지원
+        "env": "",
+        "hint": "",
+    },
+}
+
+# 공급자별 안전 입력 한도 (chars). Gemini=1M 토큰, Claude/GPT=200k/128k 토큰 기준.
+# 한국어 기준 roughly 1char≈1token, 영어는 1char≈0.25token — 한국어 기준으로 보수적으로 설정.
+MAX_INPUT_CHARS: dict[str, int] = {
+    "gemini":    1_900_000,   # Gemini 2.5: 1M 토큰
+    "openai":      400_000,   # GPT-4o: 128k 토큰
+    "anthropic":   140_000,   # Claude: 200k 토큰 — 출력 여유 60k 확보
+    "claude_cli":  140_000,   # Claude CLI: 구독 = API 동일 한도
+    "codex_cli":   400_000,   # Codex CLI: OpenAI 모델 기반 (o3/gpt-4o)
 }
 
 
@@ -93,6 +115,10 @@ def save_key(provider: str, key: str) -> None:
 
 
 def has_key(provider: str) -> bool:
+    if provider == "claude_cli":
+        return claude_cli_available()
+    if provider == "codex_cli":
+        return codex_cli_available()
     return bool(get_key(provider))
 
 
@@ -163,12 +189,35 @@ def claude_cli_available() -> bool:
     return bool(claude_cli_path())
 
 
+# ── Codex CLI (OpenAI 구독) ──
+def codex_cli_path() -> str | None:
+    p = shutil.which("codex")
+    if p:
+        return p
+    home = Path.home()
+    for cand in (
+        Path("/opt/homebrew/bin/codex"), Path("/usr/local/bin/codex"),
+        home / ".local" / "bin" / "codex",
+        home / ".local" / "bin" / "codex.exe",
+        Path(os.environ.get("APPDATA", "")) / "npm" / "codex.cmd",
+    ):
+        if cand.exists():
+            return str(cand)
+    return None
+
+
+def codex_cli_available() -> bool:
+    return bool(codex_cli_path())
+
+
 # ── 통일 호출: text-in → text-out ──
 def complete(provider: str, model: str, system: str, prompt: str,
              max_tokens: int = 8192, api_key: str | None = None) -> str:
     """선택 공급자/모델로 1회 완성. 키 없거나 호출 실패하면 예외를 던진다."""
     if provider == "claude_cli":
         return _claude_cli(model, system, prompt)
+    if provider == "codex_cli":
+        return _codex_cli(model, system, prompt)
 
     key = (api_key or get_key(provider)).strip()
     if not key:
@@ -227,6 +276,41 @@ def _claude_cli(model: str, system: str, prompt: str) -> str:
     return out
 
 
+def _codex_cli(model: str, system: str, prompt: str) -> str:
+    cli = codex_cli_path()
+    if not cli:
+        raise RuntimeError("codex CLI 없음")
+    full_prompt = f"{system}\n\n{prompt}" if system else prompt
+    out_file = Path(tempfile.gettempdir()) / f"codex_out_{os.getpid()}.txt"
+    base_args = [cli, "exec", "--skip-git-repo-check", "--ephemeral",
+                 "--dangerously-bypass-approvals-and-sandbox",
+                 "-o", str(out_file)]
+    # ChatGPT 계정은 모델 명시 시 400 오류 → 불지원 오류면 모델 없이 재시도
+    attempts = [["-m", model, full_prompt], [full_prompt]]
+    try:
+        last_err = None
+        for extra in attempts:
+            r = subprocess.run(
+                base_args + extra,
+                capture_output=True, text=True, timeout=600,
+                cwd=tempfile.gettempdir(), encoding="utf-8", errors="replace",
+                stdin=subprocess.DEVNULL,
+            )
+            if r.returncode == 0:
+                if out_file.exists():
+                    return out_file.read_text(encoding="utf-8").strip()
+                return (r.stdout or "").strip()
+            err = (r.stderr or "")
+            if "not supported" in err or "invalid_request" in err:
+                last_err = err
+                out_file.unlink(missing_ok=True)
+                continue  # 모델 없이 재시도
+            raise RuntimeError(f"codex CLI exit {r.returncode}: {err[:300]}")
+        raise RuntimeError(f"codex CLI 실패: {(last_err or '')[:300]}")
+    finally:
+        out_file.unlink(missing_ok=True)
+
+
 def _strip_fence(t: str) -> str:
     t = (t or "").strip()
     if t.startswith("```"):
@@ -237,13 +321,23 @@ def _strip_fence(t: str) -> str:
 def complete_json(provider: str, model: str, system: str, prompt: str,
                   max_tokens: int = 16384, api_key: str | None = None, retries: int = 5) -> dict:
     """JSON 출력 통일(공급자별 JSON 모드). 위키 생성용. 실패 시 재시도(429는 65초)."""
-    key = (api_key or get_key(provider)).strip()
-    if not key:
-        raise RuntimeError(f"{provider} API 키 없음")
+    if provider in ("claude_cli", "codex_cli"):
+        # API 키 불필요 — CLI 구독 사용. 재시도 루프에서 처리.
+        key = ""
+    else:
+        key = (api_key or get_key(provider)).strip()
+        if not key:
+            raise RuntimeError(f"{provider} API 키 없음")
     last = None
     for attempt in range(retries):
         try:
-            if provider == "gemini":
+            if provider == "claude_cli":
+                txt = _claude_cli(model, system or "Output only one valid JSON object.",
+                                  prompt + "\n\n반드시 유효한 JSON 객체 하나만 출력하라.")
+            elif provider == "codex_cli":
+                txt = _codex_cli(model, system or "Output only one valid JSON object.",
+                                 prompt + "\n\n반드시 유효한 JSON 객체 하나만 출력하라.")
+            elif provider == "gemini":
                 from google import genai
                 client = genai.Client(api_key=key)
                 contents = [system, prompt] if system else prompt

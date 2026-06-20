@@ -1564,9 +1564,8 @@ st.caption("PDF 업로드 → OCR/번역 → 텍스트 내용 요약 Obsidian Wi
 # 상태 배너
 col_s1, col_s2, col_s3 = st.columns(3)
 _avail_providers = [info["label"] for prov, info in llm.PROVIDERS.items() if llm.has_key(prov)]
-if llm.claude_cli_available():
-    _avail_providers.append("Claude CLI")
-_gemini_key_ok = llm.has_key("gemini")
+_wiki_key_ok = any(llm.has_key(p) for p in llm.PROVIDERS)
+_wp_cur, _wm_cur = llm.wiki_provider_model()
 wg_ok = wiki_generator_running()
 
 col_s1.metric("API 키", f"{len(_avail_providers)}개" if _avail_providers else "❌ 없음")
@@ -1575,8 +1574,8 @@ col_s3.metric("Wiki 완성", sum(1 for _ in WIKI_DIR.rglob("*.md")))
 
 if not _avail_providers:
     st.error("⚠️ 사용 가능한 API가 없습니다 — ⚙️ 설정 탭에서 키를 입력하세요.")
-elif not _gemini_key_ok:
-    st.warning("ℹ️ 위키 생성은 Gemini 키가 필요합니다 — ⚙️ 설정 탭에서 Google Gemini 키를 입력하세요.")
+elif not _wiki_key_ok:
+    st.warning("ℹ️ 위키 생성에 쓸 API 키가 없습니다 — ⚙️ 설정 탭에서 키를 입력하세요.")
 
 # Wiki raw 고아 감지 게이트 (2026-05-16) — raw/processed 이동 버그 흔적 자동 표시
 _wiki_orphans = check_wiki_orphans()
@@ -1918,13 +1917,32 @@ with tab_upload:
     _oc1, _oc2 = st.columns(2)
     _oc1.checkbox("📄 TXT 추출 (항상 실행)", value=True, disabled=True,
                   help="PDF·DOCX를 텍스트로 변환합니다 (기본, 해제 불가).")
+    _wp_now, _wm_now = llm.wiki_provider_model()
     do_wiki = _oc2.toggle(
         "📓 위키 저장",
         value=bool(llm.get_pref("do_wiki", True)),
-        help="처리 완료 후 Gemini가 노트를 생성합니다. 끄면 TXT/MD만 만들고 위키는 건너뜁니다.",
+        help=f"처리 완료 후 {llm.PROVIDERS.get(_wp_now, {}).get('label', _wp_now)}가 노트를 생성합니다. "
+             "끄면 TXT/MD만 만들고 위키는 건너뜁니다.",
     )
     llm.set_pref("do_wiki", bool(do_wiki))
     if do_wiki:
+        # ── 위키 API 선택 ──────────────────────────────────────────────
+        _wiki_avail = [(p, m) for p, info in llm.PROVIDERS.items()
+                       if llm.has_key(p) for m in info["models"]]
+        if _wiki_avail:
+            _wiki_labels = [f"{llm.PROVIDERS[p]['label']} · {m}" for p, m in _wiki_avail]
+            _wiki_curlbl = f"{llm.PROVIDERS.get(_wp_now, {}).get('label', _wp_now)} · {_wm_now}"
+            _wiki_idx = _wiki_labels.index(_wiki_curlbl) if _wiki_curlbl in _wiki_labels else 0
+            _wiki_sel = st.selectbox(
+                "🧠 위키 생성 모델",
+                _wiki_labels, index=_wiki_idx, key="wiki_model_upload",
+                help="위키 노트 생성에 쓸 API. ⚙️ 설정 탭에서도 변경 가능합니다.",
+            )
+            _wp_sel, _wm_sel = _wiki_avail[_wiki_labels.index(_wiki_sel)]
+            if (_wp_sel, _wm_sel) != (_wp_now, _wm_now):
+                llm.set_wiki_model(_wp_sel, _wm_sel)
+
+        # ── 위키 저장 금고 ──────────────────────────────────────────────
         _vault_opts = [str(WIKI_DIR)]
         for _v in list_obsidian_vaults():
             if _v and str(Path(_v)) not in _vault_opts:
@@ -2367,7 +2385,11 @@ with tab_settings:
     st.caption("번역과 별개로, 위키 노트 생성에 쓸 모델입니다. 구조화 출력은 공급자별로 자동 처리됩니다.")
     st.divider()
 
+    # API 키 입력 (CLI 공급자 제외)
+    _cli_provs = {"claude_cli", "codex_cli"}
     for _prov, _info in llm.PROVIDERS.items():
+        if _prov in _cli_provs:
+            continue
         _cur = llm.masked(_prov)
         with st.expander(f"{_info['label']}  —  {('✅ ' + _cur) if _cur else '미설정'}",
                          expanded=not bool(_cur)):
@@ -2390,11 +2412,22 @@ with tab_settings:
                     st.rerun()
             st.caption(f"모델: {', '.join(_info['models'])}")
     st.divider()
-    st.markdown("**Claude CLI (구독)** — API 키 대신 Claude 구독으로 사용")
-    if llm.claude_cli_available():
-        st.success(f"✅ 감지됨: `{llm.claude_cli_path()}` — 구독 로그인 상태면 키 없이 번역에 사용 가능")
-    else:
-        st.info("미설치. Claude Code를 설치·로그인하면 구독으로 쓸 수 있습니다. (또는 위에서 Anthropic API 키 입력)")
+    st.markdown("**🖥 CLI 구독 도구** — API 키 없이 구독으로 사용")
+    _cc1, _cc2 = st.columns(2)
+    with _cc1:
+        st.markdown("**Claude CLI**")
+        if llm.claude_cli_available():
+            st.success(f"✅ 감지됨\n`{llm.claude_cli_path()}`")
+        else:
+            st.info("미설치. `npm install -g @anthropic-ai/claude-code`")
+    with _cc2:
+        st.markdown("**Codex CLI**")
+        if llm.codex_cli_available():
+            _cstatus = "로그인됨" if True else ""
+            st.success(f"✅ 감지됨\n`{llm.codex_cli_path()}`")
+            st.caption("ChatGPT 계정 또는 API 키로 로그인 필요: `codex login --device-auth`")
+        else:
+            st.info("미설치. `npm install -g @openai/codex`")
 
     st.divider()
     st.subheader("📓 위키 저장 폴더 (옵시디언 금고)")

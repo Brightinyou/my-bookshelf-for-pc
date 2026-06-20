@@ -24,7 +24,11 @@ OUT_DIR  = cfg.WIKI_DIR             # 옵시디언 출력
 DONE     = cfg.GEMINI_DONE_FILE
 KEY_FILE = Path.home() / ".config/gemini_wiki.key"
 MODEL    = "gemini-2.5-flash"     # 품질↑. 비용 부담되면 gemini-2.0-flash 로 교체
-MAX_CHARS = 1_900_000             # ≈95만 토큰(Gemini 1M 한도 여유). 초과분만 절단
+
+def _max_chars() -> int:
+    """위키 공급자의 컨텍스트 한도에 맞춘 최대 입력 글자 수."""
+    prov, _ = llm.wiki_provider_model()
+    return llm.MAX_INPUT_CHARS.get(prov, 500_000)
 
 def nfc(s): return unicodedata.normalize("NFC", s)
 
@@ -137,9 +141,10 @@ def generate(txt_path):
     raw_full = nfc(txt_path.read_text(encoding="utf-8", errors="ignore"))
     title_guess = nfc(txt_path.stem)
     raw = raw_full
-    if len(raw) > MAX_CHARS:
-        print(f"   ⚠️ 초대형({len(raw):,}자) → 앞 {MAX_CHARS:,}자만 사용")
-        raw = raw[:MAX_CHARS]
+    max_chars = _max_chars()
+    if len(raw) > max_chars:
+        print(f"   ⚠️ 초대형({len(raw):,}자) → 앞 {max_chars:,}자만 사용")
+        raw = raw[:max_chars]
     chars = len(raw)
     n_sub     = min(24, max(7, chars // 35000))      # 소제목 수: 책 크기 비례
     n_cite    = min(30, max(8, chars // 28000))      # 인용 후보 수

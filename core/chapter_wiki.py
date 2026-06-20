@@ -39,6 +39,10 @@ def find_txt(stem: str):
     for f in DONE_DIR.glob("*/1_txt/*.txt"):
         if gw.nfc(f.stem) == target:
             return f
+    # 폴백: PROCESSED_DIR 평면 구조 (gemini_wiki 동일 소스)
+    for f in gw.SRC_DIR.glob("*.txt"):
+        if gw.nfc(f.stem) == target:
+            return f
     return None
 
 def _strip_noise(md: str) -> str:
@@ -208,12 +212,14 @@ def _gen_json(prompt, max_out):
     return llm.complete_json(prov, model, "", prompt, max_tokens=max_out)
 
 def generate_chapter(book, chap_title, chap_text):
+    prov, _ = llm.wiki_provider_model()
+    max_in = llm.MAX_INPUT_CHARS.get(prov, 500_000)
     chars = len(chap_text)
     n_sub  = min(10, max(3, chars // 9000))
     n_cite = min(8, max(3, chars // 12000))
     max_out = min(30000, max(8192, n_sub * 2400))
     data = _gen_json(CHAPTER_PROMPT.format(
-        book=book, chapter=chap_title, text=chap_text[:600000], n_sub=n_sub, n_cite=n_cite), max_out)
+        book=book, chapter=chap_title, text=chap_text[:max_in], n_sub=n_sub, n_cite=n_cite), max_out)
     if data.get("body"):
         data["body"], _, _ = gw.rebuild_citations(data["body"], chap_text, [], chap_title, target=n_cite)
     return data
@@ -304,10 +310,20 @@ def inline_a_note(book, cat, ov, sections):
 
 
 # ── 책 처리 ──
-LONG_BOOK_CHARS = 300_000   # 이 이상 + 진짜 장구조면 auto 모드가 챕터 생성
+def wiki_note_exists(stem: str) -> bool:
+    """WIKI_DIR에 이 책의 노트가 이미 있는지 확인 (파일명 기준)."""
+    target_fn = gw.make_filename(gw.nfc(stem))
+    return any(md.name == target_fn for md in gw.OUT_DIR.rglob("*.md"))
+
+def find_all_pending(regen: bool = False):
+    """PROCESSED_DIR의 모든 .txt 중 위키 미생성 목록. regen=True면 전체 반환."""
+    all_txts = sorted(gw.SRC_DIR.glob("*.txt"), key=lambda p: p.stat().st_size)
+    if regen:
+        return all_txts
+    return [f for f in all_txts if not wiki_note_exists(f.stem)]
 
 def _single_pass(stem):
-    """진짜 장구조 없거나 짧은 책 → gemini_wiki 단일 노트."""
+    """장 구조 없는 책 → gemini_wiki 단일 노트."""
     txt = find_txt(stem)
     if not txt:
         raise RuntimeError(f"단일 폴백 실패 — TXT 없음: {stem}")
@@ -316,16 +332,15 @@ def _single_pass(stem):
     return {"mode": "single", "a": str(out)}
 
 def process_book(stem, mode="auto"):
-    """mode: auto(길고 장구조면 A, 아니면 single) / A(인라인) / full(허브+B) / add(B+링크)."""
+    """mode: auto(장구조 있으면 A, 없으면 single) / A(인라인) / full(허브+B) / add(B+링크)."""
     md = find_docling_md(stem); txt = find_txt(stem)
     md_text = md.read_text(encoding="utf-8", errors="ignore") if md else None
     txt_text = txt.read_text(encoding="utf-8", errors="ignore") if txt else None
     if not md_text and not txt_text:
         raise RuntimeError(f"소스 없음: {stem} (재처리 필요)")
-    total = len(txt_text or md_text)
     smode, chapters = chapter_split(md_text, txt_text)
     if mode == "auto":
-        if smode == "single" or not chapters or total < LONG_BOOK_CHARS:
+        if smode == "single" or not chapters:
             return _single_pass(stem)
         mode = "A"
     if smode == "single" or not chapters:
@@ -368,10 +383,34 @@ def process_book(stem, mode="auto"):
 def main():
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--stem")
-    g.add_argument("--file")
+    g.add_argument("--stem",  help="책 파일명(확장자 제외)")
+    g.add_argument("--file",  help="txt 파일 경로")
+    g.add_argument("--all",   action="store_true", help="미생성 책 전체 일괄 처리")
+    g.add_argument("--regen", action="store_true", help="이미 생성된 책도 전체 재처리")
     ap.add_argument("--mode", default="auto", choices=["auto", "A", "full", "add"])
     args = ap.parse_args()
+
+    if args.all or args.regen:
+        targets = find_all_pending(regen=args.regen)
+        prov, model = llm.wiki_provider_model()
+        print(f"🚀 챕터 위키 일괄 생성 [{prov}:{model}] — 대상 {len(targets)}권", flush=True)
+        ok = fail = 0
+        for i, t in enumerate(targets, 1):
+            stem = gw.nfc(t.stem)
+            print(f"[{i}/{len(targets)}] 📖 {stem} ({t.stat().st_size // 1024}KB)", flush=True)
+            t0 = time.time()
+            try:
+                r = process_book(stem, args.mode)
+                gw.mark_done(gw.nfc(t.name))
+                print(f"   ✅ {r}  ({int(time.time()-t0)}초)", flush=True)
+                ok += 1
+            except Exception as e:
+                print(f"   ❌ 실패: {type(e).__name__}: {str(e)[:300]}", flush=True)
+                fail += 1
+            time.sleep(1)
+        print(f"=== 완료 {ok}권 / 실패 {fail}권 ===", flush=True)
+        return
+
     stem = args.stem or gw.nfc(Path(args.file).stem)
     t0 = time.time()
     r = process_book(stem, args.mode)
