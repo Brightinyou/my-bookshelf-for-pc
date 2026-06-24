@@ -1769,7 +1769,26 @@ tab_ocr, tab_split, tab_tr, tab_summ, tab_wiki5, tab_settings = st.tabs([
 
 
 
-# ─── 공용 체크박스 파일 목록 헬퍼 ────────────────────────
+# ─── 공용 헬퍼 ───────────────────────────────────────────
+
+_HIDDEN_WS = {"00_목회학_서재"}   # UI에서 숨길 워크스페이스
+
+def _active_ws_list() -> list[str]:
+    """DONE_DIR에 실제 존재하는 워크스페이스 목록 (숨김 제외)"""
+    if not DONE_DIR.exists():
+        return []
+    return sorted([
+        d.name for d in DONE_DIR.iterdir()
+        if d.is_dir() and not d.name.startswith("_") and d.name not in _HIDDEN_WS
+    ])
+
+def _ws_selector(key: str) -> str | None:
+    """워크스페이스 selectbox. 목록 없으면 None."""
+    _wsl = _active_ws_list()
+    if not _wsl:
+        st.info("처리된 폴더가 없습니다.")
+        return None
+    return st.selectbox("📁 폴더 선택", _wsl, key=key)
 
 def _checklist(items: list[dict], prefix: str, height: int = 320) -> list:
     """체크박스 파일 목록. items=[{"key":str,"label":str,"meta":str,"obj":any}]
@@ -1895,28 +1914,25 @@ with tab_ocr:
     st.divider()
 
     # 완료 기록
+    _fws1 = _ws_selector("ocr1_ws_filter")
     _done_txts1: list[Path] = []
-    if DONE_DIR.exists():
-        for _ws_d1 in sorted(DONE_DIR.iterdir()):
-            if not _ws_d1.is_dir() or _ws_d1.name.startswith("_"):
-                continue
-            _t_sub1 = _ws_d1 / TXT_SUB
-            if _t_sub1.exists():
-                _done_txts1.extend(sorted(_t_sub1.glob("*.txt"),
-                                          key=lambda p: p.stat().st_mtime, reverse=True))
-    st.markdown(f"#### 완료 기록 ({len(_done_txts1)}권)")
+    if _fws1 and DONE_DIR.exists():
+        _t_sub1 = DONE_DIR / _fws1 / TXT_SUB
+        if _t_sub1.exists():
+            _done_txts1 = sorted(_t_sub1.glob("*.txt"),
+                                 key=lambda p: p.stat().st_mtime, reverse=True)
+    st.markdown(f"#### 완료 기록 ({len(_done_txts1)}권) [{_fws1 or ''}]")
     if _done_txts1:
         with st.container(height=220, border=True):
             for _dt1 in _done_txts1[:80]:
-                _dws1 = _dt1.parent.parent.name
                 _dc1, _dc2, _dc3 = st.columns([5, 2, 1])
-                _dc1.caption(f"**{_dt1.stem}** [{_dws1}]")
+                _dc1.caption(f"**{_dt1.stem}**")
                 _dc2.caption(f"{_dt1.stat().st_size//1024}KB · "
                              f"{datetime.fromtimestamp(_dt1.stat().st_mtime).strftime('%m-%d')}")
                 if _dc3.button("📂", key=f"open_dt1_{_dt1}", help="폴더에서 보기"):
                     open_path(_dt1, reveal=True)
-    else:
-        st.caption("완료된 TXT 없음")
+    elif _fws1:
+        st.caption("해당 폴더에 완료된 TXT 없음")
 
     # 실패 기록
     _fail1 = sorted([p for p in FAILED_DIR.rglob("*") if p.is_file()],
@@ -1952,29 +1968,25 @@ with tab_split:
             _dst2.write_bytes(_u2.read())
         st.success(f"{len(_up2)}개 TXT 저장 완료"); st.rerun()
 
-    # 분할 대기 / 완료 목록 수집
+    # 폴더 선택 → 분할 대기 / 완료 목록 수집
+    _fws2 = _ws_selector("split2_ws_filter")
     _split_pend2: list[dict] = []
     _split_done2: list[dict] = []
-    if DONE_DIR.exists():
-        for _ws_d2 in sorted(DONE_DIR.iterdir()):
-            if not _ws_d2.is_dir() or _ws_d2.name.startswith("_"):
-                continue
-            _ws2 = _ws_d2.name
-            _t2 = _ws_d2 / TXT_SUB
-            if not _t2.exists():
-                continue
+    if _fws2 and DONE_DIR.exists():
+        _t2 = DONE_DIR / _fws2 / TXT_SUB
+        if _t2.exists():
             for _txt2 in sorted(_t2.glob("*.txt")):
                 _stem2 = _nfc(_txt2.stem)
-                _ch2 = chapters_dir(_ws2, _stem2)
+                _ch2 = chapters_dir(_fws2, _stem2)
                 _ch_txts2 = [f for f in (_ch2.glob("??.*.txt") if _ch2.exists() else [])
                              if not f.stem.endswith(("_ko", "_wiki"))]
-                _meta2 = f"[{_ws2}] · {_txt2.stat().st_size//1024}KB"
+                _meta2 = f"{_txt2.stat().st_size//1024}KB"
                 if _ch_txts2:
-                    _split_done2.append({"ws": _ws2, "stem": _stem2,
+                    _split_done2.append({"ws": _fws2, "stem": _stem2,
                                           "n": len(_ch_txts2), "ch_dir": _ch2})
                 else:
-                    _split_pend2.append({"key": f"{_ws2}_{_stem2}", "label": _stem2,
-                                          "meta": _meta2, "obj": {"ws": _ws2, "stem": _stem2}})
+                    _split_pend2.append({"key": f"{_fws2}_{_stem2}", "label": _stem2,
+                                          "meta": _meta2, "obj": {"ws": _fws2, "stem": _stem2}})
 
     st.markdown(f"#### 분할 대기 ({len(_split_pend2)}권)")
     if _split_pend2:
@@ -2049,17 +2061,13 @@ with tab_tr:
                 (st.success if _ok3u else st.error)(f"{'✅' if _ok3u else '❌'} {_u3.name}: {_msg3u}")
             st.rerun()
 
-        # 번역 대기 / 완료 수집
+        # 폴더 선택 → 번역 대기 / 완료 수집
+        _fws3 = _ws_selector("tr3_ws_filter")
         _tr_pend3: list[dict] = []
         _tr_done3 = 0
-        if DONE_DIR.exists():
-            for _ws_d3 in sorted(DONE_DIR.iterdir()):
-                if not _ws_d3.is_dir() or _ws_d3.name.startswith("_"):
-                    continue
-                _ws3 = _ws_d3.name
-                _ch_root3 = _ws_d3 / "chapters"
-                if not _ch_root3.exists():
-                    continue
+        if _fws3 and DONE_DIR.exists():
+            _ch_root3 = DONE_DIR / _fws3 / "chapters"
+            if _ch_root3.exists():
                 for _book3 in sorted(_ch_root3.iterdir()):
                     if not _book3.is_dir():
                         continue
@@ -2073,7 +2081,7 @@ with tab_tr:
                             _tr_pend3.append({
                                 "key": str(_cf3.relative_to(DONE_DIR)),
                                 "label": f"{_book3.name} / {_cf3.name}",
-                                "meta": f"[{_ws3}] · {_cf3.stat().st_size//1024}KB",
+                                "meta": f"{_cf3.stat().st_size//1024}KB",
                                 "obj": _cf3,
                             })
 
@@ -2127,17 +2135,13 @@ with tab_summ:
                 (st.success if _ok4u else st.error)(f"{'✅' if _ok4u else '❌'} {_u4.name}: {_msg4u}")
             st.rerun()
 
-        # 요약 대기 / 완료 수집
+        # 폴더 선택 → 요약 대기 / 완료 수집
+        _fws4 = _ws_selector("summ4_ws_filter")
         _sum_pend4: list[dict] = []
         _sum_done4 = 0
-        if DONE_DIR.exists():
-            for _ws_d4 in sorted(DONE_DIR.iterdir()):
-                if not _ws_d4.is_dir() or _ws_d4.name.startswith("_"):
-                    continue
-                _ws4 = _ws_d4.name
-                _ch_root4 = _ws_d4 / "chapters"
-                if not _ch_root4.exists():
-                    continue
+        if _fws4 and DONE_DIR.exists():
+            _ch_root4 = DONE_DIR / _fws4 / "chapters"
+            if _ch_root4.exists():
                 for _book4 in sorted(_ch_root4.iterdir()):
                     if not _book4.is_dir():
                         continue
@@ -2154,7 +2158,7 @@ with tab_summ:
                             _sum_pend4.append({
                                 "key": str(_cf4.relative_to(DONE_DIR)),
                                 "label": f"{_book4.name} / {_cf4.name}",
-                                "meta": f"[{_ws4}] · {_tag4} · {_cf4.stat().st_size//1024}KB",
+                                "meta": f"{_tag4} · {_cf4.stat().st_size//1024}KB",
                                 "obj": (_cf4, _bstem4),
                             })
 
@@ -2190,17 +2194,15 @@ with tab_wiki5:
 
     _wiki_stems5 = {_nfc(p.stem) for p in WIKI_DIR.rglob("*.md")} if WIKI_DIR.exists() else set()
 
+    # 폴더 선택
+    _fws5 = _ws_selector("wiki5_ws_filter")
+
     # 챕터 요약 기반 대기 목록
     _wiki_pend5: list[dict] = []
     _wiki_done5_list: list[dict] = []
-    if DONE_DIR.exists():
-        for _ws_d5 in sorted(DONE_DIR.iterdir()):
-            if not _ws_d5.is_dir() or _ws_d5.name.startswith("_"):
-                continue
-            _ws5 = _ws_d5.name
-            _ch_root5 = _ws_d5 / "chapters"
-            if not _ch_root5.exists():
-                continue
+    if _fws5 and DONE_DIR.exists():
+        _ch_root5 = DONE_DIR / _fws5 / "chapters"
+        if _ch_root5.exists():
             for _book5 in sorted(_ch_root5.iterdir()):
                 if not _book5.is_dir():
                     continue
@@ -2212,39 +2214,34 @@ with tab_wiki5:
                                if not f.stem.endswith(("_ko", "_wiki"))])
                 _ratio5 = f"{len(_jsons5)}/{_total5}챕터"
                 if _stem5 in _wiki_stems5:
-                    _wiki_done5_list.append({"stem": _stem5, "ws": _ws5,
+                    _wiki_done5_list.append({"stem": _stem5, "ws": _fws5,
                                               "n": len(_jsons5), "total": _total5})
                 else:
                     _wiki_pend5.append({
-                        "key": f"{_ws5}_{_stem5}",
+                        "key": f"{_fws5}_{_stem5}",
                         "label": _stem5,
-                        "meta": f"[{_ws5}] · {_ratio5} 요약됨",
-                        "obj": {"ws": _ws5, "stem": _stem5},
+                        "meta": f"{_ratio5} 요약됨",
+                        "obj": {"ws": _fws5, "stem": _stem5},
                     })
 
     # 단일 TXT 기반 (챕터 분할 없는 책)
     _single_pend5: list[dict] = []
-    if DONE_DIR.exists():
-        for _ws_d5s in sorted(DONE_DIR.iterdir()):
-            if not _ws_d5s.is_dir() or _ws_d5s.name.startswith("_"):
-                continue
-            _ws5s = _ws_d5s.name
-            _t5s = _ws_d5s / TXT_SUB
-            if not _t5s.exists():
-                continue
+    if _fws5 and DONE_DIR.exists():
+        _t5s = DONE_DIR / _fws5 / TXT_SUB
+        if _t5s.exists():
             for _txt5s in sorted(_t5s.glob("*.txt")):
                 _stem5s = _nfc(_txt5s.stem)
-                _ch5s = chapters_dir(_ws5s, _stem5s)
+                _ch5s = chapters_dir(_fws5, _stem5s)
                 if _ch5s.exists() and any(f for f in _ch5s.glob("??.*.txt")
                                            if not f.stem.endswith(("_ko","_wiki"))):
                     continue
                 if _stem5s in _wiki_stems5:
                     continue
                 _single_pend5.append({
-                    "key": f"s_{_ws5s}_{_stem5s}",
+                    "key": f"s_{_fws5}_{_stem5s}",
                     "label": _stem5s,
-                    "meta": f"[{_ws5s}] · 단일TXT · {_txt5s.stat().st_size//1024}KB",
-                    "obj": {"ws": _ws5s, "stem": _stem5s, "txt": _txt5s},
+                    "meta": f"단일TXT · {_txt5s.stat().st_size//1024}KB",
+                    "obj": {"ws": _fws5, "stem": _stem5s, "txt": _txt5s},
                 })
 
     # 챕터 요약 → Wiki
