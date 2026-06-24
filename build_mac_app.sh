@@ -36,29 +36,17 @@ PLIST
 # ── 런처 스크립트 ───────────────────────────────────────────
 cat > "$MACOS/MyBookshelf" <<'LAUNCHER'
 #!/bin/bash
-# My Bookshelf 통합 런처
-# 역할: 메뉴바 앱이 실행 중 → 브라우저 열기
-#        실행 중 아님    → 메뉴바 앱 시작 (Streamlit 포함)
+# My Bookshelf 통합 런처 (네이티브 창)
+# 역할: 첫 실행 시 패키지 설치 → desktop.py(PyWebView 네이티브 창) 실행.
+#        터미널·브라우저 창 없이 독립 앱 창으로 뜬다.
 RESOURCES="$( cd "$( dirname "$0" )/../Resources" && pwd )"
 SUPPORT="$HOME/Library/Application Support/MyBookshelf"
 VENV="$SUPPORT/.venv"
 LOG="$SUPPORT/app.log"
-PORT=8501
-MENUBAR_APP="$RESOURCES/menubar_app.py"
-
-# ── 메뉴바 앱 이미 실행 중 → 브라우저만 열기 ──────────────
-if pgrep -f "menubar_app.py" > /dev/null 2>&1; then
-    open "http://localhost:$PORT"; exit 0
-fi
-
-# ── Streamlit만 실행 중(launchd 등) → 브라우저만 열기 ─────
-if curl -s "http://localhost:$PORT/" >/dev/null 2>&1; then
-    open "http://localhost:$PORT"; exit 0
-fi
 
 # ── 첫 실행: 패키지 설치 ────────────────────────────────────
-if [ ! -d "$VENV" ]; then
-    osascript -e 'display dialog "My Bookshelf를 처음 시작합니다.\n\n필요한 패키지를 설치합니다 (10~20분 소요).\n완료되면 메뉴바에 아이콘이 나타납니다.\n\n창을 닫지 마세요." buttons {"확인"} default button "확인" with title "My Bookshelf 설치"'
+if [ ! -x "$VENV/bin/python" ]; then
+    osascript -e 'display dialog "My Bookshelf를 처음 시작합니다.\n\n필요한 패키지를 설치합니다 (5~20분 소요).\n설치 중에는 아무 창도 보이지 않을 수 있습니다.\n완료되면 앱 창이 자동으로 열립니다." buttons {"설치 시작"} default button "설치 시작" with title "My Bookshelf 설치"'
 
     PY=""
     for cand in python3.13 python3.12 python3.11 python3.10 \
@@ -82,40 +70,20 @@ if [ ! -d "$VENV" ]; then
     "$VENV/bin/python" -m pip install --upgrade pip -q >>"$LOG" 2>&1
     "$VENV/bin/python" -m pip install -r "$RESOURCES/requirements.txt" -q >>"$LOG" 2>&1
 
-    if [ ! -x "$VENV/bin/streamlit" ]; then
+    if [ ! -x "$VENV/bin/streamlit" ] || ! "$VENV/bin/python" -c "import webview" 2>/dev/null; then
         osascript -e "display alert \"설치 실패\" message \"패키지 설치에 실패했습니다.\n로그: $LOG\" as critical"
         open "$SUPPORT"; exit 1
     fi
-    osascript -e 'display notification "설치 완료! 메뉴바에 아이콘이 나타납니다." with title "My Bookshelf"'
+    # Streamlit 첫 실행 영문 환영문 스킵
+    mkdir -p "$HOME/.streamlit"
+    [ -f "$HOME/.streamlit/credentials.toml" ] || printf '[general]\nemail = ""\n' > "$HOME/.streamlit/credentials.toml"
+    osascript -e 'display notification "설치 완료! 앱 창을 엽니다." with title "My Bookshelf"'
 fi
 
-# ── 메뉴바 앱 시작 (Streamlit + 상태 모니터 통합) ───────────
-export PATH="$VENV/bin:$PATH"
+# ── 네이티브 창 실행 (desktop.py가 서버 기동·창·종료 관리) ──
+export PATH="$VENV/bin:$PATH"   # docling/pdftotext 등 CLI 탐지
 mkdir -p "$SUPPORT"
-
-# 메뉴바 앱이 있으면 그걸로, 없으면 Streamlit 단독 실행
-if [ -f "$MENUBAR_APP" ]; then
-    nohup "$VENV/bin/python" "$MENUBAR_APP" >>"$LOG" 2>&1 &
-    # 메뉴바 앱이 Streamlit을 내부에서 시작할 때까지 최대 25초 대기
-    for i in $(seq 1 25); do
-        sleep 1
-        if curl -s "http://localhost:$PORT/" >/dev/null 2>&1; then
-            open "http://localhost:$PORT"; exit 0
-        fi
-    done
-else
-    # 폴백: Streamlit 단독
-    nohup "$VENV/bin/streamlit" run "$RESOURCES/pipeline_app.py" \
-        --server.port $PORT --browser.gatherUsageStats false --server.headless true \
-        >>"$LOG" 2>&1 &
-    for i in $(seq 1 20); do
-        sleep 1
-        if curl -s "http://localhost:$PORT/" >/dev/null 2>&1; then
-            open "http://localhost:$PORT"; exit 0
-        fi
-    done
-fi
-open "http://localhost:$PORT"
+exec "$VENV/bin/python" "$RESOURCES/desktop.py" >>"$LOG" 2>&1
 LAUNCHER
 chmod +x "$MACOS/MyBookshelf"
 
@@ -221,7 +189,7 @@ fi
 
 echo
 echo "배포 방법:"
-echo "  1. dist/MyBookshelf.app 을 동료에게 전달"
+echo "  1. dist/MyBookshelf.app 을 동료에게 전달 (또는 /Applications 로 이동)"
 echo "  2. 동료: 우클릭 → 열기 (첫 실행 시 Gatekeeper 경고 무시)"
-echo "  3. 첫 실행: 패키지 자동 설치 (10~20분)"
-echo "  4. 이후: 더블클릭만 하면 브라우저가 열림"
+echo "  3. 첫 실행: 패키지 자동 설치 (5~20분)"
+echo "  4. 이후: 더블클릭(또는 Dock 아이콘) → 네이티브 앱 창 (터미널·브라우저 없음)"

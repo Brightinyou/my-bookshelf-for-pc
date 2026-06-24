@@ -8,3 +8,4 @@ __pycache__/
 *.key
 keys.json
 config.json
+dist/

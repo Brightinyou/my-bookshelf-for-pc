@@ -68,6 +68,11 @@ else
 fi
 
 echo
-echo "🎉 설치 완료! 이제 start.command 를 더블클릭하면 앱이 열립니다."
+echo "🎉 설치 완료! 이제 start.command 를 더블클릭하면 앱 창이 열립니다."
 echo "   (고급) 내부 파이썬 파일은 core/ 폴더 안에 있습니다."
-read -n 1 -s -r -p "아무 키나 누르면 창이 닫힙니다…"
+echo
+echo "이 창은 3초 후 자동으로 닫힙니다."
+sleep 3
+# 이 setup 터미널 창(맨 앞 창)을 닫는다
+osascript -e 'tell application "Terminal" to close front window' >/dev/null 2>&1
+exit 0
