@@ -22,7 +22,7 @@ import llm_providers as llm
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.4.5"   # 배포 zip 버전과 함께 올린다
+APP_VERSION = "v0.5.17"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -489,7 +489,7 @@ def wiki_generator_running() -> bool:
 
 
 def _wiki_env() -> dict:
-    """위키 생성기 자식 프로세스 환경. 업로드 탭에서 고른 금고가 있으면
+    """위키 생성기 자식 프로세스 환경. 업로드 탭에서 고른 보관함(Vault)가 있으면
     MYBOOKSHELF_WIKI_DIR로 전달(config.py가 WIKI_DIR로 해석). (2026-06-11)"""
     env = {**os.environ, "PYTHONUTF8": "1"}   # 윈도우 cp949에서 이모지 출력 크래시 방지
     target = (st.session_state.get("wiki_target_dir") or "").strip()
@@ -515,7 +515,7 @@ def trigger_wiki_generation() -> int:
             env=env,
         )
         append_log("Gemini Wiki 일괄 생성(--all) 트리거"
-                   + (f" → 금고 {env['MYBOOKSHELF_WIKI_DIR']}" if "MYBOOKSHELF_WIKI_DIR" in env else ""))
+                   + (f" → 보관함(Vault) {env['MYBOOKSHELF_WIKI_DIR']}" if "MYBOOKSHELF_WIKI_DIR" in env else ""))
     except Exception as e:
         append_log(f"ERROR: gemini_wiki --all Popen 실패 ({type(e).__name__}) {str(e)[:200]}")
     return 0
@@ -541,7 +541,7 @@ def trigger_gemini_wiki(txt_path: Path) -> bool:
         subprocess.Popen(cmd, stdout=open(log_path, "a", encoding="utf-8"),
                          stderr=subprocess.STDOUT, env=env)
         append_log(f"Wiki 트리거({'챕터auto' if CHAPTER_WIKI.exists() else 'gemini'}): {Path(txt_path).name}"
-                   + (f" → 금고 {env['MYBOOKSHELF_WIKI_DIR']}" if "MYBOOKSHELF_WIKI_DIR" in env else ""))
+                   + (f" → 보관함(Vault) {env['MYBOOKSHELF_WIKI_DIR']}" if "MYBOOKSHELF_WIKI_DIR" in env else ""))
         return True
     except Exception as e:
         append_log(f"ERROR: gemini_wiki Popen 실패 ({type(e).__name__}) {str(e)[:200]}")
@@ -980,6 +980,8 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
             stages["wiki"] = "skip"
         stages["anythingllm"] = "removed"
         append_log(f"완료: {uf.name}")
+        if final_txt and Path(final_txt).exists():
+            queue_add("tab2_ready", [_nfc(Path(final_txt).stem)])  # → 장별분할 큐
         status_ui.update(label=f"✅ 완료: {uf.name}", state="complete")
 
     notify(f"{uf.name} {'완료' if success else '실패'}", title=ws_name)
@@ -1323,7 +1325,7 @@ def _obsidian_config() -> Path:
 
 
 def ensure_obsidian_vault(folder: Path) -> bool:
-    """folder를 옵시디언 금고 목록에 등록(이미 있으면 그대로). (2026-06-11)"""
+    """folder를 옵시디언 보관함(Vault) 목록에 등록(이미 있으면 그대로). (2026-06-11)"""
     cfgf = _obsidian_config()
     try:
         folder.mkdir(parents=True, exist_ok=True)
@@ -1342,12 +1344,12 @@ def ensure_obsidian_vault(folder: Path) -> bool:
         cfgf.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         return True
     except Exception as e:
-        append_log(f"WARN: 옵시디언 금고 등록 실패 ({type(e).__name__}) {str(e)[:120]}")
+        append_log(f"WARN: 옵시디언 보관함(Vault) 등록 실패 ({type(e).__name__}) {str(e)[:120]}")
         return False
 
 
 def list_obsidian_vaults() -> list[str]:
-    """옵시디언에 등록된 금고 경로 목록. (2026-06-11)"""
+    """옵시디언에 등록된 보관함(Vault) 경로 목록. (2026-06-11)"""
     try:
         data = json.loads(_obsidian_config().read_text(encoding="utf-8"))
         return [v.get("path", "") for v in data.get("vaults", {}).values() if v.get("path")]
@@ -1369,9 +1371,60 @@ def set_wiki_dir(path_str: str) -> None:
 
 DEFAULT_WS = "My Bookshelf"   # 단일 기본 폴더
 
+# ── 파이프라인 큐 ────────────────────────────────────────────
+# 각 탭이 완료한 항목을 다음 탭 큐에 등록하는 단방향 파이프라인.
+# 큐 파일: done/My Bookshelf/.pipeline_queue.json
+# 단계: tab2_ready(분할), tab3_ready(번역), tab4_ready(요약), tab5_ready(Wiki)
+
+_QUEUE_FILE = DONE_DIR / DEFAULT_WS / ".pipeline_queue.json"
+_QUEUE_STAGES = ["tab2_ready", "tab3_ready", "tab4_ready", "tab5_ready"]
+
+def _q_load() -> dict:
+    try:
+        return json.loads(_QUEUE_FILE.read_text(encoding="utf-8")) if _QUEUE_FILE.exists() else {}
+    except Exception:
+        return {}
+
+def _q_save(data: dict) -> None:
+    _QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _QUEUE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def queue_list(stage: str) -> list[str]:
+    """큐에서 해당 단계 항목 목록 반환."""
+    return _q_load().get(stage, [])
+
+def queue_add(stage: str, items: list[str]) -> None:
+    """큐에 항목 추가 (중복 제거)."""
+    d = _q_load()
+    cur = d.get(stage, [])
+    for it in items:
+        if it not in cur:
+            cur.append(it)
+    d[stage] = cur
+    _q_save(d)
+
+def queue_remove(stage: str, items: list[str]) -> None:
+    """큐에서 항목 제거."""
+    d = _q_load()
+    cur = d.get(stage, [])
+    d[stage] = [x for x in cur if x not in set(items)]
+    _q_save(d)
+
+def queue_clear(stage: str) -> None:
+    d = _q_load()
+    d[stage] = []
+    _q_save(d)
+
+
+_HANGUL_RE = _re.compile(r'[가-힣ᄀ-ᇿ㄰-㆏]')
+
+def _needs_translation(stem: str) -> bool:
+    """책 제목(stem)에 한글이 없으면 번역 필요(영문 등), 한글 있으면 번역 불필요."""
+    return not bool(_HANGUL_RE.search(stem))
+
 
 def open_wiki_vault():
-    """위키 폴더를 옵시디언 금고로 등록 후 옵시디언으로 열기. 실패 시 폴더라도 연다."""
+    """위키 폴더를 옵시디언 보관함(Vault)로 등록 후 옵시디언으로 열기. 실패 시 폴더라도 연다."""
     ensure_obsidian_vault(WIKI_DIR)
     from urllib.parse import quote
     uri = "obsidian://open?path=" + quote(str(WIKI_DIR.resolve()))
@@ -1491,7 +1544,65 @@ def summarize_one_chapter(ch_path: Path, book_stem: str) -> tuple[bool, str]:
         return False, str(e)[:200]
 
 
-def build_wiki_from_chapter_summaries(ws_name: str, stem: str) -> tuple[bool, str]:
+def _ch_link(stem: str, ch_title: str) -> str:
+    """챕터 노트의 Obsidian 위키링크 문자열 반환."""
+    try:
+        import gemini_wiki as _gw
+        return "[[" + _gw.make_filename(_gw.nfc(f"{stem} — {ch_title}"))[:-3] + "]]"
+    except Exception:
+        return f"[[{stem} — {ch_title}]]"
+
+
+def build_single_chapter_wiki(ws_name: str, stem: str, json_path: Path, wiki_dir: Path | None = None) -> tuple[bool, str]:
+    """단일 챕터 _wiki.json → 개별 Obsidian 노트 (전체 요약 노트와 링크 연결). (ok, path or msg)."""
+    try:
+        import gemini_wiki as _gw
+    except ImportError as e:
+        return False, f"임포트 실패: {e}"
+    try:
+        d = json.loads(json_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return False, f"JSON 읽기 실패: {e}"
+    ch_title = _re.sub(r"^\d+_", "", json_path.stem.replace("_wiki", ""))
+    body  = d.get("body", "")
+    summ  = d.get("summary", "")
+    today = __import__("datetime").date.today().isoformat()
+    _, model = llm.wiki_provider_model()
+
+    # 이전/다음 챕터 탐색 (chapters_dir 내 ??_*.txt 순서 기준)
+    ch_dir = json_path.parent
+    all_stems = [_re.sub(r"^\d+_", "", f.stem)
+                 for f in sorted(ch_dir.glob("??_*.txt"))
+                 if not f.stem.endswith(("_ko", "_wiki"))]
+    cur_idx = all_stems.index(ch_title) if ch_title in all_stems else -1
+    prev_link = _ch_link(stem, all_stems[cur_idx - 1]) if cur_idx > 0 else ""
+    next_link = _ch_link(stem, all_stems[cur_idx + 1]) if 0 <= cur_idx < len(all_stems) - 1 else ""
+    nav = " · ".join(x for x in [prev_link, next_link] if x)
+
+    book_link = "[[" + _gw.make_filename(_gw.nfc(stem))[:-3] + "]]"
+    note_title = f"{stem} — {ch_title}"
+
+    lines = [
+        "---", f"title: {note_title}", f"book: {stem}",
+        f"chapter: {ch_title}", f"model: {model}",
+        f"generated: {today}", "---", "",
+        f"# {ch_title}",
+        f"> ← {book_link}" + (f"  |  {nav}" if nav else ""), "",
+        f"**요약:** {summ}", "", body, "",
+        "---",
+        f"*전체 목차: {book_link}*" + (f"  |  {nav}" if nav else ""),
+    ]
+    fname = _gw.make_filename(_gw.nfc(note_title))
+    _wdir = wiki_dir or WIKI_DIR
+    # 챕터 노트는 책 이름 하위폴더에 저장
+    book_folder = _wdir / _re.sub(r'[/\\:*?"<>|]', '_', stem).strip()
+    book_folder.mkdir(parents=True, exist_ok=True)
+    out_path = book_folder / fname
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    return True, str(out_path)
+
+
+def build_wiki_from_chapter_summaries(ws_name: str, stem: str, wiki_dir: Path | None = None) -> tuple[bool, str]:
     """챕터 _wiki.json들 → 옵시디언 위키 노트 생성. (ok, path or msg)."""
     try:
         import chapter_wiki as _cw
@@ -1522,15 +1633,76 @@ def build_wiki_from_chapter_summaries(ws_name: str, stem: str) -> tuple[bool, st
     summ  = ov.get("summary", "")
     today = __import__("datetime").date.today().isoformat()
     prov, model = llm.wiki_provider_model()
+    _wdir = wiki_dir or WIKI_DIR
+    # 챕터 노트는 책 이름 하위폴더에 저장
+    _book_folder = _wdir / _re.sub(r'[/\\:*?"<>|]', '_', stem).strip()
+
+    # 챕터별 개별 노트 존재 여부 확인 (하위폴더 우선, 루트 폴백)
+    all_ch_titles = [s["title"] for s in sections]
+    def _has_ch_note(title):
+        fname = _gw.make_filename(_gw.nfc(f"{stem} — {title}"))
+        return (_book_folder / fname).exists() or (_wdir / fname).exists()
+
     lines = [
         "---", f"title: {stem}", f"category: {cat}",
         f"model: {model}", f"generated: {today}", "---", "",
         f"# {stem}", "", intro, "", f"**요약:** {summ}", "",
     ]
+
+    # 챕터 목차 (개별 노트 있으면 ✅, 없으면 📄)
+    toc_lines = ["## 📋 챕터 목차", ""]
     for s in sections:
-        lines += [f"## {s['idx']:02d}. {s['title']}", s["summary"], "", s["body"], ""]
-    out_path = WIKI_DIR / _gw.make_filename(_gw.nfc(stem))
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+        exists = _has_ch_note(s["title"])
+        marker = "✅" if exists else "📄"
+        ch_note_link = _ch_link(stem, s["title"])
+        toc_lines.append(f"- {marker} {ch_note_link} — {s['summary'][:60]}{'…' if len(s['summary'])>60 else ''}")
+    lines += toc_lines + [""]
+
+    # 챕터 섹션: 개별 노트 있으면 링크만, 없으면 요약+본문 인라인
+    for s in sections:
+        exists = _has_ch_note(s["title"])
+        ch_note_link = _ch_link(stem, s["title"])
+        if exists:
+            # 개별 노트 이미 있음 → 링크와 한 줄 요약만 (중복 방지)
+            lines += [
+                f"## {s['idx']:02d}. {s['title']}",
+                f"> 📄 {ch_note_link}",
+                "",
+                s["summary"], "",
+            ]
+        else:
+            # 개별 노트 없음 → 요약+본문 인라인 포함
+            lines += [
+                f"## {s['idx']:02d}. {s['title']}",
+                f"> {ch_note_link}",
+                "",
+                s["summary"], "",
+                s["body"], "",
+            ]
+
+    # 기존 개별 챕터 노트들의 책 링크가 올바른지 확인 후 업데이트 (하위폴더 우선)
+    book_link = "[[" + _gw.make_filename(_gw.nfc(stem))[:-3] + "]]"
+    for i, s in enumerate(sections):
+        fname = _gw.make_filename(_gw.nfc(f"{stem} — {s['title']}"))
+        note_path = (_book_folder / fname) if (_book_folder / fname).exists() else (_wdir / fname)
+        if not note_path.exists():
+            continue
+        content = note_path.read_text(encoding="utf-8")
+        # 책 링크가 없으면 상단에 추가
+        if book_link not in content:
+            prev_link = _ch_link(stem, all_ch_titles[i-1]) if i > 0 else ""
+            next_link = _ch_link(stem, all_ch_titles[i+1]) if i < len(all_ch_titles)-1 else ""
+            nav = " · ".join(x for x in [prev_link, next_link] if x)
+            new_head = f"> ← {book_link}" + (f"  |  {nav}" if nav else "")
+            # 첫 번째 # 제목 다음 줄에 삽입
+            updated = _re.sub(
+                r"(^# .+\n)", rf"\1{new_head}\n", content, count=1, flags=_re.MULTILINE
+            )
+            note_path.write_text(updated, encoding="utf-8")
+
+    # 전체 요약 노트는 보관함(Vault) 루트에 저장 (폴더 브라우징 시 책 목록 한눈에)
+    _wdir.mkdir(parents=True, exist_ok=True)
+    out_path = _wdir / _gw.make_filename(_gw.nfc(stem))
     out_path.write_text("\n".join(lines), encoding="utf-8")
     _gw.mark_done(_gw.nfc(stem + ".txt"))
     append_log(f"단계별 Wiki 생성 완료: {out_path.name}")
@@ -1554,6 +1726,7 @@ def _do_ocr_only(uf, ws_name: str, fast: bool = False) -> dict:
         final = txt_dir(DONE_DIR, ws_name) / dest.name
         shutil.move(str(dest), str(final))
         append_log(f"TXT 직접 업로드: {final.name}")
+        queue_add("tab2_ready", [_nfc(Path(final).stem)])   # → 장별분할 큐
         return {"ok": True, "name": uf.name, "txt_path": str(final), "md_path": "", "error": ""}
     txt_path, md_src, err = pdf_to_txt(dest, fast=fast)
     if not txt_path:
@@ -1565,18 +1738,17 @@ def _do_ocr_only(uf, ws_name: str, fast: bool = False) -> dict:
     pdf_save_dir2.mkdir(parents=True, exist_ok=True)
     final_pdf = pdf_save_dir2 / uf.name
     shutil.move(str(dest), str(final_pdf))
+    txt_dir(DONE_DIR, ws_name).mkdir(parents=True, exist_ok=True)
+    final_txt = txt_dir(DONE_DIR, ws_name) / txt_path.name   # 항상 1_txt/에 저장
+    shutil.move(str(txt_path), str(final_txt))
     if md_src and md_src.exists():
-        txt_dir(DONE_DIR, ws_name).mkdir(parents=True, exist_ok=True)
         md_dir(DONE_DIR, ws_name).mkdir(parents=True, exist_ok=True)
-        final_txt = txt_dir(DONE_DIR, ws_name) / txt_path.name
-        final_md  = md_dir(DONE_DIR, ws_name) / md_src.name
-        shutil.move(str(txt_path), str(final_txt))
-        shutil.move(str(md_src),   str(final_md))
+        final_md = md_dir(DONE_DIR, ws_name) / md_src.name
+        shutil.move(str(md_src), str(final_md))
     else:
-        final_txt = done_sub / txt_path.name
-        shutil.move(str(txt_path), str(final_txt))
         final_md = None
     append_log(f"OCR 완료: {uf.name} → {Path(final_txt).name}")
+    queue_add("tab2_ready", [_nfc(Path(final_txt).stem)])   # → 장별분할 큐 등록
     return {"ok": True, "name": uf.name, "txt_path": str(final_txt),
             "md_path": str(final_md) if final_md else "", "error": ""}
 
@@ -1808,7 +1980,7 @@ def _checklist(items: list[dict], prefix: str, height: int = 320) -> list:
         for it in items:
             k = f"{prefix}_{it['key']}"
             c1, c2 = st.columns([0.05, 0.95])
-            chk = c1.checkbox("", key=k, label_visibility="collapsed")
+            chk = c1.checkbox(" ", key=k, label_visibility="collapsed")
             c2.markdown(
                 f"**{it['label']}** &nbsp;<small style='color:#9ca3af'>{it['meta']}</small>",
                 unsafe_allow_html=True,
@@ -1853,6 +2025,8 @@ with tab_ocr:
         help="디지털 PDF(텍스트 레이어 있음)는 빠른 추출 권장. 스캔 PDF만 Docling 사용.",
     )
     _fast1 = "빠른" in _conv1
+    if _fast1:
+        st.caption("⚠️ 빠른 추출은 순수 텍스트만 추출합니다. 장(Chapter) 구조가 없어 **Tab 2 장별 분할이 불가**합니다. 장별 분할이 필요하면 🔬 Docling 정밀변환을 사용하세요.")
 
     # 처리 모드
     _mode1 = st.radio(
@@ -1878,23 +2052,22 @@ with tab_ocr:
         type=["pdf", "txt", "md"], accept_multiple_files=True, key="ocr_uploader",
     )
     if _uploads1:
+        _already_queued1 = st.session_state.get("_ocr_queued", set())
+        _added1 = []
         for _uf_new in _uploads1:
-            with st.status(f"처리 중: {_uf_new.name}", expanded=True):
-                if "OCR만" in _mode1:
-                    _r_new = _do_ocr_only(_uf_new, _ws1, fast=_fast1)
-                    if _r_new["ok"]:
-                        st.success(f"✅ TXT 저장: `{Path(_r_new['txt_path']).name}`")
-                        if st.button("📂 결과 폴더 열기", key=f"open_ocr_{_uf_new.name}"):
-                            open_path(Path(_r_new["txt_path"]), reveal=True)
-                    else:
-                        st.error(f"❌ {_r_new['error']}")
-                else:
-                    _ph_new = st.empty()
-                    _process_file_for_pipeline(
-                        _uf_new, _ws1, _nfc(_ws1), True, _tr_eng1,
-                        False, False, _ph_new, do_wiki=True,
-                    )
-        st.rerun()
+            if _uf_new.name in _already_queued1:
+                continue  # 이미 대기 목록에 추가된 파일 건너뜀
+            _dest1 = UPLOAD_TMP / _uf_new.name
+            try:
+                _dest1.write_bytes(_uf_new.read())
+                _added1.append(_uf_new.name)
+                _already_queued1.add(_uf_new.name)
+            except Exception as _e1:
+                st.error(f"❌ 저장 실패: {_uf_new.name} — {_e1}")
+        st.session_state["_ocr_queued"] = _already_queued1
+        if _added1:
+            st.success(f"📥 처리 대기 목록에 추가됨: {', '.join(_added1)}")
+            st.rerun()  # 대기 목록 갱신 (세션스테이트로 중복 저장 방지됨)
 
     st.divider()
 
@@ -1934,9 +2107,10 @@ with tab_ocr:
                     _ph1 = st.empty()
                     _process_file_for_pipeline(
                         _uf1, _ws1, _nfc(_ws1), True, _tr_eng1,
-                        False, False, _ph1, do_wiki=True,
+                        False, False, _ph1, do_wiki=False,
                     )
                 _prog1.progress(_i1 / len(_to_run1))
+            st.session_state.pop("_ocr_queued", None)  # 처리 완료 후 큐 초기화
             st.rerun()
     else:
         st.info("대기 중인 파일 없음 — 위에서 PDF를 업로드하세요.")
@@ -1997,34 +2171,42 @@ with tab_split:
             _dst2.write_bytes(_u2.read())
         st.success(f"{len(_up2)}개 TXT 저장 완료"); st.rerun()
 
-    # 폴더 선택 → 분할 대기 / 완료 목록 수집
-    _fws2 = DEFAULT_WS
+    # ── 분할 대기 (큐 기반 + 1_txt/ 전체 폴백) ──────────────
+    _q2_stems = queue_list("tab2_ready")
     _split_pend2: list[dict] = []
     _split_done2: list[dict] = []
-    if _fws2 and DONE_DIR.exists():
-        _t2 = DONE_DIR / _fws2 / TXT_SUB
-        if _t2.exists():
-            for _txt2 in sorted(_t2.glob("*.txt")):
-                _stem2 = _nfc(_txt2.stem)
-                _ch2 = chapters_dir(_fws2, _stem2)
-                _ch_txts2 = [f for f in (_ch2.glob("??.*.txt") if _ch2.exists() else [])
-                             if not f.stem.endswith(("_ko", "_wiki"))]
-                _meta2 = f"{_txt2.stat().st_size//1024}KB"
-                if _ch_txts2:
-                    _split_done2.append({"ws": _fws2, "stem": _stem2,
-                                          "n": len(_ch_txts2), "ch_dir": _ch2})
-                else:
-                    _split_pend2.append({"key": f"{_fws2}_{_stem2}", "label": _stem2,
-                                          "meta": _meta2, "obj": {"ws": _fws2, "stem": _stem2}})
+    _txt_root2 = DONE_DIR / DEFAULT_WS / TXT_SUB
+
+    # 큐에 없어도 1_txt/에 있는 TXT 모두 포함
+    _all_txt2_stems = {f.stem for f in _txt_root2.glob("*.txt")} if _txt_root2.exists() else set()
+    _q2_stems_set = set(_q2_stems)
+    _extra2 = sorted(_all_txt2_stems - _q2_stems_set)  # 큐에 없는 TXT
+    _all2_stems = list(_q2_stems) + _extra2
+
+    for _stem2 in _all2_stems:
+        _txt2 = _txt_root2 / (_stem2 + ".txt")
+        if not _txt2.exists():
+            continue
+        _ch2 = chapters_dir(DEFAULT_WS, _stem2)
+        _ch_txts2 = [f for f in (_ch2.glob("??_*.txt") if _ch2.exists() else [])
+                     if not f.stem.endswith(("_ko", "_wiki"))]
+        _meta2 = f"{_txt2.stat().st_size//1024}KB" + ("" if _stem2 in _q2_stems_set else " ·미등록")
+        if _ch_txts2:
+            _split_done2.append({"stem": _stem2, "n": len(_ch_txts2), "ch_dir": _ch2})
+        else:
+            _split_pend2.append({"key": _stem2, "label": _stem2, "meta": _meta2,
+                                  "obj": {"ws": DEFAULT_WS, "stem": _stem2}})
 
     st.markdown(f"#### 분할 대기 ({len(_split_pend2)}권)")
     if _split_pend2:
         _sel2 = _checklist(_split_pend2, "split2", height=280)
-        _b2c1, _b2c2 = st.columns(2)
+        _b2c1, _b2c2, _b2c3 = st.columns([2, 2, 1])
         _rs2 = _b2c1.button(f"▶ 선택 분할 ({len(_sel2)}권)", key="split2_run_sel",
                               use_container_width=True, type="primary", disabled=len(_sel2)==0)
         _ra2 = _b2c2.button(f"▶ 전체 분할 ({len(_split_pend2)}권)", key="split2_run_all",
                               use_container_width=True)
+        if _b2c3.button("🗑 큐 비우기", key="split2_clear", use_container_width=True):
+            queue_clear("tab2_ready"); st.rerun()
         _to2 = [it["obj"] for it in _split_pend2] if _ra2 else (_sel2 if _rs2 else [])
         if _to2:
             _sp2 = st.progress(0.0)
@@ -2035,22 +2217,49 @@ with tab_split:
                     st.warning(f"⚠️ {_s2['stem']}: {_serr2}")
                 else:
                     st.success(f"✅ {_s2['stem']} → {_sn2}개 챕터")
+                    queue_remove("tab2_ready", [_s2["stem"]])
+                    _ch_dir2 = chapters_dir(_s2["ws"], _s2["stem"])
+                    _new_chs2 = [str(f.relative_to(DONE_DIR))
+                                 for f in sorted(_ch_dir2.glob("??_*.txt"))
+                                 if not f.stem.endswith(("_ko", "_wiki"))]
+                    if _new_chs2:
+                        if _needs_translation(_s2["stem"]):
+                            queue_add("tab3_ready", _new_chs2)
+                            st.caption("🌐 영문 책 → 3·번역 대기 등록")
+                        else:
+                            queue_add("tab4_ready", _new_chs2)
+                            st.caption("🇰🇷 한국어 책 → 번역 건너뜀, 4·요약 대기 등록")
                 _sp2.progress(_si2 / len(_to2))
             st.rerun()
     else:
-        st.info("분할 대기 없음 — 1·OCR/TXT 탭에서 TXT를 먼저 생성하세요")
+        st.info("분할 대기 없음 — 1·OCR/TXT 탭에서 TXT를 먼저 생성하거나 아래에서 수동 추가하세요")
+
+    # 수동 추가 expander
+    with st.expander("➕ 수동으로 추가 (기존 책에서 선택)"):
+        _mc2a, _mc2b = st.columns([3, 2])
+        _search2 = _mc2a.text_input("책 이름 검색", key="split2_search", placeholder="검색어 입력…")
+        _sort2 = _mc2b.radio("정렬", ["최근 추가순", "이름순"], horizontal=True, key="split2_sort")
+        _all_txts2 = list(_txt_root2.glob("*.txt")) if _txt_root2.exists() else []
+        _all_txts2 = sorted(_all_txts2, key=lambda f: f.stat().st_mtime, reverse=True) \
+                     if "최근" in _sort2 else sorted(_all_txts2, key=lambda f: f.name)
+        _filtered2 = [f for f in _all_txts2 if _search2.lower() in f.stem.lower()] \
+                     if _search2 else _all_txts2
+        _manual_items2 = [{"key": f.stem, "label": f.stem,
+                           "meta": f"{f.stat().st_size//1024}KB", "obj": f.stem}
+                          for f in _filtered2]
+        _msel2 = _checklist(_manual_items2, "split2m", height=220)
+        if st.button(f"➕ 선택 항목 큐에 추가 ({len(_msel2)}권)", key="split2m_add",
+                     disabled=len(_msel2)==0):
+            queue_add("tab2_ready", _msel2); st.rerun()
 
     st.divider()
     st.markdown(f"#### 분할 완료 ({len(_split_done2)}권)")
     if _split_done2:
-        with st.container(height=240, border=True):
+        with st.container(height=200, border=True):
             for _sd2 in _split_done2:
                 _sdc1, _sdc2, _sdc3 = st.columns([5, 1.5, 1])
-                _sdc1.markdown(
-                    f"**{_sd2['stem']}** &nbsp;<small style='color:#9ca3af'>"
-                    f"[{_sd2['ws']}] · {_sd2['n']}챕터</small>",
-                    unsafe_allow_html=True,
-                )
+                _sdc1.markdown(f"**{_sd2['stem']}** &nbsp;<small style='color:#9ca3af'>{_sd2['n']}챕터</small>",
+                               unsafe_allow_html=True)
                 if _sdc2.button("📂 열기", key=f"open_ch2_{_sd2['stem']}", use_container_width=True):
                     open_path(_sd2["ch_dir"])
                 if _sdc3.button("🔄", key=f"resplit2_{_sd2['stem']}", help="재분할"):
@@ -2090,40 +2299,37 @@ with tab_tr:
                 (st.success if _ok3u else st.error)(f"{'✅' if _ok3u else '❌'} {_u3.name}: {_msg3u}")
             st.rerun()
 
-        # 폴더 선택 → 번역 대기 / 완료 수집
-        _fws3 = DEFAULT_WS
+        # ── 번역 대기 (큐 기반) ──────────────────────────────
+        _q3_rels = queue_list("tab3_ready")   # Tab2가 등록한 챕터 경로(상대)
         _tr_pend3: list[dict] = []
         _tr_done3 = 0
-        if _fws3 and DONE_DIR.exists():
-            _ch_root3 = DONE_DIR / _fws3 / "chapters"
-            if _ch_root3.exists():
-                for _book3 in sorted(_ch_root3.iterdir()):
-                    if not _book3.is_dir():
-                        continue
-                    for _cf3 in sorted(_book3.glob("??.*.txt")):
-                        if _cf3.stem.endswith(("_ko", "_wiki")):
-                            continue
-                        _ko3 = _cf3.with_name(_cf3.stem + "_ko.txt")
-                        if _ko3.exists():
-                            _tr_done3 += 1
-                        else:
-                            _tr_pend3.append({
-                                "key": str(_cf3.relative_to(DONE_DIR)),
-                                "label": f"{_book3.name} / {_cf3.name}",
-                                "meta": f"{_cf3.stat().st_size//1024}KB",
-                                "obj": _cf3,
-                            })
+        for _rel3 in _q3_rels:
+            _cf3 = DONE_DIR / _rel3
+            if not _cf3.exists():
+                continue
+            _ko3 = _cf3.with_name(_cf3.stem + "_ko.txt")
+            if _ko3.exists():
+                _tr_done3 += 1
+            else:
+                _tr_pend3.append({
+                    "key": _rel3,
+                    "label": f"{_cf3.parent.name} / {_cf3.name}",
+                    "meta": f"{_cf3.stat().st_size//1024}KB",
+                    "obj": _cf3,
+                })
 
         st.divider()
         st.markdown(f"#### 번역 대기 ({len(_tr_pend3)}개) / 완료 {_tr_done3}개")
         if _tr_pend3:
             _sel3 = _checklist(_tr_pend3, "tr3", height=280)
-            _b3c1, _b3c2 = st.columns(2)
+            _b3c1, _b3c2, _b3c3 = st.columns([2, 2, 1])
             _rs3 = _b3c1.button(f"▶ 선택 번역 ({len(_sel3)}개)", key="tr3_run_sel",
                                   use_container_width=True, type="primary", disabled=len(_sel3)==0)
             _ra3 = _b3c2.button(f"▶ 전체 번역 ({len(_tr_pend3)}개)", key="tr3_run_all",
                                   use_container_width=True)
-            _to3 = _tr_pend3 and ([it["obj"] for it in _tr_pend3] if _ra3 else (_sel3 if _rs3 else []))
+            if _b3c3.button("🗑 큐 비우기", key="tr3_clear", use_container_width=True):
+                queue_clear("tab3_ready"); st.rerun()
+            _to3: list = ([it["obj"] for it in _tr_pend3] if _ra3 else (_sel3 if _rs3 else []))
             if _to3:
                 _tp3 = st.progress(0.0)
                 for _ti3, _tf3 in enumerate(_to3, 1):
@@ -2131,10 +2337,32 @@ with tab_tr:
                     _ok3, _msg3 = translate_one_chapter(_tf3, _tr_eng3)
                     (st.success if _ok3 else st.warning)(
                         f"{'✅' if _ok3 else '⚠️'} {_tf3.name}: {_msg3}")
+                    if _ok3:
+                        _rel3_done = str(_tf3.relative_to(DONE_DIR))
+                        queue_remove("tab3_ready", [_rel3_done])
+                        queue_add("tab4_ready", [_rel3_done])
                     _tp3.progress(_ti3 / len(_to3))
                 st.success(f"번역 처리 완료: {len(_to3)}개"); st.rerun()
         else:
             st.info("번역 대기 없음 — 2·장별분할 탭에서 챕터를 먼저 분리하세요")
+
+        # 수동 추가 expander
+        with st.expander("➕ 수동으로 추가 (기존 챕터에서 선택)"):
+            _mc3a, _mc3b = st.columns([3, 2])
+            _search3 = _mc3a.text_input("책/챕터 이름 검색", key="tr3_search", placeholder="검색어 입력…")
+            _sort3 = _mc3b.radio("정렬", ["최근 추가순", "이름순"], horizontal=True, key="tr3_sort")
+            _ch_root3m = DONE_DIR / DEFAULT_WS / "chapters"
+            _all_cfs3 = list(_ch_root3m.rglob("??_*.txt")) if _ch_root3m.exists() else []
+            _all_cfs3 = [f for f in _all_cfs3 if not f.stem.endswith(("_ko","_wiki"))]
+            _all_cfs3 = sorted(_all_cfs3, key=lambda f: f.stat().st_mtime, reverse=True) \
+                        if "최근" in _sort3 else sorted(_all_cfs3, key=lambda f: str(f))
+            _filt3 = [f for f in _all_cfs3 if _search3.lower() in str(f).lower()] if _search3 else _all_cfs3
+            _mitems3 = [{"key": str(f.relative_to(DONE_DIR)), "label": f"{f.parent.name}/{f.name}",
+                         "meta": f"{f.stat().st_size//1024}KB", "obj": str(f.relative_to(DONE_DIR))}
+                        for f in _filt3]
+            _msel3 = _checklist(_mitems3, "tr3m", height=200)
+            if st.button(f"➕ 선택 항목 큐에 추가 ({len(_msel3)}개)", key="tr3m_add", disabled=len(_msel3)==0):
+                queue_add("tab3_ready", _msel3); st.rerun()
 
     st.info("💡 다음 단계: **📝 4·요약MD** 탭으로 이동하세요")
 
@@ -2163,54 +2391,77 @@ with tab_summ:
                 (st.success if _ok4u else st.error)(f"{'✅' if _ok4u else '❌'} {_u4.name}: {_msg4u}")
             st.rerun()
 
-        # 폴더 선택 → 요약 대기 / 완료 수집
-        _fws4 = DEFAULT_WS
+        # ── 요약 대기 (큐 기반) ──────────────────────────────
+        _q4_rels = queue_list("tab4_ready")
         _sum_pend4: list[dict] = []
         _sum_done4 = 0
-        if _fws4 and DONE_DIR.exists():
-            _ch_root4 = DONE_DIR / _fws4 / "chapters"
-            if _ch_root4.exists():
-                for _book4 in sorted(_ch_root4.iterdir()):
-                    if not _book4.is_dir():
-                        continue
-                    _bstem4 = _nfc(_book4.name)
-                    for _cf4 in sorted(_book4.glob("??.*.txt")):
-                        if _cf4.stem.endswith(("_ko", "_wiki")):
-                            continue
-                        _json4 = _cf4.with_name(_cf4.stem + "_wiki.json")
-                        if _json4.exists():
-                            _sum_done4 += 1
-                        else:
-                            _ko4 = _cf4.with_name(_cf4.stem + "_ko.txt")
-                            _tag4 = "🌐ko" if _ko4.exists() else "📄원문"
-                            _sum_pend4.append({
-                                "key": str(_cf4.relative_to(DONE_DIR)),
-                                "label": f"{_book4.name} / {_cf4.name}",
-                                "meta": f"{_tag4} · {_cf4.stat().st_size//1024}KB",
-                                "obj": (_cf4, _bstem4),
-                            })
+        for _rel4 in _q4_rels:
+            _cf4 = DONE_DIR / _rel4
+            if not _cf4.exists():
+                continue
+            _bstem4 = _nfc(_cf4.parent.name)
+            _json4 = _cf4.with_name(_cf4.stem + "_wiki.json")
+            if _json4.exists():
+                _sum_done4 += 1
+            else:
+                _ko4 = _cf4.with_name(_cf4.stem + "_ko.txt")
+                _tag4 = "🌐ko" if _ko4.exists() else "📄원문"
+                _sum_pend4.append({
+                    "key": _rel4,
+                    "label": f"{_cf4.parent.name} / {_cf4.name}",
+                    "meta": f"{_tag4} · {_cf4.stat().st_size//1024}KB",
+                    "obj": (_cf4, _bstem4),
+                })
 
         st.divider()
         st.markdown(f"#### 요약 대기 ({len(_sum_pend4)}개) / 완료 {_sum_done4}개")
         if _sum_pend4:
             _sel4 = _checklist(_sum_pend4, "summ4", height=280)
-            _b4c1, _b4c2 = st.columns(2)
+            _b4c1, _b4c2, _b4c3 = st.columns([2, 2, 1])
             _rs4 = _b4c1.button(f"▶ 선택 요약 ({len(_sel4)}개)", key="summ4_run_sel",
                                   use_container_width=True, type="primary", disabled=len(_sel4)==0)
             _ra4 = _b4c2.button(f"▶ 전체 요약 ({len(_sum_pend4)}개)", key="summ4_run_all",
                                   use_container_width=True)
+            if _b4c3.button("🗑 큐 비우기", key="summ4_clear", use_container_width=True):
+                queue_clear("tab4_ready"); st.rerun()
             _to4: list = ([it["obj"] for it in _sum_pend4] if _ra4 else (_sel4 if _rs4 else []))
             if _to4:
                 _sp4 = st.progress(0.0)
+                _stems4_done: set[str] = set()
                 for _si4, (_sf4, _bst4) in enumerate(_to4, 1):
                     with st.status(f"요약 [{_si4}/{len(_to4)}]: {_sf4.name}", expanded=False):
                         _ok4, _msg4 = summarize_one_chapter(_sf4, _bst4)
                     (st.success if _ok4 else st.warning)(
                         f"{'✅' if _ok4 else '⚠️'} {_sf4.name}: {_msg4[:80]}")
+                    if _ok4:
+                        _rel4_done = str(_sf4.relative_to(DONE_DIR))
+                        queue_remove("tab4_ready", [_rel4_done])
+                        _stems4_done.add(_bst4)
                     _sp4.progress(_si4 / len(_to4))
+                # 책 단위로 모든 챕터 요약 완료된 것만 tab5 큐에 등록
+                for _st5 in _stems4_done:
+                    queue_add("tab5_ready", [_st5])
                 st.success(f"요약 처리 완료: {len(_to4)}개"); st.rerun()
         else:
-            st.info("요약 대기 없음 — 2·장별분할 탭에서 챕터를 먼저 분리하세요")
+            st.info("요약 대기 없음 — 3·번역 탭 처리 후 자동 등록되거나 아래에서 수동 추가하세요")
+
+        # 수동 추가 expander
+        with st.expander("➕ 수동으로 추가 (기존 챕터에서 선택)"):
+            _mc4a, _mc4b = st.columns([3, 2])
+            _search4 = _mc4a.text_input("책/챕터 이름 검색", key="summ4_search", placeholder="검색어 입력…")
+            _sort4 = _mc4b.radio("정렬", ["최근 추가순", "이름순"], horizontal=True, key="summ4_sort")
+            _ch_root4m = DONE_DIR / DEFAULT_WS / "chapters"
+            _all_cfs4 = list(_ch_root4m.rglob("??_*.txt")) if _ch_root4m.exists() else []
+            _all_cfs4 = [f for f in _all_cfs4 if not f.stem.endswith(("_ko","_wiki"))]
+            _all_cfs4 = sorted(_all_cfs4, key=lambda f: f.stat().st_mtime, reverse=True) \
+                        if "최근" in _sort4 else sorted(_all_cfs4, key=lambda f: str(f))
+            _filt4 = [f for f in _all_cfs4 if _search4.lower() in str(f).lower()] if _search4 else _all_cfs4
+            _mitems4 = [{"key": str(f.relative_to(DONE_DIR)), "label": f"{f.parent.name}/{f.name}",
+                         "meta": f"{f.stat().st_size//1024}KB", "obj": str(f.relative_to(DONE_DIR))}
+                        for f in _filt4]
+            _msel4 = _checklist(_mitems4, "summ4m", height=200)
+            if st.button(f"➕ 선택 항목 큐에 추가 ({len(_msel4)}개)", key="summ4m_add", disabled=len(_msel4)==0):
+                queue_add("tab4_ready", _msel4); st.rerun()
 
     st.info("💡 다음 단계: **📖 5·Wiki반영** 탭으로 이동하세요")
 
@@ -2220,7 +2471,32 @@ with tab_wiki5:
     st.subheader("📖 Obsidian Wiki 반영")
     st.caption("챕터 요약(_wiki.json)들을 합쳐 Obsidian 노트로 생성합니다.")
 
-    _wiki_stems5 = {_nfc(p.stem) for p in WIKI_DIR.rglob("*.md")} if WIKI_DIR.exists() else set()
+    # ── 위키 저장 보관함(Vault) 선택 ──────────────────────────────────
+    _vaults5 = list_obsidian_vaults()
+    # 세션에 저장된 보관함(Vault) 경로가 있으면 우선 사용, 없으면 기본값
+    _cur_wiki5 = st.session_state.get("wiki5_active_dir", str(WIKI_DIR))
+    _cur_wiki5_path = Path(_cur_wiki5)
+    with st.expander(f"📁 위키 저장 보관함(Vault): `{_cur_wiki5_path.name}`  (`{_cur_wiki5}`)", expanded=False):
+        if _vaults5:
+            _vault_opts5 = _vaults5 + ([] if _cur_wiki5 in _vaults5 else [_cur_wiki5])
+            _vault_idx5 = _vault_opts5.index(_cur_wiki5) if _cur_wiki5 in _vault_opts5 else 0
+            _vault_sel5 = st.selectbox("Obsidian 보관함(Vault) 선택", _vault_opts5, index=_vault_idx5,
+                                       key="wiki5_vault_sel",
+                                       format_func=lambda p: f"{Path(p).name}  ({p})")
+            if _vault_sel5 != _cur_wiki5:
+                if st.button("✅ 이 보관함(Vault)로 변경 (즉시 적용)", key="wiki5_vault_save"):
+                    set_wiki_dir(_vault_sel5)
+                    st.session_state["wiki5_active_dir"] = _vault_sel5
+                    st.success(f"✅ 보관함(Vault) 변경됨: {_vault_sel5}")
+                    st.rerun()
+        else:
+            st.info("Obsidian 보관함(Vault) 목록을 가져올 수 없습니다. Obsidian이 설치·실행됐는지 확인하세요.")
+        _custom5 = st.text_input("또는 직접 경로 입력", key="wiki5_vault_custom", placeholder="/path/to/vault")
+        if _custom5 and st.button("✅ 직접 입력 경로로 변경 (즉시 적용)", key="wiki5_vault_custom_save"):
+            set_wiki_dir(_custom5)
+            st.session_state["wiki5_active_dir"] = _custom5
+            st.success(f"✅ 보관함(Vault) 변경됨: {_custom5}")
+            st.rerun()
 
     _wiki_prov_ok5 = any(llm.has_key(p) for p in llm.PROVIDERS)
     if not _wiki_prov_ok5:
@@ -2229,77 +2505,144 @@ with tab_wiki5:
         _wiki_model_radio("wiki5_ai")
 
     _fws5 = DEFAULT_WS
+    _wiki_stems5 = {_nfc(p.stem) for p in WIKI_DIR.rglob("*.md")} if WIKI_DIR.exists() else set()
 
-    # 챕터 요약 기반 대기 목록
+    # ── 챕터 요약 → Wiki (큐 기반) ───────────────────────────
+    _q5_stems = queue_list("tab5_ready")   # Tab4가 등록한 책 stem
     _wiki_pend5: list[dict] = []
     _wiki_done5_list: list[dict] = []
-    if _fws5 and DONE_DIR.exists():
-        _ch_root5 = DONE_DIR / _fws5 / "chapters"
-        if _ch_root5.exists():
-            for _book5 in sorted(_ch_root5.iterdir()):
-                if not _book5.is_dir():
-                    continue
-                _stem5 = _nfc(_book5.name)
-                _jsons5 = list(_book5.glob("*_wiki.json"))
-                if not _jsons5:
-                    continue
-                _total5 = len([f for f in _book5.glob("??.*.txt")
-                               if not f.stem.endswith(("_ko", "_wiki"))])
-                _ratio5 = f"{len(_jsons5)}/{_total5}챕터"
-                if _stem5 in _wiki_stems5:
-                    _wiki_done5_list.append({"stem": _stem5, "ws": _fws5,
-                                              "n": len(_jsons5), "total": _total5})
-                else:
-                    _wiki_pend5.append({
-                        "key": f"{_fws5}_{_stem5}",
-                        "label": _stem5,
-                        "meta": f"{_ratio5} 요약됨",
-                        "obj": {"ws": _fws5, "stem": _stem5},
-                    })
-
-    # 단일 TXT 기반 (챕터 분할 없는 책)
-    _single_pend5: list[dict] = []
-    if _fws5 and DONE_DIR.exists():
-        _t5s = DONE_DIR / _fws5 / TXT_SUB
-        if _t5s.exists():
-            for _txt5s in sorted(_t5s.glob("*.txt")):
-                _stem5s = _nfc(_txt5s.stem)
-                _ch5s = chapters_dir(_fws5, _stem5s)
-                if _ch5s.exists() and any(f for f in _ch5s.glob("??.*.txt")
-                                           if not f.stem.endswith(("_ko","_wiki"))):
-                    continue
-                if _stem5s in _wiki_stems5:
-                    continue
-                _single_pend5.append({
-                    "key": f"s_{_fws5}_{_stem5s}",
-                    "label": _stem5s,
-                    "meta": f"단일TXT · {_txt5s.stat().st_size//1024}KB",
-                    "obj": {"ws": _fws5, "stem": _stem5s, "txt": _txt5s},
-                })
+    for _stem5 in _q5_stems:
+        _ch5 = chapters_dir(DEFAULT_WS, _stem5)
+        _jsons5 = list(_ch5.glob("*_wiki.json")) if _ch5.exists() else []
+        _total5 = len([f for f in _ch5.glob("??_*.txt")
+                       if not f.stem.endswith(("_ko", "_wiki"))]) if _ch5.exists() else 0
+        _ratio5 = f"{len(_jsons5)}/{_total5}챕터"
+        # 챕터 이름 목록 (NN_제목.txt → 제목)
+        _ch_names5 = [_re.sub(r'^\d+_', '', f.stem) for f in sorted(_ch5.glob("??_*.txt"))
+                      if not f.stem.endswith(("_ko","_wiki"))] if _ch5.exists() else []
+        if _stem5 in _wiki_stems5:
+            _wiki_done5_list.append({"stem": _stem5, "n": len(_jsons5), "total": _total5})
+        else:
+            _wiki_pend5.append({
+                "key": _stem5,
+                "label": _stem5,
+                "meta": f"{_ratio5} 요약됨",
+                "obj": {"ws": DEFAULT_WS, "stem": _stem5},
+                "ch_names": _ch_names5,
+            })
 
     # 챕터 요약 → Wiki
     st.markdown(f"#### 챕터 요약 → Wiki ({len(_wiki_pend5)}권 대기)")
     if _wiki_pend5:
-        _sel5 = _checklist(_wiki_pend5, "wiki5", height=240)
-        _b5c1, _b5c2 = st.columns(2)
+        # 책 단위 체크리스트 + 챕터 이름 펼치기
+        _sel5: list = []
+        with st.container(height=320, border=True):
+            _w5h1, _w5h2, _w5h3 = st.columns([0.05, 0.6, 0.35])
+            _w5h2.markdown("**책 제목**", unsafe_allow_html=True)
+            _w5h3.markdown("<small style='color:#9ca3af'>챕터</small>", unsafe_allow_html=True)
+            for _it5 in _wiki_pend5:
+                _k5 = f"wiki5_{_it5['key']}"
+                _c5a, _c5b, _c5c = st.columns([0.05, 0.6, 0.35])
+                _chk5 = _c5a.checkbox(" ", key=_k5, label_visibility="collapsed")
+                if _chk5:
+                    _sel5.append(_it5["obj"])
+                _c5b.markdown(f"**{_it5['label']}**", unsafe_allow_html=True)
+                _ch_preview5 = " · ".join(_it5["ch_names"][:4])
+                if len(_it5["ch_names"]) > 4:
+                    _ch_preview5 += f" … +{len(_it5['ch_names'])-4}개"
+                _c5c.caption(_it5["meta"])
+                if _it5["ch_names"]:
+                    with st.expander(f"  ↳ {_ch_preview5}", expanded=False):
+                        _ch5_dir = chapters_dir(DEFAULT_WS, _it5["obj"]["stem"])
+                        for _cn5 in _it5["ch_names"]:
+                            # NN_제목.txt → NN_제목_wiki.json 탐색
+                            _cn5_txt = next((_ch5_dir.glob(f"??_{_cn5}.txt")), None) if _ch5_dir.exists() else None
+                            _cn5_json = _cn5_txt.with_name(_cn5_txt.stem + "_wiki.json") if _cn5_txt else None
+                            _has_json5 = bool(_cn5_json and _cn5_json.exists())
+                            _cj1, _cj2 = st.columns([4, 1])
+                            if _has_json5:
+                                _cj1.markdown(f"✅ **{_cn5}**")
+                                _safe_key5 = _re.sub(r"[^a-zA-Z0-9가-힣]", "_", _cn5)[:30]
+                                if _cj2.button("Wiki", key=f"ch5w_{_it5['key'][:20]}_{_safe_key5}", use_container_width=True):
+                                    _bok5, _bmsg5 = build_single_chapter_wiki(DEFAULT_WS, _it5["obj"]["stem"], _cn5_json, wiki_dir=_cur_wiki5_path)
+                                    (st.success if _bok5 else st.error)(
+                                        f"{'✅ ' + Path(_bmsg5).name if _bok5 else '❌ ' + _bmsg5}")
+                            else:
+                                _cj1.caption(f"⏳ {_cn5}")
+        _b5c1, _b5c2, _b5c3 = st.columns([2, 2, 1])
         _rs5 = _b5c1.button(f"▶ 선택 Wiki생성 ({len(_sel5)}권)", key="wiki5_run_sel",
                               use_container_width=True, type="primary", disabled=len(_sel5)==0)
         _ra5 = _b5c2.button(f"▶ 전체 Wiki생성 ({len(_wiki_pend5)}권)", key="wiki5_run_all",
                               use_container_width=True)
+        if _b5c3.button("🗑 큐 비우기", key="wiki5_clear", use_container_width=True):
+            queue_clear("tab5_ready"); st.rerun()
         _to5 = ([it["obj"] for it in _wiki_pend5] if _ra5 else (_sel5 if _rs5 else []))
         if _to5:
             _wp5 = st.progress(0.0)
             for _wi5, _wo5 in enumerate(_to5, 1):
-                with st.status(f"Wiki [{_wi5}/{len(_to5)}]: {_wo5['stem']}", expanded=False):
-                    _ok5, _msg5 = build_wiki_from_chapter_summaries(_wo5["ws"], _wo5["stem"])
+                with st.status(f"Wiki [{_wi5}/{len(_to5)}]: {_wo5['stem']}", expanded=True):
+                    # 1단계: 챕터별 개별 노트 생성
+                    _ch_dir5 = chapters_dir(_wo5["ws"], _wo5["stem"])
+                    _ch_jsons5 = sorted(_ch_dir5.glob("*_wiki.json")) if _ch_dir5.exists() else []
+                    _ch_ok5, _ch_fail5 = 0, 0
+                    for _cjf5 in _ch_jsons5:
+                        _bok5, _bmsg5 = build_single_chapter_wiki(
+                            _wo5["ws"], _wo5["stem"], _cjf5, wiki_dir=_cur_wiki5_path)
+                        if _bok5:
+                            _ch_ok5 += 1
+                        else:
+                            _ch_fail5 += 1
+                            st.warning(f"챕터 노트 실패: {_cjf5.stem} — {_bmsg5}")
+                    if _ch_jsons5:
+                        st.write(f"챕터 노트: ✅ {_ch_ok5}개 생성" + (f", ❌ {_ch_fail5}개 실패" if _ch_fail5 else ""))
+                    # 2단계: 전체 요약 노트 생성 (챕터 노트 완료 후)
+                    _ok5, _msg5 = build_wiki_from_chapter_summaries(_wo5["ws"], _wo5["stem"], wiki_dir=_cur_wiki5_path)
                 (st.success if _ok5 else st.error)(
                     f"{'✅' if _ok5 else '❌'} {_wo5['stem']}: "
                     f"{Path(_msg5).name if _ok5 else _msg5}")
+                if _ok5:
+                    queue_remove("tab5_ready", [_wo5["stem"]])
                 _wp5.progress(_wi5 / len(_to5))
-            st.balloons() if all(it["obj"] in [_wo5] for _wo5 in _to5) else None
             st.rerun()
     else:
-        st.info("챕터 요약 기반 Wiki 대기 없음 — 4·요약MD 탭에서 요약을 먼저 실행하세요")
+        st.info("Wiki 대기 없음 — 4·요약MD 탭에서 요약 완료 후 자동 등록되거나 아래에서 수동 추가하세요")
+
+    # 수동 추가 expander (책 단위)
+    with st.expander("➕ 수동으로 추가 (요약 완료된 책에서 선택)"):
+        _mc5a, _mc5b = st.columns([3, 2])
+        _search5 = _mc5a.text_input("책 이름 검색", key="wiki5_search", placeholder="검색어 입력…")
+        _sort5 = _mc5b.radio("정렬", ["최근 추가순", "이름순"], horizontal=True, key="wiki5_sort")
+        _ch_root5m = DONE_DIR / DEFAULT_WS / "chapters"
+        _all_books5 = list(_ch_root5m.iterdir()) if _ch_root5m.exists() else []
+        _books_with_json5 = [d for d in _all_books5 if d.is_dir() and list(d.glob("*_wiki.json"))]
+        _books_with_json5 = sorted(_books_with_json5, key=lambda d: d.stat().st_mtime, reverse=True) \
+                            if "최근" in _sort5 else sorted(_books_with_json5, key=lambda d: d.name)
+        _filt5 = [d for d in _books_with_json5 if _search5.lower() in d.name.lower()] if _search5 else _books_with_json5
+        _mitems5 = [{"key": d.name, "label": d.name,
+                     "meta": f"{len(list(d.glob('*_wiki.json')))}챕터 요약", "obj": d.name}
+                    for d in _filt5]
+        _msel5 = _checklist(_mitems5, "wiki5m", height=200)
+        if st.button(f"➕ 선택 항목 큐에 추가 ({len(_msel5)}권)", key="wiki5m_add", disabled=len(_msel5)==0):
+            queue_add("tab5_ready", _msel5); st.rerun()
+
+    # 단일 TXT 기반 (챕터 분할 없는 책 — 큐 외 별도 경로)
+    _single_pend5: list[dict] = []
+    _t5s = DONE_DIR / DEFAULT_WS / TXT_SUB
+    if _t5s.exists():
+        for _txt5s in sorted(_t5s.glob("*.txt")):
+            _stem5s = _nfc(_txt5s.stem)
+            _ch5s = chapters_dir(DEFAULT_WS, _stem5s)
+            if _ch5s.exists() and any(f for f in _ch5s.glob("??_*.txt")
+                                       if not f.stem.endswith(("_ko","_wiki"))):
+                continue
+            if _stem5s in _wiki_stems5:
+                continue
+            _single_pend5.append({
+                "key": f"s_{_stem5s}",
+                "label": _stem5s,
+                "meta": f"단일TXT · {_txt5s.stat().st_size//1024}KB",
+                "obj": {"ws": DEFAULT_WS, "stem": _stem5s, "txt": _txt5s},
+            })
 
     # 단일 TXT → Wiki (Gemini 직접)
     if _single_pend5:
@@ -2322,7 +2665,7 @@ with tab_wiki5:
     st.markdown(f"#### Wiki 완료 ({len(_wiki_files5)}노트)")
     if _wiki_files5:
         _wv_col1, _wv_col2 = st.columns(2)
-        if _wv_col1.button("📓 Obsidian 금고 열기", key="w5_vault", use_container_width=True):
+        if _wv_col1.button("📓 Obsidian 보관함(Vault) 열기", key="w5_vault", use_container_width=True):
             open_wiki_vault()
         if _wv_col2.button("📂 폴더 열기", key="w5_folder", use_container_width=True):
             open_path(WIKI_DIR)
@@ -2407,10 +2750,10 @@ with tab_settings:
             st.info("미설치. `npm install -g @openai/codex`")
 
     st.divider()
-    st.subheader("📓 위키 저장 폴더 (옵시디언 금고)")
+    st.subheader("📓 위키 저장 폴더 (옵시디언 보관함(Vault))")
     st.caption(
         f"현재: `{WIKI_DIR}` — 생성된 위키 노트가 여기 저장되고, "
-        "Wiki 목록 탭의 [옵시디언에서 위키 금고 열기]도 이 폴더를 엽니다."
+        "Wiki 목록 탭의 [옵시디언에서 위키 보관함(Vault) 열기]도 이 폴더를 엽니다."
     )
     _default_wiki = str(cfg.BASE_DIR / "wiki")
     _wiki_cands: list[str] = []
@@ -2419,18 +2762,18 @@ with tab_settings:
             _wiki_cands.append(_c)
     _cur_wiki = str(WIKI_DIR)
     _wd_sel = st.selectbox(
-        "폴더 선택 — 기본값 + 옵시디언에 등록된 금고들",
+        "폴더 선택 — 기본값 + 옵시디언에 등록된 보관함(Vault)들",
         _wiki_cands,
         index=_wiki_cands.index(_cur_wiki) if _cur_wiki in _wiki_cands else 0,
         key="wiki_dir_sel",
     )
     _wd_custom = st.text_input("또는 폴더 경로 직접 입력 (비우면 위 선택 사용)", value="", key="wiki_dir_custom")
     _wd_target = (_wd_custom.strip() or _wd_sel).strip()
-    if st.button("💾 위키 폴더 저장", use_container_width=True, key="wiki_dir_save"):
+    if st.button("💾 위키 보관함(Vault) 저장 (즉시 적용)", use_container_width=True, key="wiki_dir_save"):
         if _wd_target == _cur_wiki:
             st.info("이미 이 폴더를 쓰고 있습니다.")
         else:
             set_wiki_dir(_wd_target)
-            st.success(f"저장됨: `{_wd_target}`")
-            st.warning("⚠️ 앱을 재시작해야 적용됩니다 — stop-app.bat 실행 후 start-app.vbs.")
+            st.session_state["wiki5_active_dir"] = _wd_target
+            st.success(f"✅ 저장됨: `{_wd_target}` — Tab 5에 즉시 반영됩니다")
     st.caption("ℹ️ 기존에 만든 노트는 자동으로 옮겨지지 않습니다. 옮기려면 폴더에서 직접 이동하세요.")

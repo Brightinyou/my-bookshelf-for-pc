@@ -46,7 +46,7 @@ PROVIDERS: dict[str, dict] = {
     },
     "codex_cli": {
         "label": "Codex CLI (ChatGPT)",
-        "models": ["gpt-5.5", "o3", "o4-mini"],  # ChatGPT 계정은 gpt-5.5만 지원
+        "models": ["default"],  # ChatGPT 계정은 모델 지정 불가(o3/o4-mini 400오류) → 기본 모델 사용
         "env": "",
         "hint": "",
     },
@@ -72,10 +72,11 @@ def _load_all() -> dict:
 
 def get_key(provider: str) -> str:
     """우선순위: 설정(keys.json) → (gemini 한정) gemini_wiki.key → 환경변수.
-    사용자가 관리하는 명시적 키 파일이 launch 환경변수(만료/구버전 가능)보다 우선한다."""
-    v = (_load_all().get(provider) or "").strip()
-    if v:
-        return v
+    keys.json에 provider 키가 존재하면(빈 문자열 포함) 환경변수 폴백을 차단.
+    빈 문자열 = 사용자가 명시적으로 삭제 — 환경변수 무시."""
+    all_keys = _load_all()
+    if provider in all_keys:          # 명시적 설정이 있으면 (빈 값 포함) 그것만 사용
+        return (all_keys[provider] or "").strip()
     if provider == "gemini" and GEMINI_WIKI_KEY.exists():
         fk = GEMINI_WIKI_KEY.read_text(encoding="utf-8").strip()
         if fk:
@@ -96,7 +97,7 @@ def save_key(provider: str, key: str) -> None:
     if key:
         data[provider] = key
     else:
-        data.pop(provider, None)
+        data[provider] = ""   # 빈 문자열 유지 = 삭제 의도 명시, 환경변수 폴백 차단
     KEYS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
         os.chmod(KEYS_FILE, 0o600)
@@ -285,8 +286,11 @@ def _codex_cli(model: str, system: str, prompt: str) -> str:
     base_args = [cli, "exec", "--skip-git-repo-check", "--ephemeral",
                  "--dangerously-bypass-approvals-and-sandbox",
                  "-o", str(out_file)]
-    # ChatGPT 계정은 모델 명시 시 400 오류 → 불지원 오류면 모델 없이 재시도
-    attempts = [["-m", model, full_prompt], [full_prompt]]
+    # ChatGPT 계정은 모델 명시 시 400 오류 → default 또는 불지원 오류면 모델 없이 실행
+    if model in ("default", ""):
+        attempts = [[full_prompt]]
+    else:
+        attempts = [["-m", model, full_prompt], [full_prompt]]
     try:
         last_err = None
         for extra in attempts:
