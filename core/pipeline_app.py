@@ -1354,29 +1354,7 @@ def set_wiki_dir(path_str: str) -> None:
     f.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-_DEFAULT_WS = "My Bookshelf"   # 신규 사용자 기본 폴더
-
-def load_workspaces() -> list[str]:
-    """config.json의 workspaces 목록을 실시간으로 읽음. 없으면 기본값 반환."""
-    try:
-        d = json.loads(cfg.CONFIG_FILE.read_text(encoding="utf-8")) if cfg.CONFIG_FILE.exists() else {}
-        ws = [str(w) for w in d.get("workspaces", []) if str(w).strip()]
-        return ws if ws else [_DEFAULT_WS]
-    except Exception:
-        return [_DEFAULT_WS]
-
-def save_workspaces(ws_list: list[str]) -> None:
-    """config.json에 workspaces 저장 + DONE_DIR 하위 폴더 생성."""
-    f = cfg.CONFIG_FILE
-    try:
-        d = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
-    except Exception:
-        d = {}
-    d["workspaces"] = ws_list
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-    for ws in ws_list:
-        (DONE_DIR / ws / TXT_SUB).mkdir(parents=True, exist_ok=True)
+DEFAULT_WS = "My Bookshelf"   # 단일 기본 폴더
 
 
 def open_wiki_vault():
@@ -1796,26 +1774,6 @@ tab_ocr, tab_split, tab_tr, tab_summ, tab_wiki5, tab_settings = st.tabs([
 
 # ─── 공용 헬퍼 ───────────────────────────────────────────
 
-_HIDDEN_WS = {"00_목회학_서재"}   # UI에서 숨길 레거시 워크스페이스
-
-def _active_ws_list() -> list[str]:
-    """config에 등록된 워크스페이스 목록 (숨김 제외). 신규 사용자도 기본 폴더가 반환됨."""
-    cfg_ws = [w for w in load_workspaces() if w not in _HIDDEN_WS]
-    # DONE_DIR에 있지만 config에 없는 폴더도 포함 (레거시 호환)
-    extra: list[str] = []
-    if DONE_DIR.exists():
-        extra = [d.name for d in DONE_DIR.iterdir()
-                 if d.is_dir() and not d.name.startswith("_")
-                 and d.name not in _HIDDEN_WS and d.name not in cfg_ws]
-    return cfg_ws + sorted(extra)
-
-def _ws_selector(key: str) -> str | None:
-    """워크스페이스 selectbox. 목록 없으면 None."""
-    _wsl = _active_ws_list()
-    if not _wsl:
-        st.info("처리된 폴더가 없습니다.")
-        return None
-    return st.selectbox("📁 폴더 선택", _wsl, key=key)
 
 def _checklist(items: list[dict], prefix: str, height: int = 320) -> list:
     """체크박스 파일 목록. items=[{"key":str,"label":str,"meta":str,"obj":any}]
@@ -1850,10 +1808,9 @@ with tab_ocr:
     st.subheader("📄 OCR/TXT 제작")
     st.caption("PDF를 업로드하면 OCR(텍스트 추출)하여 TXT 파일로 저장합니다.")
 
-    # 워크스페이스 + 처리 모드
-    _col_ws1, _col_md1 = st.columns([2, 3])
-    _ws1 = _col_ws1.selectbox("워크스페이스", WORKSPACES, key="ocr_ws")
-    _mode1 = _col_md1.radio(
+    _ws1 = DEFAULT_WS
+    # 처리 모드
+    _mode1 = st.radio(
         "처리 모드",
         ["📄 OCR만 (TXT저장)", "🚀 전체 파이프라인 (OCR→번역→Wiki)"],
         horizontal=True, key="ocr_mode",
@@ -1941,14 +1898,14 @@ with tab_ocr:
     st.divider()
 
     # 완료 기록
-    _fws1 = _ws_selector("ocr1_ws_filter")
+    _fws1 = DEFAULT_WS
     _done_txts1: list[Path] = []
     if _fws1 and DONE_DIR.exists():
         _t_sub1 = DONE_DIR / _fws1 / TXT_SUB
         if _t_sub1.exists():
             _done_txts1 = sorted(_t_sub1.glob("*.txt"),
                                  key=lambda p: p.stat().st_mtime, reverse=True)
-    st.markdown(f"#### 완료 기록 ({len(_done_txts1)}권) [{_fws1 or ''}]")
+    st.markdown(f"#### 완료 기록 ({len(_done_txts1)}권)")
     if _done_txts1:
         with st.container(height=220, border=True):
             for _dt1 in _done_txts1[:80]:
@@ -1988,15 +1945,14 @@ with tab_split:
     _up2 = st.file_uploader("TXT 직접 업로드 (done/ 폴더로 저장)",
                               type=["txt", "md"], accept_multiple_files=True, key="split_uploader")
     if _up2:
-        _ws2_def = WORKSPACES[0] if WORKSPACES else "기본"
         for _u2 in _up2:
-            txt_dir(DONE_DIR, _ws2_def).mkdir(parents=True, exist_ok=True)
-            _dst2 = txt_dir(DONE_DIR, _ws2_def) / _u2.name
+            txt_dir(DONE_DIR, DEFAULT_WS).mkdir(parents=True, exist_ok=True)
+            _dst2 = txt_dir(DONE_DIR, DEFAULT_WS) / _u2.name
             _dst2.write_bytes(_u2.read())
         st.success(f"{len(_up2)}개 TXT 저장 완료"); st.rerun()
 
     # 폴더 선택 → 분할 대기 / 완료 목록 수집
-    _fws2 = _ws_selector("split2_ws_filter")
+    _fws2 = DEFAULT_WS
     _split_pend2: list[dict] = []
     _split_done2: list[dict] = []
     if _fws2 and DONE_DIR.exists():
@@ -2089,7 +2045,7 @@ with tab_tr:
             st.rerun()
 
         # 폴더 선택 → 번역 대기 / 완료 수집
-        _fws3 = _ws_selector("tr3_ws_filter")
+        _fws3 = DEFAULT_WS
         _tr_pend3: list[dict] = []
         _tr_done3 = 0
         if _fws3 and DONE_DIR.exists():
@@ -2163,7 +2119,7 @@ with tab_summ:
             st.rerun()
 
         # 폴더 선택 → 요약 대기 / 완료 수집
-        _fws4 = _ws_selector("summ4_ws_filter")
+        _fws4 = DEFAULT_WS
         _sum_pend4: list[dict] = []
         _sum_done4 = 0
         if _fws4 and DONE_DIR.exists():
@@ -2222,7 +2178,7 @@ with tab_wiki5:
     _wiki_stems5 = {_nfc(p.stem) for p in WIKI_DIR.rglob("*.md")} if WIKI_DIR.exists() else set()
 
     # 폴더 선택
-    _fws5 = _ws_selector("wiki5_ws_filter")
+    _fws5 = DEFAULT_WS
 
     # 챕터 요약 기반 대기 목록
     _wiki_pend5: list[dict] = []
@@ -2333,52 +2289,6 @@ with tab_wiki5:
 
 # ── 탭: 설정 (API 키) ─────────────────────────────────────
 with tab_settings:
-    # ── 폴더(워크스페이스) 관리 ──────────────────────────────
-    st.subheader("📁 폴더 관리")
-    st.caption("파일을 분류해 저장할 폴더 목록입니다. 첫 번째 폴더가 기본 저장 위치입니다.")
-
-    _cur_ws = load_workspaces()
-    _ws_changed = False
-
-    # 현재 폴더 목록
-    with st.container(border=True):
-        for _wi, _wname in enumerate(_cur_ws):
-            _wc1, _wc2, _wc3 = st.columns([5, 1, 1])
-            _wc1.markdown(
-                f"{'🏠 ' if _wi == 0 else '📂 '}**{_wname}**"
-                + (" &nbsp;<small style='color:#6b7280'>기본</small>" if _wi == 0 else ""),
-                unsafe_allow_html=True,
-            )
-            # 위/아래 이동
-            if _wi > 0 and _wc2.button("⬆", key=f"ws_up_{_wi}", help="위로"):
-                _cur_ws[_wi-1], _cur_ws[_wi] = _cur_ws[_wi], _cur_ws[_wi-1]
-                save_workspaces(_cur_ws); st.rerun()
-            if _wi < len(_cur_ws)-1 and _wc3.button("⬇", key=f"ws_dn_{_wi}", help="아래로"):
-                _cur_ws[_wi], _cur_ws[_wi+1] = _cur_ws[_wi+1], _cur_ws[_wi]
-                save_workspaces(_cur_ws); st.rerun()
-            # 삭제 (기본 폴더는 삭제 불가)
-            if _wi > 0:
-                if _wc2.button("🗑", key=f"ws_del_{_wi}", help="폴더 삭제 (파일은 유지)"):
-                    _cur_ws.pop(_wi); save_workspaces(_cur_ws); st.rerun()
-
-    # 새 폴더 추가
-    _nadd, _badd = st.columns([4, 1])
-    _new_ws_name = _nadd.text_input("새 폴더 이름", placeholder="예: 신학·영성, 철학", key="ws_new_name",
-                                     label_visibility="collapsed")
-    if _badd.button("➕ 추가", key="ws_add_btn", use_container_width=True):
-        _new_ws_name = _new_ws_name.strip()
-        if not _new_ws_name:
-            st.warning("폴더 이름을 입력하세요.")
-        elif _new_ws_name in _cur_ws:
-            st.warning(f"'{_new_ws_name}'은 이미 있습니다.")
-        else:
-            _cur_ws.append(_new_ws_name)
-            save_workspaces(_cur_ws)
-            st.success(f"✅ '{_new_ws_name}' 추가됨"); st.rerun()
-
-    st.divider()
-
-    # ── API 키 설정 ──────────────────────────────────────────
     st.subheader("⚙️ API 키 설정")
     st.caption(
         "키는 이 컴퓨터의 `~/.config/mybookshelf/keys.json` 에만 저장되며, "
