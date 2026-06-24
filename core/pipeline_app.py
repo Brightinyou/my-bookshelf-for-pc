@@ -225,13 +225,23 @@ def find_split_mds(base: Path, ws_name: str, stem: str) -> list[Path]:
 
 # ── 파이프라인 함수들 ─────────────────────────────────────
 
-def pdf_to_txt(pdf_path: Path) -> tuple[Path | None, Path | None, str]:
+def pdf_to_txt(pdf_path: Path, fast: bool = False) -> tuple[Path | None, Path | None, str]:
     """(txt_path, md_path, error_msg) 반환. md_path는 MD 생성 성공 시에만 채워짐.
-    Docling(레이아웃 인식 + ocrmac OCR)이 기본, 없으면 pdftotext(텍스트 레이어) 폴백.
-    동시에 깨끗한 .md 사이드카 파일을 PDF 폴더에 생성."""
+    fast=True: pdftotext 직접 추출(텍스트 레이어, 초 단위).
+    fast=False: Docling 정밀변환(레이아웃 분석 + OCR, 분 단위)."""
     pdftotext = cfg.PDFTOTEXT
 
     txt_path = Path(tempfile.gettempdir()) / (pdf_path.stem + ".txt")
+
+    # ── 빠른 추출 모드: pdftotext로 텍스트 레이어만 추출 ──────
+    if fast:
+        if not pdftotext or not Path(pdftotext).exists():
+            return None, None, "빠른 추출에 필요한 pdftotext가 없습니다 (Homebrew: brew install poppler)"
+        r = subprocess.run([pdftotext, "-layout", str(pdf_path), str(txt_path)],
+                           capture_output=True, text=True)
+        if r.returncode != 0 or not txt_path.exists() or txt_path.stat().st_size == 0:
+            return None, None, f"pdftotext 실패 (exit {r.returncode}) — 스캔 PDF는 Docling 정밀변환을 사용하세요"
+        return txt_path, None, ""
 
     # ── Docling 변환 (2026-06-09): 레이아웃 인식으로 본문/각주/표 분리 + ocrmac(Apple Vision) OCR ──
     docling_bin = Path(cfg.DOCLING) if cfg.DOCLING else None
@@ -1529,8 +1539,8 @@ def build_wiki_from_chapter_summaries(ws_name: str, stem: str) -> tuple[bool, st
 
 # ─── OCR 단독 처리 (번역·위키 생략) ─────────────────────────
 
-def _do_ocr_only(uf, ws_name: str) -> dict:
-    """PDF → TXT 변환만 수행. 번역·위키 생략. {ok, name, txt_path, md_path, error}"""
+def _do_ocr_only(uf, ws_name: str, fast: bool = False) -> dict:
+    """PDF → TXT 변환만 수행. fast=True이면 pdftotext 직접 추출."""
     dest = UPLOAD_TMP / uf.name
     _src = getattr(uf, "_p", None)
     if not (_src and Path(_src).resolve() == dest.resolve()):
@@ -1545,7 +1555,7 @@ def _do_ocr_only(uf, ws_name: str) -> dict:
         shutil.move(str(dest), str(final))
         append_log(f"TXT 직접 업로드: {final.name}")
         return {"ok": True, "name": uf.name, "txt_path": str(final), "md_path": "", "error": ""}
-    txt_path, md_src, err = pdf_to_txt(dest)
+    txt_path, md_src, err = pdf_to_txt(dest, fast=fast)
     if not txt_path:
         try: shutil.move(str(dest), str(FAILED_DIR / uf.name))
         except Exception: pass
@@ -1835,6 +1845,15 @@ with tab_ocr:
     st.caption("PDF를 업로드하면 OCR(텍스트 추출)하여 TXT 파일로 저장합니다.")
 
     _ws1 = DEFAULT_WS
+    # 변환 방식
+    _conv1 = st.radio(
+        "변환 방식",
+        ["⚡ 빠른 추출 (텍스트 레이어 · 초 단위)", "🔬 Docling 정밀변환 (레이아웃·각주 분리 · 수 분)"],
+        horizontal=True, key="ocr_conv_mode",
+        help="디지털 PDF(텍스트 레이어 있음)는 빠른 추출 권장. 스캔 PDF만 Docling 사용.",
+    )
+    _fast1 = "빠른" in _conv1
+
     # 처리 모드
     _mode1 = st.radio(
         "처리 모드",
@@ -1862,7 +1881,7 @@ with tab_ocr:
         for _uf_new in _uploads1:
             with st.status(f"처리 중: {_uf_new.name}", expanded=True):
                 if "OCR만" in _mode1:
-                    _r_new = _do_ocr_only(_uf_new, _ws1)
+                    _r_new = _do_ocr_only(_uf_new, _ws1, fast=_fast1)
                     if _r_new["ok"]:
                         st.success(f"✅ TXT 저장: `{Path(_r_new['txt_path']).name}`")
                         if st.button("📂 결과 폴더 열기", key=f"open_ocr_{_uf_new.name}"):
@@ -1906,7 +1925,7 @@ with tab_ocr:
             for _i1, _uf1 in enumerate(_to_run1, 1):
                 if "OCR만" in _mode1:
                     with st.status(f"OCR [{_i1}/{len(_to_run1)}]: {_uf1.name}", expanded=False):
-                        _r1 = _do_ocr_only(_uf1, _ws1)
+                        _r1 = _do_ocr_only(_uf1, _ws1, fast=_fast1)
                     (st.success if _r1["ok"] else st.error)(
                         f"{'✅' if _r1['ok'] else '❌'} {_uf1.name}" +
                         (f" → `{Path(_r1['txt_path']).name}`" if _r1["ok"] else f": {_r1['error']}")
