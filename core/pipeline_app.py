@@ -1808,6 +1808,27 @@ def _checklist(items: list[dict], prefix: str, height: int = 320) -> list:
     return selected
 
 
+def _wiki_model_radio(key: str) -> tuple[str, str]:
+    """사용 가능한 AI 모델 radio 선택기. (prov, model) 반환.
+    선택이 현재 wiki_provider_model과 다르면 자동으로 set_wiki_model 호출."""
+    _avail = [(p, m)
+              for p, info in llm.PROVIDERS.items()
+              if llm.has_key(p)
+              for m in info["models"]]
+    if not _avail:
+        st.warning("사용 가능한 AI 없음 — ⚙️ 설정 탭에서 API 키를 입력하세요.")
+        return llm.wiki_provider_model()
+    _wp, _wm = llm.wiki_provider_model()
+    _labels = [f"{llm.PROVIDERS[p]['label']} · {m}" for p, m in _avail]
+    _cur = f"{llm.PROVIDERS.get(_wp, {}).get('label', _wp)} · {_wm}"
+    _idx = _labels.index(_cur) if _cur in _labels else 0
+    _sel = st.radio("🤖 AI 모델", _labels, index=_idx, horizontal=True, key=key)
+    _p, _m = _avail[_labels.index(_sel)]
+    if (_p, _m) != (_wp, _wm):
+        llm.set_wiki_model(_p, _m)
+    return _p, _m
+
+
 # ── 탭1: OCR/TXT제작 ──────────────────────────────────────
 with tab_ocr:
     st.subheader("📄 OCR/TXT 제작")
@@ -1830,6 +1851,7 @@ with tab_ocr:
             _tr_lbl1 = st.radio("번역 엔진", [lbl for _, lbl in _tr_avail1],
                                  horizontal=True, key="ocr_tr_engine_radio")
             _tr_eng1 = next(eid for eid, lbl in _tr_avail1 if lbl == _tr_lbl1)
+            _wiki_model_radio("ocr1_wiki_ai")
 
     # 파일 업로드
     _uploads1 = st.file_uploader(
@@ -2103,12 +2125,11 @@ with tab_summ:
     st.subheader("📝 요약MD 생성")
     st.caption("챕터 TXT(번역본 우선)로 Obsidian 노트용 요약 JSON을 생성합니다.")
 
-    _wp4, _wm4 = llm.wiki_provider_model()
     _prov_ok4 = any(llm.has_key(p) for p in llm.PROVIDERS)
     if not _prov_ok4:
         st.warning("요약 API 없음 — ⚙️ 설정 탭에서 키를 입력하세요.")
     else:
-        st.caption(f"요약 모델: `{_wp4} · {_wm4}` — ⚙️ 설정 탭에서 변경")
+        _wp4, _wm4 = _wiki_model_radio("summ4_ai")
 
         # TXT 직접 업로드
         _up4 = st.file_uploader("TXT 직접 업로드 (즉시 요약)",
@@ -2182,7 +2203,12 @@ with tab_wiki5:
 
     _wiki_stems5 = {_nfc(p.stem) for p in WIKI_DIR.rglob("*.md")} if WIKI_DIR.exists() else set()
 
-    # 폴더 선택
+    _wiki_prov_ok5 = any(llm.has_key(p) for p in llm.PROVIDERS)
+    if not _wiki_prov_ok5:
+        st.warning("Wiki 생성 API 없음 — ⚙️ 설정 탭에서 키를 입력하세요.")
+    else:
+        _wiki_model_radio("wiki5_ai")
+
     _fws5 = DEFAULT_WS
 
     # 챕터 요약 기반 대기 목록
