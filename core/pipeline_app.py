@@ -1378,6 +1378,149 @@ def notify(msg: str, title: str = "My Bookshelf"):
     )
 
 
+# ─── 단계별 처리 헬퍼 ──────────────────────────────────────
+
+def chapters_dir(ws_name: str, stem: str) -> Path:
+    return DONE_DIR / ws_name / "chapters" / stem
+
+
+def list_done_books() -> list[tuple[str, str, Path]]:
+    """(ws, stem, txt_path) — done 폴더의 모든 책 TXT (1_txt/ 우선, 루트 fallback)."""
+    books: list[tuple[str, str, Path]] = []
+    if not DONE_DIR.exists():
+        return books
+    for ws_dir in sorted(DONE_DIR.iterdir()):
+        if not ws_dir.is_dir() or ws_dir.name.startswith("_"):
+            continue
+        ws = ws_dir.name
+        seen: set[str] = set()
+        txt_sub = ws_dir / TXT_SUB
+        if txt_sub.exists():
+            for txt in sorted(txt_sub.glob("*.txt")):
+                s = _nfc(txt.stem)
+                if s not in seen:
+                    books.append((ws, s, txt)); seen.add(s)
+        for txt in sorted(ws_dir.glob("*.txt")):
+            s = _nfc(txt.stem)
+            if s not in seen:
+                books.append((ws, s, txt)); seen.add(s)
+    return books
+
+
+def split_book_to_chapters(ws_name: str, stem: str) -> tuple[int, str]:
+    """장 분리 실행. 챕터 TXT 파일 저장. (저장 수, 오류 메시지) 반환."""
+    try:
+        import chapter_wiki as _cw
+    except ImportError:
+        return 0, "chapter_wiki 임포트 실패"
+    txt_p = find_txt(DONE_DIR, ws_name, stem)
+    md_p  = find_md(DONE_DIR, ws_name, stem)
+    md_text  = md_p.read_text(encoding="utf-8", errors="ignore")  if md_p  else None
+    txt_text = txt_p.read_text(encoding="utf-8", errors="ignore") if txt_p else None
+    if not md_text and not txt_text:
+        return 0, "TXT/MD 파일 없음"
+    mode, chapters = _cw.chapter_split(md_text, txt_text)
+    if mode == "single" or not chapters:
+        return 0, "장 구조 감지 안 됨 — 단일 본문입니다 (기존 위키 생성 탭을 쓰세요)"
+    ch_dir = chapters_dir(ws_name, stem)
+    ch_dir.mkdir(parents=True, exist_ok=True)
+    saved = 0
+    for i, (title, body) in enumerate(chapters, 1):
+        safe = _re.sub(r'[/\\:*?"<>|]', ' ', title).strip()[:50].strip(" .,:-")
+        (ch_dir / f"{i:02d}_{safe}.txt").write_text(body, encoding="utf-8")
+        saved += 1
+    return saved, ""
+
+
+def translate_one_chapter(ch_path: Path, engine: str) -> tuple[bool, str]:
+    """단일 챕터 TXT 번역 → _ko.txt 저장. (ok, msg)."""
+    try:
+        text = ch_path.read_text(encoding="utf-8", errors="ignore")
+        ko_path = ch_path.with_name(ch_path.stem + "_ko.txt")
+        if not needs_translation(ch_path):
+            ko_path.write_text(text, encoding="utf-8")
+            return True, "이미 한국어 — 그대로 복사"
+        paras = _split_paragraphs_robust(text)
+        out: list[str] = []
+        for p in paras:
+            if should_drop_paragraph(p):
+                continue
+            if should_skip_translation(p):
+                out.append(p)
+            else:
+                ko = translate(p, engine)
+                out.append(ko if ko else p)
+        ko_path.write_text("\n\n".join(out), encoding="utf-8")
+        return True, f"{len(out)}단락 번역 완료"
+    except Exception as e:
+        return False, str(e)[:200]
+
+
+def summarize_one_chapter(ch_path: Path, book_stem: str) -> tuple[bool, str]:
+    """단일 챕터 TXT → 위키 JSON 요약. _wiki.json 저장. (ok, summary snippet)."""
+    try:
+        import chapter_wiki as _cw
+    except ImportError:
+        return False, "chapter_wiki 임포트 실패"
+    try:
+        ko_path = ch_path.with_name(ch_path.stem + "_ko.txt")
+        src = (ko_path if ko_path.exists() else ch_path).read_text(encoding="utf-8", errors="ignore")
+        chap_title = _re.sub(r"^\d+_", "", ch_path.stem)
+        data = _cw.generate_chapter(book_stem, chap_title, src)
+        (ch_path.with_name(ch_path.stem + "_wiki.json")).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return True, (data.get("summary") or "")[:120]
+    except Exception as e:
+        return False, str(e)[:200]
+
+
+def build_wiki_from_chapter_summaries(ws_name: str, stem: str) -> tuple[bool, str]:
+    """챕터 _wiki.json들 → 옵시디언 위키 노트 생성. (ok, path or msg)."""
+    try:
+        import chapter_wiki as _cw
+        import gemini_wiki as _gw
+    except ImportError as e:
+        return False, f"임포트 실패: {e}"
+    ch_dir = chapters_dir(ws_name, stem)
+    if not ch_dir.exists():
+        return False, "챕터 폴더 없음 — 1단계를 먼저 실행하세요"
+    json_files = sorted(ch_dir.glob("*_wiki.json"))
+    if not json_files:
+        return False, "요약 파일 없음 — 3단계를 먼저 실행하세요"
+    sections = []
+    for i, jf in enumerate(json_files, 1):
+        try:
+            d = json.loads(jf.read_text(encoding="utf-8"))
+            title = _re.sub(r"^\d+_", "", jf.stem.replace("_wiki", ""))
+            sections.append({"idx": i, "title": title,
+                             "summary": d.get("summary", ""),
+                             "body": d.get("body", "")})
+        except Exception:
+            continue
+    if not sections:
+        return False, "유효한 요약 없음"
+    ov = _cw.generate_overview(stem, sections)
+    cat  = ov.get("category", "기타")
+    intro = ov.get("intro", "")
+    summ  = ov.get("summary", "")
+    today = __import__("datetime").date.today().isoformat()
+    prov, model = llm.wiki_provider_model()
+    lines = [
+        "---", f"title: {stem}", f"category: {cat}",
+        f"model: {model}", f"generated: {today}", "---", "",
+        f"# {stem}", "", intro, "", f"**요약:** {summ}", "",
+    ]
+    for s in sections:
+        lines += [f"## {s['idx']:02d}. {s['title']}", s["summary"], "", s["body"], ""]
+    out_path = WIKI_DIR / _gw.make_filename(_gw.nfc(stem))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    _gw.mark_done(_gw.nfc(stem + ".txt"))
+    append_log(f"단계별 Wiki 생성 완료: {out_path.name}")
+    return True, str(out_path)
+
+
 # ── UI ────────────────────────────────────────────────────
 
 st.set_page_config(page_title="My Bookshelf", page_icon="📚", layout="wide")
@@ -1612,10 +1755,11 @@ _wiki_count = sum(1 for _ in WIKI_DIR.rglob("*.md"))
 # ── 탭 6개 — 라벨에 동적 카운트 ────────────────────────────
 _failed_label = f"⚠️ 실패 파일 ({len(_failed_files)})" if _failed_files else "⚠️ 실패 파일"
 
-tab_upload, tab_history, tab_wiki, tab_failed, tab_status, tab_settings = st.tabs([
+tab_upload, tab_history, tab_wiki, tab_steps, tab_failed, tab_status, tab_settings = st.tabs([
     "📤 파일 업로드",
     "📁 처리 기록",
     "📖 Wiki 목록",
+    "📋 단계별 처리",
     _failed_label,
     "📊 현황",
     "⚙️ 설정",
@@ -2270,6 +2414,184 @@ with tab_wiki:
             st.error(f"읽기 실패: {e}")
     else:
         st.info("생성된 Wiki 페이지가 없습니다.")
+
+# ── 탭: 단계별 처리 ──────────────────────────────────────
+with tab_steps:
+    st.subheader("📋 단계별 처리")
+    st.caption(
+        "PDF 업로드 탭에서 OCR이 끝난 책을 대상으로 각 단계를 독립 실행합니다. "
+        "한 번에 전체를 돌리면 토큰 한도에 걸릴 때 이 탭으로 하나씩 처리하세요."
+    )
+
+    _step_books = list_done_books()
+    if not _step_books:
+        st.info("처리된 책이 없습니다. 먼저 📤 파일 업로드 탭에서 PDF를 변환하세요.")
+    else:
+        _sb_labels = [f"[{ws}] {stem}" for ws, stem, _ in _step_books]
+        _sb_idx = st.selectbox(
+            "책 선택", range(len(_sb_labels)),
+            format_func=lambda i: _sb_labels[i],
+            key="steps_book_sel",
+        )
+        _sw, _ss, _st = _step_books[_sb_idx]   # ws, stem, txt_path
+        _ch_dir = chapters_dir(_sw, _ss)
+
+        # ── 1단계: 장 분리 ──────────────────────────────────
+        st.divider()
+        st.markdown("### 📂 1단계 — 장 분리")
+        _ch_files = sorted(_ch_dir.glob("??.*.txt")) if _ch_dir.exists() else []
+        _ch_txts  = [f for f in _ch_files if not f.stem.endswith(("_ko", "_wiki"))]
+        if _ch_txts:
+            st.success(f"✅ 이미 분리됨: {len(_ch_txts)}개 챕터")
+            with st.expander("챕터 목록 보기"):
+                for cf in _ch_txts:
+                    ko_exists   = cf.with_name(cf.stem + "_ko.txt").exists()
+                    wiki_exists = cf.with_name(cf.stem + "_wiki.json").exists()
+                    badges = ("🌐" if ko_exists else "⬜") + ("📝" if wiki_exists else "⬜")
+                    st.caption(f"{badges}  {cf.stem}  ({cf.stat().st_size // 1024}KB)")
+            st.caption("🌐=번역됨  📝=요약됨")
+        else:
+            st.info(f"TXT: `{_st}`")
+
+        col_sp1, col_sp2 = st.columns(2)
+        if col_sp1.button("▶ 장 분리 실행", use_container_width=True, key="steps_split",
+                          type="primary" if not _ch_txts else "secondary"):
+            with st.spinner("장 분리 중…"):
+                _n, _err = split_book_to_chapters(_sw, _ss)
+            if _err:
+                st.error(f"실패: {_err}")
+            else:
+                st.success(f"✅ {_n}개 챕터로 분리 완료 — `{_ch_dir}`")
+                st.rerun()
+        if _ch_txts and col_sp2.button("🗑 분리 파일 초기화", use_container_width=True,
+                                        key="steps_split_reset",
+                                        help="챕터 폴더를 비워 다시 분리할 수 있습니다"):
+            for _f in _ch_dir.glob("*"):
+                try: _f.unlink()
+                except Exception: pass
+            st.rerun()
+
+        if not _ch_txts:
+            st.stop()
+
+        # ── 2단계: 장별 번역 ─────────────────────────────────
+        st.divider()
+        st.markdown("### 🌐 2단계 — 장별 번역")
+
+        _tr_opts = translate_engine_options()
+        _tr_avail = [(eid, lbl) for eid, lbl, av, _ in _tr_opts if av]
+        if not _tr_avail:
+            st.warning("번역 엔진 없음 — ⚙️ 설정 탭에서 API 키를 입력하세요.")
+        else:
+            _tr_labels2 = [lbl for _, lbl in _tr_avail]
+            _tr_sel_lbl = st.radio("번역 엔진", _tr_labels2, horizontal=True, key="steps_tr_engine")
+            _tr_engine  = next(eid for eid, lbl in _tr_avail if lbl == _tr_sel_lbl)
+
+            _pending_tr = [f for f in _ch_txts if not f.with_name(f.stem + "_ko.txt").exists()]
+            _done_tr    = [f for f in _ch_txts if  f.with_name(f.stem + "_ko.txt").exists()]
+            st.caption(f"번역 완료: {len(_done_tr)}/{len(_ch_txts)}  |  대기: {len(_pending_tr)}")
+
+            _sel_tr_name = st.selectbox(
+                "번역할 챕터 선택",
+                [f.name for f in _ch_txts],
+                key="steps_tr_sel",
+            )
+            _sel_tr_path = _ch_dir / _sel_tr_name
+            _sel_ko_path = _sel_tr_path.with_name(_sel_tr_path.stem + "_ko.txt")
+            if _sel_ko_path.exists():
+                st.success(f"✅ 이미 번역됨: `{_sel_ko_path.name}`")
+
+            tc1, tc2 = st.columns(2)
+            if tc1.button("▶ 이 챕터 번역", use_container_width=True, key="steps_tr_one",
+                          type="primary"):
+                with st.spinner(f"번역 중: {_sel_tr_name}"):
+                    _ok, _msg = translate_one_chapter(_sel_tr_path, _tr_engine)
+                (st.success if _ok else st.error)(f"{'✅' if _ok else '❌'} {_msg}")
+
+            if tc2.button(f"▶ 미번역 전체 ({len(_pending_tr)}개)", use_container_width=True,
+                          key="steps_tr_all", disabled=(len(_pending_tr) == 0)):
+                _prog = st.progress(0.0)
+                for _i2, _cf2 in enumerate(_pending_tr, 1):
+                    st.caption(f"번역 중 [{_i2}/{len(_pending_tr)}]: {_cf2.name}")
+                    _ok2, _msg2 = translate_one_chapter(_cf2, _tr_engine)
+                    if not _ok2:
+                        st.warning(f"⚠️ {_cf2.name}: {_msg2}")
+                    _prog.progress(_i2 / len(_pending_tr))
+                st.success(f"완료: {len(_pending_tr)}개 처리")
+                st.rerun()
+
+        # ── 3단계: 장별 요약 ─────────────────────────────────
+        st.divider()
+        st.markdown("### 📝 3단계 — 장별 요약")
+
+        _prov_ok = any(llm.has_key(p) for p in llm.PROVIDERS)
+        if not _prov_ok:
+            st.warning("요약 API 없음 — ⚙️ 설정 탭에서 키를 입력하세요.")
+        else:
+            _pending_sum = [f for f in _ch_txts if not f.with_name(f.stem + "_wiki.json").exists()]
+            _done_sum    = [f for f in _ch_txts if  f.with_name(f.stem + "_wiki.json").exists()]
+            _wp2, _wm2   = llm.wiki_provider_model()
+            st.caption(f"요약 완료: {len(_done_sum)}/{len(_ch_txts)}  |  모델: `{_wp2}·{_wm2}`")
+
+            _sel_sum_name = st.selectbox(
+                "요약할 챕터 선택",
+                [f.name for f in _ch_txts],
+                key="steps_sum_sel",
+            )
+            _sel_sum_path  = _ch_dir / _sel_sum_name
+            _sel_json_path = _sel_sum_path.with_name(_sel_sum_path.stem + "_wiki.json")
+            if _sel_json_path.exists():
+                try:
+                    _prev = json.loads(_sel_json_path.read_text(encoding="utf-8"))
+                    st.success(f"✅ 이미 요약됨: {(_prev.get('summary',''))[:80]}…")
+                except Exception:
+                    st.success("✅ 이미 요약됨")
+
+            sc1, sc2 = st.columns(2)
+            if sc1.button("▶ 이 챕터 요약", use_container_width=True, key="steps_sum_one",
+                          type="primary"):
+                with st.spinner(f"요약 중: {_sel_sum_name} (수십 초 소요)"):
+                    _ok3, _msg3 = summarize_one_chapter(_sel_sum_path, _ss)
+                (st.success if _ok3 else st.error)(f"{'✅' if _ok3 else '❌'} {_msg3}")
+
+            if sc2.button(f"▶ 미요약 전체 ({len(_pending_sum)}개)", use_container_width=True,
+                          key="steps_sum_all", disabled=(len(_pending_sum) == 0)):
+                _prog2 = st.progress(0.0)
+                for _i3, _cf3 in enumerate(_pending_sum, 1):
+                    st.caption(f"요약 중 [{_i3}/{len(_pending_sum)}]: {_cf3.name}")
+                    _ok4, _msg4 = summarize_one_chapter(_cf3, _ss)
+                    if not _ok4:
+                        st.warning(f"⚠️ {_cf3.name}: {_msg4}")
+                    _prog2.progress(_i3 / len(_pending_sum))
+                st.success(f"완료: {len(_pending_sum)}개 처리")
+                st.rerun()
+
+        # ── 4단계: Wiki 저장 ─────────────────────────────────
+        st.divider()
+        st.markdown("### 📖 4단계 — Wiki 저장")
+
+        _json_files = sorted(_ch_dir.glob("*_wiki.json"))
+        _total_ch   = len(_ch_txts)
+        _done_json  = len(_json_files)
+        st.caption(f"요약 완료: {_done_json}/{_total_ch} 챕터  — {_done_json}개로 Wiki 생성 가능")
+
+        if _done_json == 0:
+            st.info("3단계에서 최소 1개 챕터를 요약해야 Wiki를 생성할 수 있습니다.")
+        else:
+            if _done_json < _total_ch:
+                st.warning(f"⚠️ 미요약 챕터 {_total_ch - _done_json}개가 있습니다. 지금 생성하면 완성본이 아닙니다.")
+
+            if st.button(
+                f"▶ Wiki 생성 ({_done_json}개 챕터 → 옵시디언 노트)",
+                use_container_width=True, key="steps_wiki_build", type="primary",
+            ):
+                with st.spinner("전체 개요 생성 + 위키 노트 작성 중…"):
+                    _ok5, _msg5 = build_wiki_from_chapter_summaries(_sw, _ss)
+                if _ok5:
+                    st.success(f"✅ Wiki 생성 완료: `{_msg5}`")
+                    st.balloons()
+                else:
+                    st.error(f"❌ {_msg5}")
 
 # ── 탭 4: 실패 파일 ──────────────────────────────────────
 with tab_failed:
