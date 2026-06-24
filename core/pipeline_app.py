@@ -42,6 +42,7 @@ OLD_TRANSLATED_DIR = cfg.OLD_TRANSLATED_DIR
 TXT_SUB   = "1_txt"
 MD_SUB    = "2_md"
 TRANS_SUB = "3_translated"
+PDF_SUB   = "pdf"          # 원본 PDF 보관 폴더
 LOG_FILE      = cfg.LOG_FILE
 RESULTS_FILE  = cfg.RESULTS_FILE
 
@@ -935,11 +936,13 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
     with st.status(f"마무리·Wiki 생성: {uf.name}", expanded=True) as status_ui:
         if partial_fail_n:
             st.warning(f"⚠️ 번역 {partial_fail_n}단락 실패 — 그래도 Gemini가 TXT(원문/부분번역)로 노트 생성.")
-        # PDF → DONE
+        # PDF → DONE/pdf/
         done_sub = DONE_DIR / ws_name
         done_sub.mkdir(parents=True, exist_ok=True)
         if dest.exists():
-            final_pdf = done_sub / uf.name
+            pdf_save_dir = done_sub / PDF_SUB
+            pdf_save_dir.mkdir(parents=True, exist_ok=True)
+            final_pdf = pdf_save_dir / uf.name
             shutil.move(str(dest), str(final_pdf))
         # TXT·MD → DONE
         _src_txt = txt_path if (txt_path and txt_path.exists()) else None
@@ -1548,7 +1551,9 @@ def _do_ocr_only(uf, ws_name: str) -> dict:
         except Exception: pass
         append_log(f"ERROR: OCR 실패 — {uf.name}: {err}")
         return {"ok": False, "name": uf.name, "txt_path": "", "md_path": "", "error": err}
-    final_pdf = done_sub / uf.name
+    pdf_save_dir2 = done_sub / PDF_SUB
+    pdf_save_dir2.mkdir(parents=True, exist_ok=True)
+    final_pdf = pdf_save_dir2 / uf.name
     shutil.move(str(dest), str(final_pdf))
     if md_src and md_src.exists():
         txt_dir(DONE_DIR, ws_name).mkdir(parents=True, exist_ok=True)
