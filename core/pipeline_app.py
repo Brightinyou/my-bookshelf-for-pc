@@ -237,8 +237,9 @@ def pdf_to_txt(pdf_path: Path, fast: bool = False) -> tuple[Path | None, Path | 
     if fast:
         if not pdftotext or not Path(pdftotext).exists():
             return None, None, "빠른 추출에 필요한 pdftotext가 없습니다 (Homebrew: brew install poppler)"
+        _nw = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
         r = subprocess.run([pdftotext, "-layout", str(pdf_path), str(txt_path)],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, **_nw)
         if r.returncode != 0 or not txt_path.exists() or txt_path.stat().st_size == 0:
             return None, None, f"pdftotext 실패 (exit {r.returncode}) — 스캔 PDF는 Docling 정밀변환을 사용하세요"
         return txt_path, None, ""
@@ -286,21 +287,35 @@ def pdf_to_txt(pdf_path: Path, fast: bool = False) -> tuple[Path | None, Path | 
         _stale = out_dir / (pdf_path.stem + ".md")
         if _stale.exists():
             _stale.unlink()
+        _no_win = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
         try:
-            r = subprocess.run(
+            proc = subprocess.Popen(
                 [str(docling_bin), str(pdf_path), "--to", "md",
                  "--image-export-mode", "placeholder",
                  *ocr_args,
                  "--output", str(out_dir)],
-                capture_output=True, text=True, timeout=3600,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                **_no_win,
             )
-        except subprocess.TimeoutExpired:
-            return None, None, "Docling 변환 타임아웃(3600초) — 초대형 스캔 PDF"
+            import time as _t
+            deadline = _t.time() + 3600
+            stem = pdf_path.stem
+            while proc.poll() is None:
+                if _t.time() > deadline:
+                    proc.kill()
+                    return None, None, "Docling 변환 타임아웃(3600초) — 초대형 스캔 PDF"
+                if is_paused(stem):
+                    proc.kill()
+                    return None, None, "사용자 중단 — Docling 변환 취소됨"
+                _t.sleep(0.5)
+            _stdout, _stderr = proc.communicate()
+            r_returncode = proc.returncode
+            r_stderr = _stderr.decode("utf-8", errors="replace")
         except Exception as e:
             return None, None, f"Docling 실행 오류: {type(e).__name__} {str(e)[:200]}"
         cand = out_dir / (pdf_path.stem + ".md")
         if not (cand.exists() and cand.stat().st_size > 0):
-            return None, None, f"Docling 변환 실패 (exit {r.returncode}): {(r.stderr or '')[-300:]}"
+            return None, None, f"Docling 변환 실패 (exit {r_returncode}): {r_stderr[-300:]}"
         md_path_out = cand
         # TXT = MD 본문(이미지 placeholder 제거) — 번역·Gemini 위키용
         _md = cand.read_text(encoding="utf-8", errors="ignore")
@@ -310,7 +325,8 @@ def pdf_to_txt(pdf_path: Path, fast: bool = False) -> tuple[Path | None, Path | 
         # 폴백: pdftotext (텍스트 레이어만)
         if not pdftotext or not Path(pdftotext).exists():
             return None, None, "docling·pdftotext 둘 다 없음 — 설정 또는 설치 필요."
-        r = subprocess.run([pdftotext, str(pdf_path), str(txt_path)], capture_output=True, text=True)
+        _nw = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+        r = subprocess.run([pdftotext, str(pdf_path), str(txt_path)], capture_output=True, text=True, **_nw)
         if r.returncode != 0:
             return None, None, f"pdftotext 오류 (exit {r.returncode}): {(r.stderr or '').strip() or '알 수 없는 오류'}"
 
