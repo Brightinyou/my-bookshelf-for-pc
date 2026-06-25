@@ -122,7 +122,12 @@ cp "$SCRIPT_DIR/core/requirements.txt" "$RESOURCES/"
 [ -f "$HOME/.local/bin/menubar_icon.png"     ] && cp "$HOME/.local/bin/menubar_icon.png"     "$RESOURCES/"
 [ -f "$HOME/.local/bin/menubar_icon@2x.png"  ] && cp "$HOME/.local/bin/menubar_icon@2x.png"  "$RESOURCES/"
 
-# ── 앱 아이콘 생성 ─────────────────────────────────────────
+# ── 앱 아이콘: repo에 디자인된 MyBookshelf.icns 있으면 그걸 사용 ──
+# (Windows EXE와 동일한 아이콘 유지). 없을 때만 PIL로 자동 생성.
+if [ -f "$SCRIPT_DIR/MyBookshelf.icns" ]; then
+    echo "🎨 디자인 아이콘 사용: MyBookshelf.icns"
+    cp "$SCRIPT_DIR/MyBookshelf.icns" /tmp/MyBookshelf.icns
+else
 echo "🎨 아이콘 생성 중…"
 python3 - << 'PYICON'
 from PIL import Image, ImageDraw
@@ -190,6 +195,7 @@ try:
 except Exception as e:
     print(f"  ⚠️ 아이콘 생성 실패 (무시): {e}", file=sys.stderr)
 PYICON
+fi
 
 if [ -f /tmp/MyBookshelf.icns ]; then
     cp /tmp/MyBookshelf.icns "$RESOURCES/MyBookshelf.icns"
