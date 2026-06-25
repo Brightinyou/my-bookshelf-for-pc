@@ -1778,8 +1778,20 @@ def _do_ocr_only(uf, ws_name: str, fast: bool = False) -> dict:
 
 # ── UI ────────────────────────────────────────────────────
 
-_icon_path = Path(__file__).resolve().parent.parent / "MyBookshelf.iconset" / "icon_32x32.png"
-_page_icon = str(_icon_path) if _icon_path.exists() else "📚"
+def _find_app_icon(name: str) -> Path | None:
+    """MyBookshelf.iconset/<name>을 여러 후보 위치에서 찾는다.
+    - 개발 트리: core/ 의 부모(레포 루트)
+    - .app 번들: Resources/ (pipeline_app.py와 같은 폴더)
+    - SSD 실행본: pipeline_app.py와 같은 폴더"""
+    here = Path(__file__).resolve().parent
+    for base in (here.parent, here):
+        p = base / "MyBookshelf.iconset" / name
+        if p.exists():
+            return p
+    return None
+
+_icon_path = _find_app_icon("icon_32x32.png")
+_page_icon = str(_icon_path) if _icon_path else "📚"
 st.set_page_config(page_title="My Bookshelf", page_icon=_page_icon, layout="wide")
 
 # ── 글로벌 스타일 (2026-05-18 v2 — Linear·Vercel 톤) ────────────
@@ -1954,8 +1966,8 @@ div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) > div:
 </style>
 """, unsafe_allow_html=True)
 
-_logo_path = Path(__file__).resolve().parent.parent / "MyBookshelf.iconset" / "icon_128x128.png"
-if _logo_path.exists():
+_logo_path = _find_app_icon("icon_128x128.png")
+if _logo_path:
     import base64 as _b64
     _logo_b64 = _b64.b64encode(_logo_path.read_bytes()).decode()
     _logo_html = f'<img src="data:image/png;base64,{_logo_b64}" width="52" style="vertical-align:middle;margin-right:10px">'

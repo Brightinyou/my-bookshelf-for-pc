@@ -203,6 +203,11 @@ if [ -f /tmp/MyBookshelf.icns ]; then
     || /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile MyBookshelf" "$CONTENTS/Info.plist"
 fi
 
+# Streamlit 헤딩·파비콘용 iconset PNG도 번들에 포함 (pipeline_app.py가 탐지)
+if [ -d "$SCRIPT_DIR/MyBookshelf.iconset" ]; then
+    cp -R "$SCRIPT_DIR/MyBookshelf.iconset" "$RESOURCES/MyBookshelf.iconset"
+fi
+
 echo "✅ 완료: $APP"
 echo
 
