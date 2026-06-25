@@ -1931,8 +1931,15 @@ div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) > div:
 </style>
 """, unsafe_allow_html=True)
 
+_logo_path = Path(__file__).resolve().parent.parent / "MyBookshelf.iconset" / "icon_128x128.png"
+if _logo_path.exists():
+    import base64 as _b64
+    _logo_b64 = _b64.b64encode(_logo_path.read_bytes()).decode()
+    _logo_html = f'<img src="data:image/png;base64,{_logo_b64}" width="52" style="vertical-align:middle;margin-right:10px">'
+else:
+    _logo_html = "📚 "
 st.markdown(
-    f"# 📚 My Bookshelf <span style='font-size:0.42em;color:#9aa0a6;"
+    f"# {_logo_html}My Bookshelf <span style='font-size:0.42em;color:#9aa0a6;"
     f"font-weight:400;vertical-align:middle'>{APP_VERSION}</span>",
     unsafe_allow_html=True,
 )

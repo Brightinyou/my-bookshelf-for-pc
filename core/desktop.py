@@ -107,9 +107,28 @@ def main() -> int:
         min_size=(900, 600),
         text_select=True,
     )
-    icon = APP_ICON if os.path.exists(APP_ICON) else None
+    _icon = APP_ICON if os.path.exists(APP_ICON) else None
+
+    def _apply_win32_icon():
+        """pywebview가 창을 만든 직후 Win32 API로 타이틀바·태스크바 아이콘 교체."""
+        if sys.platform != "win32" or not _icon:
+            return
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.FindWindowW(None, APP_TITLE)
+            if not hwnd:
+                return
+            hicon = ctypes.windll.user32.LoadImageW(
+                None, _icon, 1, 0, 0, 0x10 | 0x40  # IMAGE_ICON, LR_LOADFROMFILE|LR_DEFAULTSIZE
+            )
+            if hicon:
+                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, hicon)  # WM_SETICON SMALL
+                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, hicon)  # WM_SETICON BIG
+        except Exception:
+            pass
+
     try:
-        webview.start(icon=icon)  # 창이 닫힐 때까지 블록
+        webview.start(icon=_icon, func=_apply_win32_icon)  # 창이 닫힐 때까지 블록
     finally:
         # 창 닫히면 서버도 종료 (우리가 띄운 경우에만)
         if proc and proc.poll() is None:
