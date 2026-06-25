@@ -8,19 +8,25 @@ cd "$(dirname "$0")"
 echo "📚 My Bookshelf 설치를 시작합니다."
 echo
 
-# ── 1. 파이썬 3.10+ 찾기 ──────────────────────────────────
-PY=""
-for cand in python3.13 python3.12 python3.11 python3.10 python3 \
-            /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+# ── 1. 파이썬 3.10+ 찾기 (Apple Silicon은 arm64 네이티브 우선) ──
+# python.org universal2 빌드는 macOS에서 "Intel 기반 앱" 경고를 띄우므로
+# 호스트 아키텍처와 일치하는 파이썬을 우선 선택한다.
+HOSTARCH=$(uname -m)
+PY=""; PY_FALLBACK=""
+for cand in /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 \
+            /opt/homebrew/bin/python3.11 /opt/homebrew/bin/python3 \
+            python3.13 python3.12 python3.11 python3.10 python3 \
+            /usr/local/bin/python3 /usr/bin/python3; do
     if command -v "$cand" >/dev/null 2>&1; then
-        ver=$("$cand" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo 0.0)
-        major=${ver%%.*}; minor=${ver##*.}
-        if [ "$major" -eq 3 ] && [ "$minor" -ge 10 ]; then
-            PY=$(command -v "$cand")
-            break
+        info=$("$cand" -c 'import sys,platform; print(sys.version_info[0], sys.version_info[1], platform.machine())' 2>/dev/null || echo "0 0 none")
+        set -- $info; pmaj=$1; pmin=$2; parch=$3
+        if [ "$pmaj" = "3" ] && [ "$pmin" -ge 10 ] && [ "$parch" = "$HOSTARCH" ]; then
+            PY=$(command -v "$cand"); break
         fi
+        [ -z "$PY_FALLBACK" ] && [ "$pmaj" = "3" ] && [ "$pmin" -ge 10 ] && PY_FALLBACK=$(command -v "$cand")
     fi
 done
+[ -z "$PY" ] && PY="$PY_FALLBACK"
 
 if [ -z "$PY" ]; then
     echo "❌ 파이썬 3.10 이상이 필요합니다."

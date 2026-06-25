@@ -37,28 +37,54 @@ PLIST
 cat > "$MACOS/MyBookshelf" <<'LAUNCHER'
 #!/bin/bash
 # My Bookshelf 통합 런처 (네이티브 창)
-# 역할: 첫 실행 시 패키지 설치 → desktop.py(PyWebView 네이티브 창) 실행.
-#        터미널·브라우저 창 없이 독립 앱 창으로 뜬다.
+# 역할: 응용프로그램 폴더로 자가설치 → 첫 실행 시 패키지 설치
+#        → desktop.py(PyWebView 네이티브 창) 실행. 터미널·브라우저 없음.
 RESOURCES="$( cd "$( dirname "$0" )/../Resources" && pwd )"
+APP_PATH="$( cd "$( dirname "$0" )/../.." && pwd )"   # .app 번들 경로
 SUPPORT="$HOME/Library/Application Support/MyBookshelf"
 VENV="$SUPPORT/.venv"
 LOG="$SUPPORT/app.log"
+
+# ── 응용 프로그램 폴더로 자가 설치 (그 폴더에 없을 때만) ────
+case "$APP_PATH" in
+    /Applications/*|"$HOME/Applications/"*) ;;   # 이미 설치됨 → 통과
+    *)
+        ANS=$(osascript -e 'button returned of (display dialog "My Bookshelf를 응용 프로그램 폴더에 설치할까요?\n\n설치하면 Launchpad·Spotlight·Dock에서 바로 찾을 수 있습니다." buttons {"나중에", "설치"} default button "설치" with title "My Bookshelf 설치")' 2>/dev/null)
+        if [ "$ANS" = "설치" ]; then
+            DEST="/Applications/MyBookshelf.app"
+            if rm -rf "$DEST" 2>/dev/null && cp -R "$APP_PATH" "$DEST" 2>/dev/null; then
+                osascript -e 'display notification "응용 프로그램 폴더에 설치되었습니다." with title "My Bookshelf"'
+                open "$DEST"          # 설치본으로 다시 실행
+                exit 0
+            else
+                osascript -e 'display alert "설치 권한 없음" message "응용 프로그램 폴더에 복사하지 못했습니다. Finder에서 직접 드래그해 주세요." as warning' 2>/dev/null
+            fi
+        fi
+        ;;
+esac
 
 # ── 첫 실행: 패키지 설치 ────────────────────────────────────
 if [ ! -x "$VENV/bin/python" ]; then
     osascript -e 'display dialog "My Bookshelf를 처음 시작합니다.\n\n필요한 패키지를 설치합니다 (5~20분 소요).\n설치 중에는 아무 창도 보이지 않을 수 있습니다.\n완료되면 앱 창이 자동으로 열립니다." buttons {"설치 시작"} default button "설치 시작" with title "My Bookshelf 설치"'
 
+    # Apple Silicon이면 arm64 네이티브 python 우선(/opt/homebrew) — universal2(python.org)
+    # 빌드는 "Intel 기반 앱" 경고를 띄우므로 호스트 아키텍처와 일치하는 걸 고른다.
+    HOSTARCH=$(uname -m)
     PY=""
-    for cand in python3.13 python3.12 python3.11 python3.10 \
-                /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
+    for cand in /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 \
+                /opt/homebrew/bin/python3.11 /opt/homebrew/bin/python3 \
+                python3.13 python3.12 python3.11 python3.10 \
+                /usr/local/bin/python3 python3 /usr/bin/python3; do
         if command -v "$cand" >/dev/null 2>&1; then
-            ver=$("$cand" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo 0.0)
-            major=${ver%%.*}; minor=${ver##*.}
-            if [ "$major" -eq 3 ] && [ "$minor" -ge 10 ]; then
+            info=$("$cand" -c 'import sys,platform; print(sys.version_info[0], sys.version_info[1], platform.machine())' 2>/dev/null || echo "0 0 none")
+            set -- $info; pmaj=$1; pmin=$2; parch=$3
+            if [ "$pmaj" = "3" ] && [ "$pmin" -ge 10 ] && [ "$parch" = "$HOSTARCH" ]; then
                 PY=$(command -v "$cand"); break
             fi
+            [ -z "$PY_FALLBACK" ] && [ "$pmaj" = "3" ] && [ "$pmin" -ge 10 ] && PY_FALLBACK=$(command -v "$cand")
         fi
     done
+    [ -z "$PY" ] && PY="$PY_FALLBACK"   # 아키텍처 일치 없으면 버전만 맞는 것
 
     if [ -z "$PY" ]; then
         osascript -e 'display alert "파이썬 3.10+ 필요" message "python.org/downloads 에서 설치 후 앱을 다시 실행하세요." as critical'
