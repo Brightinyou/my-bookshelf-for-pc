@@ -45,6 +45,7 @@ Source: "core\requirements.txt";   DestDir: "{app}"; Flags: ignoreversion
 ; ── 실행·종료 스크립트 ────────────────────────────────────
 Source: "MyBookshelf.exe";         DestDir: "{app}"; Flags: ignoreversion
 Source: "MyBookshelf.ico";         DestDir: "{app}"; Flags: ignoreversion
+Source: "MyBookshelf.icns";        DestDir: "{app}"; Flags: ignoreversion
 Source: "MyBookshelf.iconset\*";   DestDir: "{app}\MyBookshelf.iconset"; Flags: ignoreversion
 Source: "start-app.vbs";           DestDir: "{app}"; Flags: ignoreversion
 Source: "start.bat";               DestDir: "{app}"; Flags: ignoreversion
