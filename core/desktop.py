@@ -24,7 +24,8 @@ APP_TITLE = "My Bookshelf"
 DEFAULT_PORT = 8501
 HERE = Path(__file__).resolve().parent
 APP_SCRIPT = HERE / "pipeline_app.py"
-APP_ICON = str(HERE.parent / "MyBookshelf.ico")
+import sys as _sys
+APP_ICON = str(HERE.parent / ("MyBookshelf.icns" if _sys.platform == "darwin" else "MyBookshelf.ico"))
 
 
 def _port_in_use(port: int) -> bool:
