@@ -17,10 +17,12 @@ if %errorlevel%==0 (
     echo [My Bookshelf] 시작합니다 — 잠시 후 앱 창이 열립니다.
     echo 앱 창을 닫으면 자동으로 종료됩니다.
     .venv\Scripts\python core\desktop.py
+    exit /b
 ) else (
     echo [경고] 네이티브 창 모듈^(pywebview^)이 없어 브라우저로 엽니다.
     echo setup.bat 를 다시 실행하면 네이티브 창을 쓸 수 있습니다.
     .venv\Scripts\python -m streamlit run core\pipeline_app.py --server.port 8501 --browser.gatherUsageStats false
     echo 아무 키나 누르면 창이 닫힙니다.
     pause >nul
+    exit /b
 )
