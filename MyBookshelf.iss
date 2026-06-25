@@ -14,7 +14,7 @@ AppPublisher=My Bookshelf
 DefaultDirName={localappdata}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-OutputDir=dist
+OutputDir=.
 OutputBaseFilename=MyBookshelf-Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -42,7 +42,7 @@ Source: "core\chapter_wiki.py";    DestDir: "{app}\core"; Flags: ignoreversion
 Source: "core\ocr_windows.py";     DestDir: "{app}\core"; Flags: ignoreversion
 Source: "core\requirements.txt";   DestDir: "{app}"; Flags: ignoreversion
 ; ── 실행·종료 스크립트 ────────────────────────────────────
-Source: "dist\MyBookshelf.exe";    DestDir: "{app}"; Flags: ignoreversion
+Source: "MyBookshelf.exe";         DestDir: "{app}"; Flags: ignoreversion
 Source: "start-app.vbs";           DestDir: "{app}"; Flags: ignoreversion
 Source: "start.bat";               DestDir: "{app}"; Flags: ignoreversion
 Source: "stop-app.bat";            DestDir: "{app}"; Flags: ignoreversion
