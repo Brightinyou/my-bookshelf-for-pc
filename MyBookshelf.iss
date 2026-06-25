@@ -42,19 +42,20 @@ Source: "core\chapter_wiki.py";    DestDir: "{app}\core"; Flags: ignoreversion
 Source: "core\ocr_windows.py";     DestDir: "{app}\core"; Flags: ignoreversion
 Source: "core\requirements.txt";   DestDir: "{app}"; Flags: ignoreversion
 ; ── 실행·종료 스크립트 ────────────────────────────────────
+Source: "dist\MyBookshelf.exe";    DestDir: "{app}"; Flags: ignoreversion
 Source: "start-app.vbs";           DestDir: "{app}"; Flags: ignoreversion
 Source: "start.bat";               DestDir: "{app}"; Flags: ignoreversion
 Source: "stop-app.bat";            DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 ; 시작 메뉴 최상위 — Windows 11 "모든 앱"에서 M 항목으로 바로 보임
-Name: "{userprograms}\{#MyAppName}";          Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"
+Name: "{userprograms}\{#MyAppName}";          Filename: "{app}\MyBookshelf.exe"; WorkingDir: "{app}"
 ; 시작 메뉴 서브폴더 — 종료·제거 항목
-Name: "{userprograms}\{#MyAppName} (폴더)\{#MyAppName} 시작";  Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"
+Name: "{userprograms}\{#MyAppName} (폴더)\{#MyAppName} 시작";  Filename: "{app}\MyBookshelf.exe"; WorkingDir: "{app}"
 Name: "{userprograms}\{#MyAppName} (폴더)\{#MyAppName} 종료";  Filename: "{app}\stop-app.bat"; WorkingDir: "{app}"
 Name: "{userprograms}\{#MyAppName} (폴더)\프로그램 제거";       Filename: "{uninstallexe}"
 ; 바탕화면
-Name: "{userdesktop}\{#MyAppName}";           Filename: "{sys}\wscript.exe"; Parameters: """{app}\start-app.vbs"""; WorkingDir: "{app}"
+Name: "{userdesktop}\{#MyAppName}";           Filename: "{app}\MyBookshelf.exe"; WorkingDir: "{app}"
 Name: "{userdesktop}\{#MyAppName} 제거";      Filename: "{uninstallexe}"; Tasks: uninstallicon
 
 [Run]
