@@ -1755,7 +1755,9 @@ def _do_ocr_only(uf, ws_name: str, fast: bool = False) -> dict:
 
 # ── UI ────────────────────────────────────────────────────
 
-st.set_page_config(page_title="My Bookshelf", page_icon="📚", layout="wide")
+_icon_path = Path(__file__).resolve().parent.parent / "MyBookshelf.iconset" / "icon_32x32.png"
+_page_icon = str(_icon_path) if _icon_path.exists() else "📚"
+st.set_page_config(page_title="My Bookshelf", page_icon=_page_icon, layout="wide")
 
 # ── 글로벌 스타일 (2026-05-18 v2 — Linear·Vercel 톤) ────────────
 # 잔잔한 segmented control + 모노톤 칩. 선택된 것만 도드라지는 미감.

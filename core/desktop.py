@@ -24,6 +24,7 @@ APP_TITLE = "My Bookshelf"
 DEFAULT_PORT = 8501
 HERE = Path(__file__).resolve().parent
 APP_SCRIPT = HERE / "pipeline_app.py"
+APP_ICON = str(HERE.parent / "MyBookshelf.ico")
 
 
 def _port_in_use(port: int) -> bool:
@@ -105,8 +106,9 @@ def main() -> int:
         min_size=(900, 600),
         text_select=True,
     )
+    icon = APP_ICON if os.path.exists(APP_ICON) else None
     try:
-        webview.start()  # 창이 닫힐 때까지 블록
+        webview.start(icon=icon)  # 창이 닫힐 때까지 블록
     finally:
         # 창 닫히면 서버도 종료 (우리가 띄운 경우에만)
         if proc and proc.poll() is None:

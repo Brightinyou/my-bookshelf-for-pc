@@ -15,6 +15,7 @@ DisableReadyPage=yes
 DisableFinishedPage=yes
 MinVersion=10.0
 PrivilegesRequired=lowest
+SetupIconFile=MyBookshelf.ico
 
 [Languages]
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
