@@ -262,7 +262,7 @@ def pdf_to_txt(pdf_path: Path, fast: bool = False) -> tuple[Path | None, Path | 
             # Windows: 스캔 PDF는 WinRT→Tesseract 라우터, 디지털 PDF는 EasyOCR via Docling.
             # 기본 PDF 백엔드(dlparse)는 윈도우 한글 파일명·std::bad_alloc 크래시
             # → pypdfium2 백엔드 강제 (2026-06-11 실기 확인).
-            _ocr_langs = (llm.get_pref("ocr_langs_other") or "ko,en").strip()
+            _ocr_langs = "en"
             _lang_code  = target_lang()
             # 스캔 여부 감지 → WinRT/Tesseract 라우터 시도
             try:
@@ -325,7 +325,7 @@ _KO_SCRIPT = _re.compile(r"[가-힣]")
 
 
 def target_lang() -> str:
-    return "ko"
+    return "en"
 
 
 def needs_translation(txt_path: Path, threshold: float = 0.3) -> bool:

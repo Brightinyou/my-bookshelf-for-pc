@@ -10,8 +10,6 @@ winrt-Windows.Graphics.Imaging>=2.0; sys_platform == "win32"
 winrt-Windows.Storage.Streams>=2.0; sys_platform == "win32"
 winrt-Windows.Globalization>=2.0; sys_platform == "win32"
 pypdfium2>=4.0; sys_platform == "win32"
-# Tesseract Python 래퍼 (바이너리는 별도 설치 필요 — setup.bat 참고)
-pytesseract>=0.3; sys_platform == "win32"
 google-genai>=1.0
 openai>=1.0
 anthropic>=0.40

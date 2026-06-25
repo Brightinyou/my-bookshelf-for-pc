@@ -51,39 +51,7 @@ if not exist "%USERPROFILE%\.streamlit\credentials.toml" (
     echo email = "">> "%USERPROFILE%\.streamlit\credentials.toml"
 )
 
-REM ── 3. Tesseract OCR 설치 확인 (스캔 PDF 다국어 지원) ──────
-echo.
-where tesseract >nul 2>nul
-if not errorlevel 1 goto :tess_have
-if exist "C:\Program Files\Tesseract-OCR\tesseract.exe" goto :tess_have
-echo [안내] Tesseract OCR 이 없습니다. 스캔 PDF(크메르어·미얀마어 등)를 처리하려면 설치가 필요합니다.
-choice /c YN /m "  지금 Tesseract를 설치할까요"
-if errorlevel 2 (
-    echo [안내] 나중에 직접 설치할 수 있습니다:
-    echo        https://github.com/UB-Mannheim/tesseract/wiki
-    goto :tess_skip
-)
-where winget >nul 2>nul
-if errorlevel 1 (
-    echo [안내] Tesseract 다운로드 페이지를 엽니다.
-    start https://github.com/UB-Mannheim/tesseract/wiki
-    goto :tess_skip
-)
-echo [진행] winget으로 Tesseract 설치 중...
-winget install -e --id UB-Mannheim.TesseractOCR --accept-source-agreements --accept-package-agreements
-goto :tess_done
-
-:tess_have
-echo [확인] Tesseract OCR 이 설치되어 있습니다.
-goto :tess_done
-
-:tess_skip
-echo [안내] 한국어·영어·중국어·일본어·아랍어 등은 Windows 내장 OCR로 처리됩니다.
-echo        크메르어·미얀마어·암하라어 등은 Tesseract 설치 후 사용 가능합니다.
-
-:tess_done
-
-REM ── 4. 옵시디언(위키 노트 열람용) 확인 ─────────────────────
+REM ── 3. 옵시디언(위키 노트 열람용) 확인 ─────────────────────
 echo.
 if exist "%LOCALAPPDATA%\Programs\Obsidian\Obsidian.exe" goto :obs_have
 if exist "%LOCALAPPDATA%\Obsidian\Obsidian.exe" goto :obs_have
