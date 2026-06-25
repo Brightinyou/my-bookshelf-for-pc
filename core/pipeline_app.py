@@ -233,11 +233,20 @@ def pdf_to_txt(pdf_path: Path, fast: bool = False) -> tuple[Path | None, Path | 
 
     txt_path = Path(tempfile.gettempdir()) / (pdf_path.stem + ".txt")
 
+    # Windows에서 터미널 창이 뜨지 않도록 STARTUPINFO + CREATE_NO_WINDOW 조합 사용
+    if sys.platform == "win32":
+        _si = subprocess.STARTUPINFO()
+        _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        _si.wShowWindow = 0  # SW_HIDE
+        _nw = {"creationflags": subprocess.CREATE_NO_WINDOW, "startupinfo": _si,
+               "stdin": subprocess.DEVNULL}
+    else:
+        _nw = {}
+
     # ── 빠른 추출 모드: pdftotext로 텍스트 레이어만 추출 ──────
     if fast:
         if not pdftotext or not Path(pdftotext).exists():
             return None, None, "빠른 추출에 필요한 pdftotext가 없습니다 (Homebrew: brew install poppler)"
-        _nw = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
         r = subprocess.run([pdftotext, "-layout", str(pdf_path), str(txt_path)],
                            capture_output=True, text=True, **_nw)
         if r.returncode != 0 or not txt_path.exists() or txt_path.stat().st_size == 0:
@@ -287,7 +296,6 @@ def pdf_to_txt(pdf_path: Path, fast: bool = False) -> tuple[Path | None, Path | 
         _stale = out_dir / (pdf_path.stem + ".md")
         if _stale.exists():
             _stale.unlink()
-        _no_win = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
         try:
             proc = subprocess.Popen(
                 [str(docling_bin), str(pdf_path), "--to", "md",
@@ -295,7 +303,7 @@ def pdf_to_txt(pdf_path: Path, fast: bool = False) -> tuple[Path | None, Path | 
                  *ocr_args,
                  "--output", str(out_dir)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                **_no_win,
+                **_nw,
             )
             import time as _t
             deadline = _t.time() + 3600
@@ -325,7 +333,6 @@ def pdf_to_txt(pdf_path: Path, fast: bool = False) -> tuple[Path | None, Path | 
         # 폴백: pdftotext (텍스트 레이어만)
         if not pdftotext or not Path(pdftotext).exists():
             return None, None, "docling·pdftotext 둘 다 없음 — 설정 또는 설치 필요."
-        _nw = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
         r = subprocess.run([pdftotext, str(pdf_path), str(txt_path)], capture_output=True, text=True, **_nw)
         if r.returncode != 0:
             return None, None, f"pdftotext 오류 (exit {r.returncode}): {(r.stderr or '').strip() or '알 수 없는 오류'}"
