@@ -18,7 +18,7 @@ config.json 예 (모든 키 선택 사항):
   "files": {
     "log_file": "...", "results_file": "...", "gemini_done": "..."
   },
-  "binaries": { "docling": "...", "pdftotext": "..." },
+  "binaries": { "pdftotext": "..." },
   "workspaces": ["My Bookshelf"]
 }
 """
@@ -117,13 +117,6 @@ def find_binary(name: str, extra: tuple = ()) -> str | None:
 
 _PARENT = _HERE.parent   # core/ → 상위 폴더 (.venv가 여기 있을 수도 있음)
 PDFTOTEXT = find_binary("pdftotext")
-DOCLING   = find_binary("docling", extra=(
-    str(_HERE / ".venv" / "bin" / "docling"),              # Inno Setup 설치: {app}/.venv
-    str(_HERE / ".venv" / "Scripts" / "docling.exe"),
-    str(_PARENT / ".venv" / "bin" / "docling"),            # zip 배포: root/.venv/bin/docling
-    str(_PARENT / ".venv" / "Scripts" / "docling.exe"),    # zip 배포: root/.venv (Windows)
-    str(BASE_DIR / ".venv" / "bin" / "docling"),           # 옛 레이아웃 호환
-))
 PYTHON    = sys.executable   # 보조 스크립트는 앱과 같은 인터프리터로 실행
 
 

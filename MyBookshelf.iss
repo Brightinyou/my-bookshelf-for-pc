@@ -40,7 +40,6 @@ Source: "core\config.py";          DestDir: "{app}\core"; Flags: ignoreversion
 Source: "core\llm_providers.py";   DestDir: "{app}\core"; Flags: ignoreversion
 Source: "core\gemini_wiki.py";     DestDir: "{app}\core"; Flags: ignoreversion
 Source: "core\chapter_wiki.py";    DestDir: "{app}\core"; Flags: ignoreversion
-Source: "core\ocr_windows.py";     DestDir: "{app}\core"; Flags: ignoreversion
 Source: "core\requirements.txt";   DestDir: "{app}"; Flags: ignoreversion
 ; ── 실행·종료 스크립트 ────────────────────────────────────
 Source: "MyBookshelf.exe";         DestDir: "{app}"; Flags: ignoreversion

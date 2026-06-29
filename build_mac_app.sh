@@ -107,7 +107,7 @@ if [ ! -x "$VENV/bin/python" ]; then
 fi
 
 # ── 네이티브 창 실행 (desktop.py가 서버 기동·창·종료 관리) ──
-export PATH="$VENV/bin:$PATH"   # docling/pdftotext 등 CLI 탐지
+export PATH="$VENV/bin:$PATH"   # pdftotext 등 CLI 탐지
 mkdir -p "$SUPPORT"
 exec "$VENV/bin/python" "$RESOURCES/desktop.py" >>"$LOG" 2>&1
 LAUNCHER

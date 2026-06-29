@@ -38,7 +38,7 @@ FAILED_DIR    = cfg.FAILED_DIR
 # OLD_TRANSLATED_DIR은 데이터 이동 이전 옛 위치 — fallback 용도로만 유지.
 OLD_TRANSLATED_DIR = cfg.OLD_TRANSLATED_DIR
 # done/<ws>/ 하위 산출물 폴더명 — 텍스트 처리 순서대로 번호 접두 (2026-06-09).
-#   1_txt(②변환 TXT, Gemini 입력) → 2_md(③Docling MD, 각주·표) → 3_translated(④번역)
+#   1_txt(②변환 TXT, Gemini 입력) → 2_md(③MD, 장 구조) → 3_translated(④번역)
 TXT_SUB   = "1_txt"
 MD_SUB    = "2_md"
 TRANS_SUB = "3_translated"
@@ -225,10 +225,8 @@ def find_split_mds(base: Path, ws_name: str, stem: str) -> list[Path]:
 
 # ── 파이프라인 함수들 ─────────────────────────────────────
 
-def pdf_to_txt(pdf_path: Path, fast: bool = False) -> tuple[Path | None, Path | None, str]:
-    """(txt_path, md_path, error_msg) 반환. md_path는 MD 생성 성공 시에만 채워짐.
-    fast=True: pdftotext 직접 추출(텍스트 레이어, 초 단위).
-    fast=False: Docling 정밀변환(레이아웃 분석 + OCR, 분 단위)."""
+def pdf_to_txt(pdf_path: Path, fast: bool = True) -> tuple[Path | None, Path | None, str]:
+    """텍스트 레이어가 있는 PDF를 TXT로 변환한다."""
     pdftotext = cfg.PDFTOTEXT
 
     txt_path = Path(tempfile.gettempdir()) / (pdf_path.stem + ".txt")
@@ -243,104 +241,18 @@ def pdf_to_txt(pdf_path: Path, fast: bool = False) -> tuple[Path | None, Path | 
     else:
         _nw = {}
 
-    # ── 빠른 추출 모드: pdftotext로 텍스트 레이어만 추출 ──────
-    if fast:
-        if not pdftotext or not Path(pdftotext).exists():
-            return None, None, "빠른 추출에 필요한 pdftotext가 없습니다 (Homebrew: brew install poppler)"
-        r = subprocess.run([pdftotext, "-layout", str(pdf_path), str(txt_path)],
-                           capture_output=True, text=True, **_nw)
-        if r.returncode != 0 or not txt_path.exists() or txt_path.stat().st_size == 0:
-            return None, None, f"pdftotext 실패 (exit {r.returncode}) — 스캔 PDF는 Docling 정밀변환을 사용하세요"
-        return txt_path, None, ""
+    if not pdftotext or not Path(pdftotext).exists():
+        return None, None, "TXT 변환에 필요한 pdftotext가 없습니다 (macOS: brew install poppler)"
 
-    # ── Docling 변환 (2026-06-09): 레이아웃 인식으로 본문/각주/표 분리 + ocrmac(Apple Vision) OCR ──
-    docling_bin = Path(cfg.DOCLING) if cfg.DOCLING else None
-    md_path_out: Path | None = None
-
-    if docling_bin and docling_bin.exists():
-        st.caption("📄 Docling 변환 중 — 레이아웃 인식·각주 분리 (대형 스캔은 수 분 소요)…")
-        out_dir = pdf_path.parent
-        # OS별 OCR 엔진: 맥=ocrmac(Apple Vision), 그 외=easyocr(ko 지원).
-        # 언어 미지정 시 영어 기본 → 한글 깨짐. rapidocr은 docling이 중국어·영어 모델만
-        # 지원해 한국어 불가(2026-06-10 확인) — easyocr만이 윈도우 한글 경로.
-        # OCR 언어는 설정탭에서 변경 가능 (2026-06-13 다국어) — 태국어 등 추가 시
-        # 맥(Vision)=th-TH 형식, 윈도우(EasyOCR)=th 형식.
-        if sys.platform == "darwin":
-            _ocr_langs = (llm.get_pref("ocr_langs_mac") or "ko-KR,en-US").strip()
-            ocr_args = ["--ocr-engine", "ocrmac", "--ocr-lang", _ocr_langs]
-        else:
-            # Windows: 스캔 PDF는 WinRT→Tesseract 라우터, 디지털 PDF는 EasyOCR via Docling.
-            # 기본 PDF 백엔드(dlparse)는 윈도우 한글 파일명·std::bad_alloc 크래시
-            # → pypdfium2 백엔드 강제 (2026-06-11 실기 확인).
-            _ocr_langs = "en"
-            _lang_code  = target_lang()
-            # 스캔 여부 감지 → WinRT/Tesseract 라우터 시도
-            try:
-                from ocr_windows import is_scanned, ocr_windows_scanned
-                if is_scanned(pdf_path, pdftotext):
-                    st.caption("🔍 스캔 PDF 감지 — WinRT/Tesseract OCR 시도 중…")
-                    _win_text, _win_err = ocr_windows_scanned(
-                        pdf_path, _lang_code, str(docling_bin), _ocr_langs
-                    )
-                    if _win_text:
-                        txt_path.write_text(_win_text, encoding="utf-8")
-                        return txt_path, None, ""
-                    elif _win_err and "EasyOCR 폴백" not in _win_err:
-                        st.caption(f"⚠️ WinRT/Tesseract 실패 ({_win_err[:80]}) — EasyOCR로 폴백")
-            except Exception as _we:
-                st.caption(f"⚠️ OCR 라우터 오류 ({type(_we).__name__}) — EasyOCR로 폴백")
-            ocr_args = ["--ocr-engine", "easyocr", "--ocr-lang", _ocr_langs,
-                        "--pdf-backend", "pypdfium2"]
-        # 이전 실행이 남긴 같은 이름 MD가 있으면 제거 — 변환 실패를 잔재가
-        # 성공으로 가리는 것 방지 (2026-06-11, 0바이트 PDF '완료' 오판 원인)
-        _stale = out_dir / (pdf_path.stem + ".md")
-        if _stale.exists():
-            _stale.unlink()
-        try:
-            proc = subprocess.Popen(
-                [str(docling_bin), str(pdf_path), "--to", "md",
-                 "--image-export-mode", "placeholder",
-                 *ocr_args,
-                 "--output", str(out_dir)],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                **_nw,
-            )
-            import time as _t
-            deadline = _t.time() + 3600
-            stem = pdf_path.stem
-            while proc.poll() is None:
-                if _t.time() > deadline:
-                    proc.kill()
-                    return None, None, "Docling 변환 타임아웃(3600초) — 초대형 스캔 PDF"
-                if is_paused(stem):
-                    proc.kill()
-                    return None, None, "사용자 중단 — Docling 변환 취소됨"
-                _t.sleep(0.5)
-            _stdout, _stderr = proc.communicate()
-            r_returncode = proc.returncode
-            r_stderr = _stderr.decode("utf-8", errors="replace")
-        except Exception as e:
-            return None, None, f"Docling 실행 오류: {type(e).__name__} {str(e)[:200]}"
-        cand = out_dir / (pdf_path.stem + ".md")
-        if not (cand.exists() and cand.stat().st_size > 0):
-            return None, None, f"Docling 변환 실패 (exit {r_returncode}): {r_stderr[-300:]}"
-        md_path_out = cand
-        # TXT = MD 본문(이미지 placeholder 제거) — 번역·Gemini 위키용
-        _md = cand.read_text(encoding="utf-8", errors="ignore")
-        _md = _re.sub(r"!\[Image\]\([^)]*\)\s*", "", _md)
-        txt_path.write_text(_md, encoding="utf-8")
-    else:
-        # 폴백: pdftotext (텍스트 레이어만)
-        if not pdftotext or not Path(pdftotext).exists():
-            return None, None, "docling·pdftotext 둘 다 없음 — 설정 또는 설치 필요."
-        r = subprocess.run([pdftotext, str(pdf_path), str(txt_path)], capture_output=True, text=True, **_nw)
-        if r.returncode != 0:
-            return None, None, f"pdftotext 오류 (exit {r.returncode}): {(r.stderr or '').strip() or '알 수 없는 오류'}"
+    r = subprocess.run([pdftotext, "-layout", str(pdf_path), str(txt_path)],
+                       capture_output=True, text=True, **_nw)
+    if r.returncode != 0:
+        return None, None, f"pdftotext 오류 (exit {r.returncode}): {(r.stderr or '').strip() or '알 수 없는 오류'}"
 
     if not txt_path.exists() or txt_path.stat().st_size == 0:
-        return None, None, "텍스트 추출 실패 (PDF 손상 또는 빈 PDF)"
+        return None, None, "텍스트 추출 실패 — 텍스트 레이어가 있는 PDF만 변환할 수 있습니다"
 
-    return txt_path, md_path_out, ""
+    return txt_path, None, ""
 
 
 # ── 번역: 영어→한국어 고정 ────────────────────────────────
@@ -1607,9 +1519,8 @@ def build_single_chapter_wiki(ws_name: str, stem: str, json_path: Path, wiki_dir
 
     lines = [
         "---", f"title: {note_title}", f"book: {stem}",
-        f"chapter: {ch_title}",
-        f"source: {stem}.txt",
-        f"model: {model}", f"generated: {today}", "---", "",
+        f"chapter: {ch_title}", f"model: {model}",
+        f"generated: {today}", "---", "",
         f"# {ch_title}",
         f"> ← {book_link}" + (f"  |  {nav}" if nav else ""), "",
         f"**요약:** {summ}", "", body, "",
@@ -1746,7 +1657,7 @@ def build_wiki_from_chapter_summaries(ws_name: str, stem: str, wiki_dir: Path | 
     return True, str(out_path)
 
 
-# ─── OCR 단독 처리 (번역·위키 생략) ─────────────────────────
+# ─── TXT 단독 처리 (번역·위키 생략) ─────────────────────────
 
 def _do_ocr_only(uf, ws_name: str, fast: bool = False) -> dict:
     """PDF → TXT 변환만 수행. fast=True이면 pdftotext 직접 추출."""
@@ -1769,7 +1680,7 @@ def _do_ocr_only(uf, ws_name: str, fast: bool = False) -> dict:
     if not txt_path:
         try: shutil.move(str(dest), str(FAILED_DIR / uf.name))
         except Exception: pass
-        append_log(f"ERROR: OCR 실패 — {uf.name}: {err}")
+        append_log(f"ERROR: TXT 변환 실패 — {uf.name}: {err}")
         return {"ok": False, "name": uf.name, "txt_path": "", "md_path": "", "error": err}
     pdf_save_dir2 = done_sub / PDF_SUB
     pdf_save_dir2.mkdir(parents=True, exist_ok=True)
@@ -1784,7 +1695,7 @@ def _do_ocr_only(uf, ws_name: str, fast: bool = False) -> dict:
         shutil.move(str(md_src), str(final_md))
     else:
         final_md = None
-    append_log(f"OCR 완료: {uf.name} → {Path(final_txt).name}")
+    append_log(f"TXT 변환 완료: {uf.name} → {Path(final_txt).name}")
     queue_add("tab2_ready", [_nfc(Path(final_txt).stem)])   # → 장별분할 큐 등록
     return {"ok": True, "name": uf.name, "txt_path": str(final_txt),
             "md_path": str(final_md) if final_md else "", "error": ""}
@@ -2013,7 +1924,7 @@ st.markdown(
     f"font-weight:400;vertical-align:middle'>{APP_VERSION}</span>",
     unsafe_allow_html=True,
 )
-st.caption("PDF → OCR/TXT → 장별 분할 → 번역 → 요약 → Obsidian Wiki")
+st.caption("PDF → TXT변환 → 장별 분할 → 번역 → 요약 → Obsidian Wiki")
 
 _loading_step("파일 목록 확인 중…", "처리된 파일과 API 설정을 읽고 있습니다")
 
@@ -2030,7 +1941,7 @@ if not _avail_providers:
 
 # ── 탭 6개 ────────────────────────────────────────────────
 tab_ocr, tab_split, tab_tr, tab_summ, tab_wiki5, tab_settings = st.tabs([
-    "📄 1·OCR/TXT",
+    "📄 1·TXT변환",
     "📂 2·장별분할",
     "🌐 3·번역",
     "📝 4·요약MD",
@@ -2094,27 +2005,18 @@ def _wiki_model_radio(key: str) -> tuple[str, str]:
 
 _loading_step("화면 구성 중…", "탭과 UI를 초기화하고 있습니다")
 
-# ── 탭1: OCR/TXT제작 ──────────────────────────────────────
+# ── 탭1: TXT변환 ─────────────────────────────────────────
 with tab_ocr:
-    st.subheader("📄 OCR/TXT 제작")
-    st.caption("PDF를 업로드하면 OCR(텍스트 추출)하여 TXT 파일로 저장합니다.")
+    st.subheader("📄 TXT 변환")
+    st.caption("텍스트로 저장 (OCR 변환된 문서만 가능) — PDF의 텍스트 레이어를 추출해 TXT로 저장합니다.")
 
     _ws1 = DEFAULT_WS
-    # 변환 방식
-    _conv1 = st.radio(
-        "변환 방식",
-        ["⚡ 빠른 추출 (텍스트 레이어 · 초 단위)", "🔬 Docling 정밀변환 (레이아웃·각주 분리 · 수 분)"],
-        horizontal=True, key="ocr_conv_mode",
-        help="디지털 PDF(텍스트 레이어 있음)는 빠른 추출 권장. 스캔 PDF만 Docling 사용.",
-    )
-    _fast1 = "빠른" in _conv1
-    if _fast1:
-        st.caption("⚠️ 빠른 추출은 순수 텍스트만 추출합니다. 장(Chapter) 구조가 없어 **Tab 2 장별 분할이 불가**합니다. 장별 분할이 필요하면 🔬 Docling 정밀변환을 사용하세요.")
+    _fast1 = True
 
     # 처리 모드
     _mode1 = st.radio(
         "처리 모드",
-        ["📄 OCR만 (TXT저장)", "🚀 전체 파이프라인 (OCR→번역→Wiki)"],
+        ["📄 TXT저장만", "🚀 전체 실행 (TXT변환→장별분할→번역(영어문서인 경우)→Wiki)"],
         horizontal=True, key="ocr_mode",
     )
 
@@ -2179,8 +2081,8 @@ with tab_ocr:
         if _to_run1:
             _prog1 = st.progress(0.0)
             for _i1, _uf1 in enumerate(_to_run1, 1):
-                if "OCR만" in _mode1:
-                    with st.status(f"OCR [{_i1}/{len(_to_run1)}]: {_uf1.name}", expanded=False):
+                if "TXT저장" in _mode1:
+                    with st.status(f"TXT변환 [{_i1}/{len(_to_run1)}]: {_uf1.name}", expanded=False):
                         _r1 = _do_ocr_only(_uf1, _ws1, fast=_fast1)
                     (st.success if _r1["ok"] else st.error)(
                         f"{'✅' if _r1['ok'] else '❌'} {_uf1.name}" +
@@ -2315,7 +2217,7 @@ with tab_split:
                 _sp2.progress(_si2 / len(_to2))
             st.rerun()
     else:
-        st.info("분할 대기 없음 — 1·OCR/TXT 탭에서 TXT를 먼저 생성하거나 아래에서 수동 추가하세요")
+        st.info("분할 대기 없음 — 1·TXT변환 탭에서 TXT를 먼저 생성하거나 아래에서 수동 추가하세요")
 
     # 수동 추가 expander
     with st.expander("➕ 수동으로 추가 (기존 책에서 선택)"):
@@ -2548,8 +2450,6 @@ with tab_summ:
 
     st.info("💡 다음 단계: **📖 5·Wiki반영** 탭으로 이동하세요")
 
-
-_loading_step("Wiki 목록 로드 중…", "거의 다 됐습니다")
 
 # ── 탭5: Wiki반영 ─────────────────────────────────────────
 with tab_wiki5:

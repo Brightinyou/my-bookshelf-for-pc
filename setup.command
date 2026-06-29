@@ -1,7 +1,7 @@
 #!/bin/bash
 # My Bookshelf 설치 스크립트 — 더블클릭(또는 우클릭→열기)으로 실행하세요.
 # 하는 일: 파이썬 확인 → 전용 가상환경(.venv) 생성 → 필요 패키지 설치.
-# 인터넷 연결 필요. Docling(PDF 변환 엔진)이 커서 처음 설치는 10~20분 걸릴 수 있습니다.
+# 인터넷 연결 필요. 처음 설치는 몇 분 걸릴 수 있습니다.
 set -e
 cd "$(dirname "$0")"
 
@@ -42,13 +42,13 @@ if [ ! -d .venv ]; then
     echo "📦 가상환경(.venv) 생성 중…"
     "$PY" -m venv .venv
 fi
-echo "📦 패키지 설치 중 — Docling이 커서 10~20분 걸릴 수 있습니다. 창을 닫지 마세요."
+echo "📦 패키지 설치 중 — 창을 닫지 마세요."
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -r core/requirements.txt
 
-# ── 3. pdftotext(폴백 변환기) 안내 — 없어도 Docling만으로 동작 ──
+# ── 3. pdftotext 변환기 안내 ───────────────────────────────
 if ! command -v pdftotext >/dev/null 2>&1; then
-    echo "ℹ️  (선택) pdftotext 폴백이 없습니다. Homebrew가 있다면: brew install poppler"
+    echo "⚠️  TXT 변환에 필요한 pdftotext가 없습니다. Homebrew가 있다면: brew install poppler"
 fi
 
 # ── Streamlit 첫 실행 영문 환영문(이메일 입력) 건너뛰기 ──

@@ -10,7 +10,7 @@ if [ ! -x .venv/bin/python ]; then
     exit 1
 fi
 
-# venv 활성화 — PATH에 .venv/bin이 들어가 docling 자동 탐지가 작동한다.
+# venv 활성화 — PATH에 .venv/bin이 들어가 보조 CLI 탐지가 작동한다.
 source .venv/bin/activate
 
 echo "📚 My Bookshelf 를 시작합니다 — 잠시 후 앱 창이 열립니다."

@@ -3,7 +3,7 @@ chcp 65001 >nul
 cd /d "%~dp0"
 REM My Bookshelf 설치 스크립트(윈도우) — 더블클릭으로 실행하세요.
 REM 하는 일: 파이썬 확인 -> 전용 가상환경(.venv) 생성 -> 필요 패키지 설치.
-REM 인터넷 연결 필요. Docling(PDF 변환 엔진)이 커서 처음 설치는 10~20분 걸릴 수 있습니다.
+REM 인터넷 연결 필요. 처음 설치는 몇 분 걸릴 수 있습니다.
 
 echo [My Bookshelf] 설치를 시작합니다.
 echo.
@@ -34,7 +34,7 @@ if not exist .venv (
     %PYCMD% -m venv .venv
     if errorlevel 1 ( echo [실패] 가상환경 생성 실패 — 아무 키나 누르면 닫힙니다. & pause >nul & exit /b 1 )
 )
-echo [진행] 패키지 설치 중 — Docling이 커서 10~20분 걸릴 수 있습니다. 창을 닫지 마세요.
+echo [진행] 패키지 설치 중 — 창을 닫지 마세요.
 .venv\Scripts\python -m pip install --upgrade pip
 .venv\Scripts\python -m pip install -r core\requirements.txt
 if errorlevel 1 (
