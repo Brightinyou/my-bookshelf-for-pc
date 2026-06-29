@@ -1607,8 +1607,9 @@ def build_single_chapter_wiki(ws_name: str, stem: str, json_path: Path, wiki_dir
 
     lines = [
         "---", f"title: {note_title}", f"book: {stem}",
-        f"chapter: {ch_title}", f"model: {model}",
-        f"generated: {today}", "---", "",
+        f"chapter: {ch_title}",
+        f"source: {stem}.txt",
+        f"model: {model}", f"generated: {today}", "---", "",
         f"# {ch_title}",
         f"> ← {book_link}" + (f"  |  {nav}" if nav else ""), "",
         f"**요약:** {summ}", "", body, "",
@@ -1636,6 +1637,16 @@ def build_wiki_from_chapter_summaries(ws_name: str, stem: str, wiki_dir: Path | 
     if not ch_dir.exists():
         return False, "챕터 폴더 없음 — 1단계를 먼저 실행하세요"
     json_files = sorted(ch_dir.glob("*_wiki.json"))
+    # 기존 wiki 파일 자동 정리 (잘못된 이름/이전 생성물 제거 후 재생성)
+    _wdir_pre = wiki_dir or WIKI_DIR
+    _safe_stem = _re.sub(r'[/\\:*?"<>|]', '_', stem).strip()
+    _book_folder_pre = _wdir_pre / _safe_stem
+    if _book_folder_pre.exists():
+        import shutil as _shutil
+        _shutil.rmtree(str(_book_folder_pre), ignore_errors=True)
+    _hub_pre = _wdir_pre / (_gw.make_filename(_gw.nfc(stem)) if hasattr(_gw, "make_filename") else f"{_safe_stem}.md")
+    if _hub_pre.exists():
+        _hub_pre.unlink()
     if not json_files:
         return False, "요약 파일 없음 — 3단계를 먼저 실행하세요"
     sections = []
@@ -1666,8 +1677,11 @@ def build_wiki_from_chapter_summaries(ws_name: str, stem: str, wiki_dir: Path | 
         fname = _gw.make_filename(_gw.nfc(f"{stem} — {title}"))
         return (_book_folder / fname).exists() or (_wdir / fname).exists()
 
+    tags_str = json.dumps([cat], ensure_ascii=False) if cat and cat != "기타" else "[]"
     lines = [
         "---", f"title: {stem}", f"category: {cat}",
+        f"tags: {tags_str}",
+        f"source: {stem}.txt",
         f"model: {model}", f"generated: {today}", "---", "",
         f"# {stem}", "", intro, "", f"**요약:** {summ}", "",
     ]
@@ -1793,6 +1807,27 @@ def _find_app_icon(name: str) -> Path | None:
 _icon_path = _find_app_icon("icon_32x32.png")
 _page_icon = str(_icon_path) if _icon_path else "📚"
 st.set_page_config(page_title="My Bookshelf", page_icon=_page_icon, layout="wide")
+
+# 로딩 오버레이 — 세션 최초 진입 시에만 표시 (LLM 작업 중 재렌더링 때는 건너뜀)
+_loading_ph = st.empty()
+
+def _loading_step(msg: str, sub: str = "잠시만 기다려 주세요") -> None:
+    """로딩 오버레이 메시지 갱신. 첫 진입 시에만 동작."""
+    if st.session_state.get("_app_loaded"):
+        return
+    _loading_ph.markdown(
+        "<div style='position:fixed;top:0;left:0;width:100%;height:100%;"
+        "background:rgba(255,255,255,0.96);z-index:9999;"
+        "display:flex;justify-content:center;align-items:center;"
+        "flex-direction:column;gap:14px'>"
+        "<div style='font-size:2.4rem'>📚</div>"
+        f"<div style='font-size:1.15rem;color:#374151;font-weight:600'>{msg}</div>"
+        f"<div style='color:#9ca3af;font-size:0.88rem'>{sub}</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+_loading_step("My Bookshelf 실행 중…")
 
 # ── 글로벌 스타일 (2026-05-18 v2 — Linear·Vercel 톤) ────────────
 # 잔잔한 segmented control + 모노톤 칩. 선택된 것만 도드라지는 미감.
@@ -1980,6 +2015,8 @@ st.markdown(
 )
 st.caption("PDF → OCR/TXT → 장별 분할 → 번역 → 요약 → Obsidian Wiki")
 
+_loading_step("파일 목록 확인 중…", "처리된 파일과 API 설정을 읽고 있습니다")
+
 # ── 상태 배너 ────────────────────────────────────────────
 _avail_providers = [info["label"] for prov, info in llm.PROVIDERS.items() if llm.has_key(prov)]
 _wiki_key_ok = any(llm.has_key(p) for p in llm.PROVIDERS)
@@ -2054,6 +2091,8 @@ def _wiki_model_radio(key: str) -> tuple[str, str]:
         llm.set_wiki_model(_p, _m)
     return _p, _m
 
+
+_loading_step("화면 구성 중…", "탭과 UI를 초기화하고 있습니다")
 
 # ── 탭1: OCR/TXT제작 ──────────────────────────────────────
 with tab_ocr:
@@ -2510,6 +2549,8 @@ with tab_summ:
     st.info("💡 다음 단계: **📖 5·Wiki반영** 탭으로 이동하세요")
 
 
+_loading_step("Wiki 목록 로드 중…", "거의 다 됐습니다")
+
 # ── 탭5: Wiki반영 ─────────────────────────────────────────
 with tab_wiki5:
     st.subheader("📖 Obsidian Wiki 반영")
@@ -2611,6 +2652,15 @@ with tab_wiki5:
                                     _bok5, _bmsg5 = build_single_chapter_wiki(DEFAULT_WS, _it5["obj"]["stem"], _cn5_json, wiki_dir=_cur_wiki5_path)
                                     (st.success if _bok5 else st.error)(
                                         f"{'✅ ' + Path(_bmsg5).name if _bok5 else '❌ ' + _bmsg5}")
+                                try:
+                                    _pv5 = json.loads(_cn5_json.read_text(encoding="utf-8"))
+                                    with st.expander(f"  📖 {_cn5[:35]}", expanded=False):
+                                        if _pv5.get("summary"):
+                                            st.info(_pv5["summary"])
+                                        if _pv5.get("body"):
+                                            st.markdown(_pv5["body"])
+                                except Exception:
+                                    pass
                             else:
                                 _cj1.caption(f"⏳ {_cn5}")
         _b5c1, _b5c2, _b5c3 = st.columns([2, 2, 1])
@@ -2821,3 +2871,7 @@ with tab_settings:
             st.session_state["wiki5_active_dir"] = _wd_target
             st.success(f"✅ 저장됨: `{_wd_target}` — Tab 5에 즉시 반영됩니다")
     st.caption("ℹ️ 기존에 만든 노트는 자동으로 옮겨지지 않습니다. 옮기려면 폴더에서 직접 이동하세요.")
+
+# 로딩 오버레이 제거 + 이후 재렌더링에서는 오버레이 건너뜀
+_loading_ph.empty()
+st.session_state["_app_loaded"] = True
