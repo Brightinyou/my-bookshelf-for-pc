@@ -47,9 +47,7 @@ def _port_in_use(port: int) -> bool:
 
 
 def _find_free_port(start: int = DEFAULT_PORT) -> int:
-    """start부터 비어 있는 포트를 찾는다. (이미 떠 있으면 그 포트 재사용)"""
-    if _port_in_use(start):
-        return start
+    """start부터 비어 있는 포트를 찾는다."""
     for p in range(start, start + 50):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             if s.connect_ex(("127.0.0.1", p)) != 0:
