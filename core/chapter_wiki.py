@@ -273,6 +273,45 @@ def toc_split(txt: str):
     return [(titles[k], txt[bounds[k]:bounds[k+1]].strip()) for k in range(len(positions))]
 
 
+def numbered_heading_split(txt: str):
+    """Academic paper fallback: split numbered all-caps section headings."""
+    heading_re = re.compile(r"(?m)^\s*(\d{1,2})\s+([A-Z][A-Z0-9 ,:;()/'&\\-]{3,})\s*$")
+    hits = []
+    seen = set()
+    expected = 1
+    for m in heading_re.finditer(txt):
+        num = int(m.group(1))
+        title = re.sub(r"\s+", " ", m.group(2)).strip(" .")
+        if num != expected or num in seen:
+            continue
+        if title.lower() in _NOTE_SECTION:
+            continue
+        if len(title) < 4:
+            continue
+        hits.append((num, title, m.start()))
+        seen.add(num)
+        expected += 1
+    if len(hits) < 3:
+        return None
+    positions = [pos for _, _, pos in hits]
+    if positions != sorted(positions):
+        return None
+    tail = txt[positions[-1]:]
+    end = len(txt)
+    m_tail = re.search(r"(?m)^\s*(ACKNOWLEDGMENTS?|REFERENCES|BIBLIOGRAPHY|APPENDIX)\s*$", tail)
+    if m_tail:
+        end = positions[-1] + m_tail.start()
+    else:
+        end = _notes_start(txt, positions[-1] + 3000)
+    bounds = positions + [end]
+    chapters = []
+    for idx, (num, title, _pos) in enumerate(hits):
+        body = txt[bounds[idx]:bounds[idx + 1]].strip()
+        if body:
+            chapters.append((f"{num}. {title.title()}", body))
+    return chapters if len(chapters) >= 3 else None
+
+
 def chapter_split(md_text: str, txt_text: str = None):
     """(mode, [(title, body)]). 헤딩=MD(##), 목차=TXT(줄바꿈 보존) 우선. mode=heading|toc|single."""
     if md_text:
@@ -285,6 +324,9 @@ def chapter_split(md_text: str, txt_text: str = None):
         chs = toc_split(_strip_noise(src))
         if chs and len(chs) >= 3:
             return "toc", chs
+        chs = numbered_heading_split(_strip_noise(src))
+        if chs and len(chs) >= 3:
+            return "numbered", chs
     return "single", None
 
 
