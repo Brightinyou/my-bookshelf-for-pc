@@ -1471,14 +1471,15 @@ def translate_one_chapter(ch_path: Path, engine: str, progress_cb=None) -> tuple
                     failed_n += 1
             if progress_cb:
                 progress_cb(idx, total, translated_n, preserved_n, dropped_n, failed_n)
-        ko_path.write_text("\n\n".join(out), encoding="utf-8")
         detail = f"{len(out)}단락 처리 완료 · 번역 {translated_n} · 원문보존 {preserved_n}"
         if dropped_n:
             detail += f" · 삭제 {dropped_n}"
         if failed_n:
             detail += f" · 실패보존 {failed_n}"
         if translated_n == 0:
+            ko_path.unlink(missing_ok=True)
             return False, detail + " — 유효한 한국어 번역 결과가 없습니다"
+        ko_path.write_text("\n\n".join(out), encoding="utf-8")
         return True, detail
     except Exception as e:
         return False, str(e)[:200]
