@@ -1,4 +1,4 @@
-"""llm_providers.py — 멀티 공급자 LLM 통일 호출 + 키 관리 (2026-06-15)
+﻿"""llm_providers.py — 멀티 공급자 LLM 통일 호출 + 키 관리 (2026-06-15)
 
 OpenAI(GPT) / Google(Gemini) / Anthropic(Claude API) + Claude CLI(구독) + Codex CLI(구독).
 키는 앱 설정 파일에 저장한 값을 우선 사용하고, 없으면 이 컴퓨터의 환경변수에서 감지한다.

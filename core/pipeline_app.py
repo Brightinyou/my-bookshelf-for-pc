@@ -24,8 +24,6 @@ from version import APP_VERSION
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
-
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
 
 UPLOAD_TMP    = cfg.UPLOAD_TMP
@@ -1313,7 +1311,7 @@ DEFAULT_WS = "My Bookshelf"   # 단일 기본 폴더
 # 단계: tab2_ready(분할), tab3_ready(번역), tab4_ready(요약), tab5_ready(Wiki)
 
 _QUEUE_FILE = DONE_DIR / DEFAULT_WS / ".pipeline_queue.json"
-_QUEUE_STAGES = ["tab2_ready", "tab3_ready", "tab4_ready", "tab5_ready"]
+_QUEUE_STAGES = ["tab2_ready", "tab3_ready", "tab4_ready", "tab4_failed", "tab5_ready"]
 
 def _q_load() -> dict:
     try:
@@ -2660,16 +2658,22 @@ if _active_view == "4_summary":
 
         # ── 요약 대기 (큐 기반) ──────────────────────────────
         _q4_rels = queue_list("tab4_ready")
+        _q4_failed_rels = queue_list("tab4_failed")
         _sum_pend4: list[dict] = []
+        _sum_failed4: list[dict] = []
         _sum_done4 = 0
+        _q4_remove_missing: list[str] = []
+        _q4_remove_done: list[str] = []
         for _rel4 in _q4_rels:
             _cf4 = DONE_DIR / _rel4
             if not _cf4.exists():
+                _q4_remove_missing.append(_rel4)
                 continue
             _bstem4 = _nfc(_cf4.parent.name)
             _json4 = _cf4.with_name(_cf4.stem + "_wiki.json")
             if _json4.exists():
                 _sum_done4 += 1
+                _q4_remove_done.append(_rel4)
             else:
                 _ko4 = _cf4.with_name(_cf4.stem + "_ko.txt")
                 _tag4 = "🌐ko" if _ko4.exists() else "📄원문"
@@ -2679,6 +2683,28 @@ if _active_view == "4_summary":
                     "meta": f"{_tag4} · {_cf4.stat().st_size//1024}KB",
                     "obj": (_cf4, _bstem4),
                 })
+        for _rel4f in _q4_failed_rels:
+            _cf4f = DONE_DIR / _rel4f
+            if not _cf4f.exists():
+                _q4_remove_missing.append(_rel4f)
+                continue
+            _json4f = _cf4f.with_name(_cf4f.stem + "_wiki.json")
+            if _json4f.exists():
+                _sum_done4 += 1
+                _q4_remove_done.append(_rel4f)
+                continue
+            _sum_failed4.append({
+                "key": _rel4f,
+                "label": f"{_cf4f.parent.name} / {_cf4f.name}",
+                "meta": f"{_cf4f.stat().st_size//1024}KB · 실패",
+                "obj": _rel4f,
+            })
+        if _q4_remove_missing:
+            queue_remove("tab4_ready", _q4_remove_missing)
+            queue_remove("tab4_failed", _q4_remove_missing)
+        if _q4_remove_done:
+            queue_remove("tab4_ready", _q4_remove_done)
+            queue_remove("tab4_failed", _q4_remove_done)
 
         st.divider()
         st.markdown(f"#### 요약 대기 ({len(_sum_pend4)}개) / 완료 {_sum_done4}개")
@@ -2703,7 +2729,12 @@ if _active_view == "4_summary":
                     if _ok4:
                         _rel4_done = str(_sf4.relative_to(DONE_DIR))
                         queue_remove("tab4_ready", [_rel4_done])
+                        queue_remove("tab4_failed", [_rel4_done])
                         _stems4_done.add(_bst4)
+                    else:
+                        _rel4_fail = str(_sf4.relative_to(DONE_DIR))
+                        queue_remove("tab4_ready", [_rel4_fail])
+                        queue_add("tab4_failed", [_rel4_fail])
                     _sp4.progress(_si4 / len(_to4))
                 # 책 단위로 모든 챕터 요약 완료된 것만 tab5 큐에 등록
                 for _st5 in _stems4_done:
@@ -2711,6 +2742,19 @@ if _active_view == "4_summary":
                 st.success(f"요약 처리 완료: {len(_to4)}개"); st.rerun()
         else:
             st.info("요약 대기 없음 — 3·번역 탭 처리 후 자동 등록되거나 아래에서 수동 추가하세요")
+
+        if _sum_failed4:
+            st.markdown(f"#### 요약 실패 ({len(_sum_failed4)}개)")
+            _fail_sel4 = _checklist(_sum_failed4, "summ4_failed", height=180)
+            _f4c1, _f4c2 = st.columns([2, 1])
+            if _f4c1.button(f"↻ 선택 재시도 대기 ({len(_fail_sel4)}개)", key="summ4_retry_failed",
+                              use_container_width=True, disabled=len(_fail_sel4)==0):
+                queue_remove("tab4_failed", _fail_sel4)
+                queue_add("tab4_ready", _fail_sel4)
+                st.rerun()
+            if _f4c2.button("🗑 실패 목록 비우기", key="summ4_clear_failed", use_container_width=True):
+                queue_clear("tab4_failed")
+                st.rerun()
 
         # 수동 추가 expander
         with st.expander("➕ 수동으로 추가 (기존 챕터에서 선택)"):

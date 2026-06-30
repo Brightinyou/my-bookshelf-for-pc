@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Gemini 위키 생성기 (2026-06-09 신설) — NotebookLM 로컬 대체.
