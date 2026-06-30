@@ -2076,15 +2076,18 @@ st.caption("PDF → TXT변환 → 장별 분할 → 번역 → 요약 → Obsidi
 _loading_step("파일 목록 확인 중…", "처리된 파일과 API 설정을 읽고 있습니다")
 
 # ── 상태 배너 ────────────────────────────────────────────
-_avail_providers = [info["label"] for prov, info in llm.PROVIDERS.items() if llm.has_key(prov)]
-_wiki_key_ok = any(llm.has_key(p) for p in llm.PROVIDERS)
+_avail_api_providers = [llm.PROVIDERS[p]["label"] for p in llm.API_PROVIDERS if llm.has_key(p)]
+_avail_cli_providers = [llm.PROVIDERS[p]["label"] for p in llm.CLI_PROVIDERS if llm.has_key(p)]
+_avail_ai_providers = _avail_api_providers + _avail_cli_providers
+_wiki_key_ok = bool(_avail_ai_providers)
 wg_ok = wiki_generator_running()
-col_s1, col_s2, col_s3 = st.columns(3)
-col_s1.metric("API 키", f"{len(_avail_providers)}개" if _avail_providers else "❌ 없음")
-col_s2.metric("위키 생성기", "🔄 생성 중" if wg_ok else "대기")
-col_s3.metric("Wiki 완성", sum(1 for _ in WIKI_DIR.rglob("*.md")))
-if not _avail_providers:
-    st.error("⚠️ 사용 가능한 API가 없습니다 — ⚙️ 설정 탭에서 키를 입력하세요.")
+col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+col_s1.metric("API 키", f"{len(_avail_api_providers)}개" if _avail_api_providers else "❌ 없음")
+col_s2.metric("CLI 구독", f"{len(_avail_cli_providers)}개" if _avail_cli_providers else "없음")
+col_s3.metric("위키 생성기", "🔄 생성 중" if wg_ok else "대기")
+col_s4.metric("Wiki 완성", sum(1 for _ in WIKI_DIR.rglob("*.md")))
+if not _avail_ai_providers:
+    st.error("⚠️ 사용 가능한 AI가 없습니다 — ⚙️ 설정 탭에서 API 키를 입력하거나 CLI 구독 도구를 활성화하세요.")
 
 # ── 초기 메뉴 ─────────────────────────────────────────────
 TASKS = [

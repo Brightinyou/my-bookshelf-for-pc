@@ -22,6 +22,8 @@ ENV_KEY_NAMES: dict[str, tuple[str, ...]] = {
     "openai": ("OPENAI_API_KEY",),
     "anthropic": ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY"),
 }
+API_PROVIDERS = tuple(ENV_KEY_NAMES)
+CLI_PROVIDERS = ("claude_cli", "codex_cli")
 
 # 공급자 레지스트리 — provider 키: {label, models[], hint}
 PROVIDERS: dict[str, dict] = {
