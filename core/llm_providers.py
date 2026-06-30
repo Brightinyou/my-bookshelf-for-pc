@@ -315,11 +315,12 @@ def _codex_cli(model: str, system: str, prompt: str) -> str:
     base_args = [cli, "exec", "--skip-git-repo-check", "--ephemeral",
                  "--dangerously-bypass-approvals-and-sandbox",
                  "-o", str(out_file)]
-    # ChatGPT 계정은 모델 명시 시 400 오류 → default 또는 불지원 오류면 모델 없이 실행
+    # ChatGPT 계정은 모델 명시 시 400 오류 → default 또는 불지원 오류면 모델 없이 실행.
+    # 긴 장 본문은 Windows 명령줄 길이 제한을 넘으므로 prompt 인자가 아니라 stdin으로 전달한다.
     if model in ("default", ""):
-        attempts = [[full_prompt]]
+        attempts = [["-"]]
     else:
-        attempts = [["-m", model, full_prompt], [full_prompt]]
+        attempts = [["-m", model, "-"], ["-"]]
     try:
         last_err = None
         for extra in attempts:
@@ -327,7 +328,7 @@ def _codex_cli(model: str, system: str, prompt: str) -> str:
                 base_args + extra,
                 capture_output=True, text=True, timeout=600,
                 cwd=tempfile.gettempdir(), encoding="utf-8", errors="replace",
-                stdin=subprocess.DEVNULL,
+                input=full_prompt,
                 **_no_window_kwargs(),
             )
             if r.returncode == 0:
