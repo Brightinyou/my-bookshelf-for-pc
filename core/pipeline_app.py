@@ -1433,6 +1433,33 @@ def chapters_dir(ws_name: str, stem: str) -> Path:
     return DONE_DIR / ws_name / "chapters" / stem
 
 
+def _single_chapter_name(stem: str) -> str:
+    safe = _re.sub(r'[/\\:*?"<>|]', " ", stem).strip()[:50].strip(" .,:-")
+    return f"01_{safe or '본문'}.txt"
+
+
+def _is_small_document_for_whole_translation(text: str) -> bool:
+    sample = (text or "").strip()
+    if not sample:
+        return False
+    paragraphs = _split_paragraphs_robust(sample, target_chunk=1800, min_para=4)
+    return len(sample) <= 120_000 or len(paragraphs) <= 14
+
+
+def _write_single_chapter_from_text(ws_name: str, stem: str, text: str) -> tuple[Path, bool]:
+    ch_dir = chapters_dir(ws_name, stem)
+    ch_dir.mkdir(parents=True, exist_ok=True)
+    for old in ch_dir.glob("*"):
+        if old.is_file():
+            try:
+                old.unlink()
+            except Exception:
+                pass
+    ch_path = ch_dir / _single_chapter_name(stem)
+    ch_path.write_text(text, encoding="utf-8")
+    return ch_path, True
+
+
 def list_done_books() -> list[tuple[str, str, Path]]:
     """(ws, stem, txt_path) — done 폴더의 모든 책 TXT (1_txt/ 우선, 루트 fallback)."""
     books: list[tuple[str, str, Path]] = []
@@ -1456,7 +1483,7 @@ def list_done_books() -> list[tuple[str, str, Path]]:
     return books
 
 
-def split_book_to_chapters(ws_name: str, stem: str) -> tuple[int, str]:
+def split_book_to_chapters(ws_name: str, stem: str, allow_short: bool = False) -> tuple[int, str]:
     """장 분리 실행. 챕터 TXT 파일 저장. (저장 수, 오류 메시지) 반환."""
     try:
         import chapter_wiki as _cw
@@ -1468,7 +1495,13 @@ def split_book_to_chapters(ws_name: str, stem: str) -> tuple[int, str]:
     txt_text = txt_p.read_text(encoding="utf-8", errors="ignore") if txt_p else None
     if not md_text and not txt_text:
         return 0, "TXT/MD 파일 없음"
+    source_text = txt_text or md_text or ""
+    if _is_small_document_for_whole_translation(source_text) and not allow_short:
+        return 0, "짧은 문서 감지"
     mode, chapters = _cw.chapter_split(md_text, txt_text)
+    if (mode == "single" or not chapters) and allow_short:
+        ch_path, _ = _write_single_chapter_from_text(ws_name, stem, source_text)
+        return 1, f"짧은 문서라 단일장으로 저장됨 → {ch_path.name}"
     if mode == "single" or not chapters:
         return 0, "장 구조 감지 안 됨 — 단일 본문입니다 (기존 위키 생성 탭을 쓰세요)"
     ch_dir = chapters_dir(ws_name, stem)
@@ -1479,6 +1512,32 @@ def split_book_to_chapters(ws_name: str, stem: str) -> tuple[int, str]:
         (ch_dir / f"{i:02d}_{safe}.txt").write_text(body, encoding="utf-8")
         saved += 1
     return saved, ""
+
+
+def _merge_chapter_folder(ws_name: str, stem: str, prefer_ko: bool = False) -> tuple[bool, Path | None, str]:
+    """챕터 폴더를 하나의 TXT로 다시 합친다. prefer_ko=True면 각 챕터의 _ko.txt 우선."""
+    ch_dir = chapters_dir(ws_name, stem)
+    if not ch_dir.exists():
+        return False, None, "챕터 폴더 없음"
+    chapters = sorted(
+        [f for f in ch_dir.glob("??_*.txt") if not f.stem.endswith(("_ko", "_wiki"))],
+        key=lambda p: p.name,
+    )
+    if not chapters:
+        return False, None, "합칠 챕터가 없음"
+    out_dir = txt_dir(DONE_DIR, ws_name)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / (f"{stem}__merged_ko.txt" if prefer_ko else f"{stem}__merged.txt")
+    parts: list[str] = [f"# {stem}", ""]
+    used_ko = 0
+    for ch in chapters:
+        body_path = ch.with_name(ch.stem + "_ko.txt") if prefer_ko and ch.with_name(ch.stem + "_ko.txt").exists() else ch
+        if body_path != ch:
+            used_ko += 1
+        title = _re.sub(r"^\d+_", "", ch.stem)
+        parts += [f"## {title}", body_path.read_text(encoding="utf-8", errors="ignore").strip(), ""]
+    out_path.write_text("\n".join(parts).strip() + "\n", encoding="utf-8")
+    return True, out_path, f"{len(chapters)}개 챕터 합침" + (f" · 번역본 {used_ko}개 사용" if used_ko else "")
 
 
 def translate_one_chapter(ch_path: Path, engine: str, progress_cb=None) -> tuple[bool, str]:
@@ -2362,6 +2421,25 @@ if _next_steps_for_view:
             st.session_state["active_view"] = _skip_view
             st.rerun()
 
+with st.expander("📁 저장 위치", expanded=False):
+    _loc_rows = [
+        ("원본", RAW_DIR),
+        ("처리완료", DONE_DIR / DEFAULT_WS),
+        ("1_txt", txt_dir(DONE_DIR, DEFAULT_WS)),
+        ("2_md", md_dir(DONE_DIR, DEFAULT_WS)),
+        ("3_translated", translated_dir(DONE_DIR, DEFAULT_WS)),
+        ("chapters", DONE_DIR / DEFAULT_WS / "chapters"),
+        ("wiki", WIKI_DIR),
+        ("failed", FAILED_DIR),
+        ("logs", cfg.LOG_DIR),
+    ]
+    for _lname, _lpath in _loc_rows:
+        _lc1, _lc2 = st.columns([0.85, 2.2])
+        _lc1.markdown(f"**{_lname}**")
+        _lc2.caption(str(_lpath))
+        if _lc1.button("열기", key=f"open_loc_{_lname}", use_container_width=True, disabled=not _lpath.exists()):
+            open_path(_lpath)
+
 
 
 # ─── 공용 헬퍼 ───────────────────────────────────────────
@@ -2664,8 +2742,14 @@ if _active_view == "2_split":
         if _ch_txts2:
             _split_done2.append({"stem": _stem2, "n": len(_ch_txts2), "ch_dir": _ch2})
         else:
-            _split_pend2.append({"key": _stem2, "label": _stem2, "meta": _meta2,
-                                  "obj": {"ws": DEFAULT_WS, "stem": _stem2}})
+            _src2 = _txt2.read_text(encoding="utf-8", errors="ignore")
+            _item2 = {"key": _stem2, "label": _stem2, "meta": _meta2,
+                      "obj": {"ws": DEFAULT_WS, "stem": _stem2}}
+            if _is_small_document_for_whole_translation(_src2):
+                _item2["text"] = _src2
+                _split_short2.append(_item2)
+            else:
+                _split_pend2.append(_item2)
 
     st.markdown(f"#### 분할 대기 ({len(_split_pend2)}권)")
     if _split_pend2:
@@ -2683,10 +2767,13 @@ if _active_view == "2_split":
             for _si2, _s2 in enumerate(_to2, 1):
                 with st.status(f"분할 [{_si2}/{len(_to2)}]: {_s2['stem']}", expanded=False):
                     _sn2, _serr2 = split_book_to_chapters(_s2["ws"], _s2["stem"])
-                if _serr2:
+                _small_single2 = bool(_serr2 and _serr2.startswith("짧은 문서로 감지"))
+                if _serr2 and not _small_single2:
                     st.warning(f"⚠️ {_s2['stem']}: {_serr2}")
                 else:
                     st.success(f"✅ {_s2['stem']} → {_sn2}개 챕터")
+                    if _small_single2:
+                        st.caption("📄 문서가 짧아 전체 번역용 단일 챕터로 저장됨")
                     queue_remove("tab2_ready", [_s2["stem"]])
                     _ch_dir2 = chapters_dir(_s2["ws"], _s2["stem"])
                     _new_chs2 = [str(f.relative_to(DONE_DIR))
@@ -2703,6 +2790,45 @@ if _active_view == "2_split":
             st.rerun()
     else:
         st.info("분할 대기 없음 — 1·TXT변환 탭에서 TXT를 먼저 생성하거나 아래에서 수동 추가하세요")
+
+    if _split_short2:
+        st.divider()
+        st.markdown(f"#### 짧은 문서 확인 ({len(_split_short2)}권)")
+        st.caption("짧은 문서는 먼저 확인한 뒤, 실제 분리하거나 단일장으로 유지할 수 있습니다.")
+        for _sh2 in _split_short2:
+            _sc1, _sc2, _sc3, _sc4 = st.columns([4, 1, 1, 1])
+            _sc1.markdown(f"**{_sh2['label']}**")
+            _sc2.caption(_sh2["meta"])
+            if _sc3.button("분리하기", key=f"short_split_yes_{_sh2['key']}", use_container_width=True):
+                _sn2, _serr2 = split_book_to_chapters(_sh2["obj"]["ws"], _sh2["obj"]["stem"], allow_short=True)
+                if _serr2:
+                    st.warning(f"⚠️ {_sh2['key']}: {_serr2}")
+                else:
+                    st.success(f"✅ {_sh2['key']} → {_sn2}개 챕터")
+                    queue_remove("tab2_ready", [_sh2["obj"]["stem"]])
+                    _ch_dir2 = chapters_dir(_sh2["obj"]["ws"], _sh2["obj"]["stem"])
+                    _new_chs2 = [str(f.relative_to(DONE_DIR))
+                                 for f in sorted(_ch_dir2.glob("??_*.txt"))
+                                 if not f.stem.endswith(("_ko", "_wiki"))]
+                    if _new_chs2:
+                        if _needs_translation(_sh2["obj"]["stem"]):
+                            queue_add("tab3_ready", _new_chs2)
+                        else:
+                            queue_add("tab4_ready", _new_chs2)
+                    st.rerun()
+            if _sc4.button("단일장 유지", key=f"short_split_keep_{_sh2['key']}", use_container_width=True):
+                _one_path2, _ = _write_single_chapter_from_text(_sh2["obj"]["ws"], _sh2["obj"]["stem"], _sh2["text"])
+                st.success(f"✅ 단일장으로 저장: {_one_path2.name}")
+                queue_remove("tab2_ready", [_sh2["obj"]["stem"]])
+                _new_chs2 = [str(f.relative_to(DONE_DIR))
+                             for f in sorted(_one_path2.parent.glob("??_*.txt"))
+                             if not f.stem.endswith(("_ko", "_wiki"))]
+                if _new_chs2:
+                    if _needs_translation(_sh2["obj"]["stem"]):
+                        queue_add("tab3_ready", _new_chs2)
+                    else:
+                        queue_add("tab4_ready", _new_chs2)
+                st.rerun()
 
     # 수동 추가 expander
     with st.expander("➕ 수동으로 추가 (기존 책에서 선택)"):
@@ -2727,12 +2853,22 @@ if _active_view == "2_split":
     if _split_done2:
         with st.container(height=200, border=True):
             for _sd2 in _split_done2:
-                _sdc1, _sdc2, _sdc3 = st.columns([5, 1.5, 1])
+                _sdc1, _sdc2, _sdc3, _sdc4 = st.columns([5, 1.2, 1.2, 1])
                 _sdc1.markdown(f"**{_sd2['stem']}** &nbsp;<small style='color:#9ca3af'>{_sd2['n']}챕터</small>",
                                unsafe_allow_html=True)
                 if _sdc2.button("📂 열기", key=f"open_ch2_{_sd2['stem']}", use_container_width=True):
                     open_path(_sd2["ch_dir"])
-                if _sdc3.button("🔄", key=f"resplit2_{_sd2['stem']}", help="재분할"):
+                if _sdc3.button("↔", key=f"merge_ch2_{_sd2['stem']}", help="다시 합치기"):
+                    _okm2, _mp2, _mm2 = _merge_chapter_folder(DEFAULT_WS, _sd2["stem"], prefer_ko=False)
+                    (st.success if _okm2 else st.error)(
+                        f"{'✅' if _okm2 else '❌'} {_sd2['stem']}: {Path(_mp2).name if _okm2 else _mm2}")
+                    st.rerun()
+                if _sdc4.button("🌐 합친 번역본", key=f"merge_ch2_ko_{_sd2['stem']}", use_container_width=True):
+                    _okm2, _mp2, _mm2 = _merge_chapter_folder(DEFAULT_WS, _sd2["stem"], prefer_ko=True)
+                    (st.success if _okm2 else st.error)(
+                        f"{'✅' if _okm2 else '❌'} {_sd2['stem']}: {Path(_mp2).name if _okm2 else _mm2}")
+                    st.rerun()
+                if st.button("🔄", key=f"resplit2_{_sd2['stem']}", help="재분할"):
                     for _f2 in _sd2["ch_dir"].glob("*"):
                         try: _f2.unlink()
                         except Exception: pass
