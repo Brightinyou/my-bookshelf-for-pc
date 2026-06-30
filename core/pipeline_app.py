@@ -1587,12 +1587,22 @@ def summarize_one_chapter(ch_path: Path, book_stem: str) -> tuple[bool, str]:
         src = (ko_path if ko_path.exists() else ch_path).read_text(encoding="utf-8", errors="ignore")
         chap_title = _re.sub(r"^\d+_", "", ch_path.stem)
         data = _cw.generate_chapter(book_stem, chap_title, src)
+        if not isinstance(data, dict):
+            raise RuntimeError("요약 응답이 JSON 객체가 아님")
+        if not (data.get("summary") and data.get("body")):
+            keys = ", ".join(sorted(map(str, data.keys()))) or "없음"
+            raise RuntimeError(f"요약 응답 필드 부족(summary/body 없음, keys={keys})")
         (ch_path.with_name(ch_path.stem + "_wiki.json")).write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         return True, (data.get("summary") or "")[:120]
     except Exception as e:
-        return False, str(e)[:200]
+        msg = str(e)[:300]
+        try:
+            append_log(f"ERROR: 장별 요약 실패 - {ch_path.name} ({type(e).__name__}) {msg}")
+        except Exception:
+            pass
+        return False, msg[:200]
 
 
 def _ch_link(stem: str, ch_title: str) -> str:
@@ -2145,21 +2155,39 @@ if not _active_view:
     st.stop()
 
 _task_title = next((title for tid, title, _ in TASKS if tid == _active_view), "작업")
-_top_l, _top_r = st.columns([5, 1])
+_top_l, _top_menu, _top_prev, _top_next, _top_skip = st.columns([5, 1, 1.15, 1.25, 1.45])
 _top_l.markdown(f"### {_task_title}")
-if _top_r.button("← 메뉴", key="back_to_menu", use_container_width=True):
+if _top_menu.button("← 메뉴", key="back_to_menu", use_container_width=True):
     st.session_state.pop("active_view", None)
     st.rerun()
+_PREV_STEPS = {
+    "2_split": ("1_txt", "이전: 1·TXT"),
+    "3_translate": ("2_split", "이전: 2·분할"),
+    "4_summary": ("3_translate", "이전: 3·번역"),
+    "5_wiki": ("4_summary", "이전: 4·요약"),
+}
 _NEXT_STEPS = {
     "1_txt": [("2_split", "다음: 2·장별분할")],
     "2_split": [("3_translate", "다음: 3·번역"), ("4_summary", "건너뛰기: 4·요약MD")],
     "3_translate": [("4_summary", "다음: 4·요약MD")],
     "4_summary": [("5_wiki", "다음: 5·Wiki반영")],
 }
-for _next_view, _next_label in _NEXT_STEPS.get(_active_view, []):
-    if _top_r.button(_next_label, key=f"next_to_{_next_view}", use_container_width=True):
+if _active_view in _PREV_STEPS:
+    _prev_view, _prev_label = _PREV_STEPS[_active_view]
+    if _top_prev.button(_prev_label, key=f"prev_to_{_prev_view}", use_container_width=True):
+        st.session_state["active_view"] = _prev_view
+        st.rerun()
+_next_steps_for_view = _NEXT_STEPS.get(_active_view, [])
+if _next_steps_for_view:
+    _next_view, _next_label = _next_steps_for_view[0]
+    if _top_next.button(_next_label, key=f"next_to_{_next_view}", use_container_width=True):
         st.session_state["active_view"] = _next_view
         st.rerun()
+    if len(_next_steps_for_view) > 1:
+        _skip_view, _skip_label = _next_steps_for_view[1]
+        if _top_skip.button(_skip_label, key=f"next_to_{_skip_view}", use_container_width=True):
+            st.session_state["active_view"] = _skip_view
+            st.rerun()
 
 
 

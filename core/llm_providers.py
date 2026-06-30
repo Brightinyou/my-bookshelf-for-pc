@@ -57,6 +57,17 @@ MAX_INPUT_CHARS: dict[str, int] = {
 }
 
 
+def _no_window_kwargs() -> dict:
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": startupinfo,
+    }
+
+
 def _load_all() -> dict:
     try:
         return json.loads(KEYS_FILE.read_text(encoding="utf-8")) if KEYS_FILE.exists() else {}
@@ -254,6 +265,7 @@ def _claude_cli(model: str, system: str, prompt: str) -> str:
         capture_output=True, text=True, timeout=600, cwd=tempfile.gettempdir(),
         encoding="utf-8", errors="replace",   # 윈도우 cp949가 한글 UTF-8 출력 못 읽음 (2026-06-11)
         stdin=subprocess.DEVNULL,             # 미지정 시 CLI가 stdin 3초 대기 — 단락마다 지연
+        **_no_window_kwargs(),
     )
     if r.returncode != 0:
         raise RuntimeError(f"claude CLI exit {r.returncode}: {(r.stderr or '')[:200]}")
@@ -288,6 +300,7 @@ def _codex_cli(model: str, system: str, prompt: str) -> str:
                 capture_output=True, text=True, timeout=600,
                 cwd=tempfile.gettempdir(), encoding="utf-8", errors="replace",
                 stdin=subprocess.DEVNULL,
+                **_no_window_kwargs(),
             )
             if r.returncode == 0:
                 if out_file.exists():
