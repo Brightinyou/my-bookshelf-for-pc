@@ -3,6 +3,7 @@
 
 import json
 import os
+from difflib import SequenceMatcher
 import shutil
 import ssl
 import subprocess
@@ -272,6 +273,25 @@ def needs_translation(txt_path: Path, threshold: float = 0.3) -> bool:
 
 def is_english(txt_path: Path, threshold: float = 0.3) -> bool:
     return needs_translation(txt_path, threshold)
+
+
+def _ko_ratio(text: str) -> float:
+    return len(_KO_SCRIPT.findall(text or "")) / max(len(text or ""), 1)
+
+
+def _translation_is_valid(src: str, out: str | None) -> bool:
+    """번역 결과가 실제 한국어 번역인지 확인한다."""
+    if not out:
+        return False
+    cleaned_src = _re.sub(r"\s+", " ", src or "").strip()
+    cleaned_out = _re.sub(r"\s+", " ", out or "").strip()
+    if not cleaned_out:
+        return False
+    if _ko_ratio(cleaned_out) < 0.08:
+        return False
+    if cleaned_src and SequenceMatcher(None, cleaned_src[:2000], cleaned_out[:2000]).ratio() > 0.82:
+        return False
+    return True
 
 
 def build_translate_system() -> str:
@@ -1459,7 +1479,7 @@ def translate_one_chapter(ch_path: Path, engine: str, progress_cb=None) -> tuple
                 preserved_n += 1
             else:
                 ko = translate(p, engine)
-                if ko:
+                if _translation_is_valid(p, ko):
                     out.append(ko)
                     translated_n += 1
                 else:
@@ -1474,7 +1494,7 @@ def translate_one_chapter(ch_path: Path, engine: str, progress_cb=None) -> tuple
         if failed_n:
             detail += f" · 실패보존 {failed_n}"
         if translated_n == 0:
-            detail += " — API 번역 호출 없음"
+            return False, detail + " — 유효한 한국어 번역 결과가 없습니다"
         return True, detail
     except Exception as e:
         return False, str(e)[:200]
