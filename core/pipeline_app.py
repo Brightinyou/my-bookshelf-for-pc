@@ -298,6 +298,41 @@ def _translation_is_valid(src: str, out: str | None) -> bool:
     return True
 
 
+_HEADING_LIKE_RE = _re.compile(r"^\s*(?:\d+(?:\.\d+)*|[IVXLC]+)\s+.+", _re.I)
+
+
+def _translate_retry_prompt(paragraph: str) -> str:
+    return (
+        "Translate the following academic paragraph into Korean. "
+        "Preserve numbering such as section numbers or chapter numbers. "
+        "Do not leave any sentence or title in English. "
+        "If this is a section heading, translate only the heading text while keeping the numbering. "
+        "Output ONLY the Korean text.\n\n"
+        f"{paragraph}"
+    )
+
+
+def _translate_paragraph(paragraph: str, engine: str, glossary: dict | None = None) -> str | None:
+    ko = translate(paragraph, engine, glossary=glossary)
+    if _translation_is_valid(paragraph, ko):
+        return ko
+    if not paragraph.strip():
+        return ko
+    retry = translate(_translate_retry_prompt(paragraph), engine, glossary=glossary)
+    if _translation_is_valid(paragraph, retry):
+        return retry
+    if _HEADING_LIKE_RE.match(paragraph.strip()):
+        heading_retry = translate(
+            "This is a section heading from an academic chapter. Translate it into Korean and keep the numbering.\n\n"
+            f"{paragraph}",
+            engine,
+            glossary=glossary,
+        )
+        if _translation_is_valid(paragraph, heading_retry):
+            return heading_retry
+    return None
+
+
 def build_translate_system() -> str:
     """한국어 번역 시스템 프롬프트."""
     return (
@@ -1484,7 +1519,7 @@ def translate_one_chapter(ch_path: Path, engine: str, progress_cb=None) -> tuple
                 out.append(p)
                 preserved_n += 1
             else:
-                ko = translate(p, engine)
+                ko = _translate_paragraph(p, engine)
                 if _translation_is_valid(p, ko):
                     out.append(ko)
                     translated_n += 1
