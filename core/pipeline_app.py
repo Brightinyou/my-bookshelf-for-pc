@@ -2383,7 +2383,7 @@ def _checklist(items: list[dict], prefix: str, height: int = 320, viewable: bool
             if viewable:
                 target = _view_target_from_item(it)
                 safe_key = _re.sub(r"[^a-zA-Z0-9가-힣_-]+", "_", str(it["key"]))[:80]
-                if cols[2].button("보기", key=f"{prefix}_view_{safe_key}", use_container_width=True,
+                if cols[2].button("보기", key=f"{prefix}_view_{idx}_{safe_key}", use_container_width=True,
                                   disabled=target is None):
                     open_path(target, reveal=target.is_file())
             if chk:
