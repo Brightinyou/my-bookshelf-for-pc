@@ -55,16 +55,37 @@ def _is_note_title(t: str) -> bool:
     return bool(_NOTE_TITLE_RE.match(t.strip())) or s in _NOTE_SECTION
 
 
+# ── 한국어 주요 장 제목 감지 ──
+_KO_MAJOR_CH_RE = re.compile(
+    r"^(?:제\s*)?(\d+)\s*장\b"           # "1장", "제 2 장" 등
+    r"|^(머리말|서론|서문|결론|에필로그|프롤로그|후기|맺음말|맺는말|들어가며|나가며)$",
+    re.IGNORECASE,
+)
+
+def _is_ko_major_chapter(title: str) -> bool:
+    return bool(_KO_MAJOR_CH_RE.match(title.strip()))
+
+
 # ── ① MD ## 헤딩 기반(의미 단위) ──
 def heading_chapters(md: str):
     lines = md.split("\n")
+
+    # 한국어 장 구조가 있으면 N장/머리말 헤딩만 분할 기준으로 사용
+    headings = [_HEAD_RE.match(ln) for ln in lines]
+    ko_major = [m.group(2).strip() for m in headings if m and _is_ko_major_chapter(m.group(2))]
+    use_ko_only = len(ko_major) >= 2   # N장 제목이 2개 이상이면 한국어 모드
+
     segs, cur = [], {"title": "서두", "lines": []}
     for ln in lines:
         m = _HEAD_RE.match(ln)
         if m and not _is_note_title(m.group(2)):
+            title = m.group(2).strip()
+            if use_ko_only and not _is_ko_major_chapter(title):
+                cur["lines"].append(ln)   # 소절 헤딩은 본문에 포함
+                continue
             if cur["lines"] or segs:
                 segs.append(cur)
-            cur = {"title": m.group(2).strip(), "lines": [ln]}
+            cur = {"title": title, "lines": [ln]}
         else:
             cur["lines"].append(ln)
     segs.append(cur)
