@@ -4,7 +4,7 @@
 # 인터넷 연결 필요. 처음 설치는 몇 분 걸릴 수 있습니다.
 set -e
 SCRIPT_DIR="$( cd "$( dirname "$0" )" && pwd )"
-ROOT_DIR="$( cd "$SCRIPT_DIR/../.." && pwd )"
+ROOT_DIR="$SCRIPT_DIR"
 cd "$ROOT_DIR"
 
 echo "📚 My Bookshelf 설치를 시작합니다."

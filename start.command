@@ -3,7 +3,7 @@
 # (먼저 setup.command 로 설치를 한 번 마쳐야 합니다.)
 set -e
 SCRIPT_DIR="$( cd "$( dirname "$0" )" && pwd )"
-ROOT_DIR="$( cd "$SCRIPT_DIR/../.." && pwd )"
+ROOT_DIR="$SCRIPT_DIR"
 cd "$ROOT_DIR"
 
 if [ ! -x .venv/bin/python ]; then

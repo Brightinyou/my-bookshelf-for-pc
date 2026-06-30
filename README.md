@@ -16,14 +16,14 @@ PDF 책을 넣으면 **TXT 변환 → (선택) 영→한 번역 → 옵시디언
 
 1. 이 폴더를 원하는 위치에 둡니다.
 2. 설치 스크립트 실행:
-   - `platform/mac/setup.command` 를 우클릭 → **열기** (처음엔 보안 경고가 떠서 더블클릭이 안 됩니다).
+   - `setup.command` 를 우클릭 → **열기** (처음엔 보안 경고가 떠서 더블클릭이 안 됩니다).
    - 파이썬 3.10+가 없으면 안내 페이지가 열립니다. 설치 후 다시 실행하세요.
    - 처음 설치는 몇 분 걸릴 수 있습니다.
-3. (선택) 옵시디언 설치 — 위키 노트 열람용: `platform/mac/install-obsidian.command`.
+3. (선택) 옵시디언 설치 — 위키 노트 열람용: `install-obsidian.command`.
 
 ## 실행
 
-- `platform/mac/start.command` 더블클릭
+- `start.command` 더블클릭
 
 → 브라우저에 앱이 열립니다 (http://localhost:8501).
 
@@ -52,11 +52,11 @@ PDF 책을 넣으면 **TXT 변환 → (선택) 영→한 번역 → 옵시디언
 ## 개발 구조
 
 - `core/`: 앱 핵심 코드
-- `platform/mac/`: macOS 실행·설치·앱 번들 빌드 파일
-- `dist/mac/`: macOS 배포 산출물
+- 루트의 `setup.command`, `start.command`, `install-obsidian.command`: macOS 실행·설치 파일
+- 루트의 `MyBookshelf.icns`, `MyBookshelf.iconset/`: 앱 아이콘
 
 ## 문제 해결
 
-- **앱이 안 열림** — 터미널에서 `platform/mac/start.command`를 실행해 오류 메시지를 확인하세요.
+- **앱이 안 열림** — 터미널에서 `start.command`를 실행해 오류 메시지를 확인하세요.
 - **PDF 변환 실패** — 텍스트 레이어가 있는 PDF인지 확인하세요. 스캔본은 먼저 OCR 처리된 PDF/TXT로 변환해야 합니다.
 - **위키가 안 생김** — 설정 탭에 Gemini 키가 있는지 확인.
