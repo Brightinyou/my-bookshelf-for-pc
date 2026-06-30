@@ -321,11 +321,13 @@ _translate_error_logged = False
 def translate_engine_options() -> list[tuple[str, str, bool, str]]:
     """[(engine_id, label, available, hint)]. 키 있는 공급자만 available=True."""
     opts: list[tuple[str, str, bool, str]] = []
-    if llm.claude_cli_available():
-        for m, lbl in (("claude-sonnet-4-6", "Claude Sonnet 4.6"),
-                       ("claude-haiku-4-5", "Claude Haiku 4.5")):
-            opts.append((f"claude_cli:{m}", f"{lbl} (구독·CLI)", True, "구독 로그인"))
-    for prov, info in llm.PROVIDERS.items():
+    for prov in llm.API_PROVIDERS:
+        info = llm.PROVIDERS[prov]
+        avail = llm.has_key(prov)
+        for m in info["models"]:
+            opts.append((f"{prov}:{m}", f"{m} · {info['label']}", avail, info["hint"]))
+    for prov in llm.CLI_PROVIDERS:
+        info = llm.PROVIDERS[prov]
         avail = llm.has_key(prov)
         for m in info["models"]:
             opts.append((f"{prov}:{m}", f"{m} · {info['label']}", avail, info["hint"]))
@@ -1627,6 +1629,29 @@ def translate_downloaded_paper(source_file: Path, engine: str, progress_cb=None)
         return False, str(e)[:200]
 
 
+def prepare_downloaded_paper_source(source_file: Path) -> tuple[bool, Path | None, str]:
+    """다운로드한 논문 파일을 1_txt에 저장하고 장별분할 대기열에 등록."""
+    try:
+        out_txt_dir = txt_dir(DONE_DIR, DEFAULT_WS)
+        out_txt_dir.mkdir(parents=True, exist_ok=True)
+        pdf_out_dir = DONE_DIR / DEFAULT_WS / PDF_SUB
+        pdf_out_dir.mkdir(parents=True, exist_ok=True)
+        if source_file.suffix.lower() == ".pdf":
+            txt_path, _md, err = pdf_to_txt(source_file)
+            if not txt_path:
+                return False, None, f"PDF 텍스트 추출 실패: {err}"
+            shutil.copy2(str(source_file), str(pdf_out_dir / source_file.name))
+            final_txt = out_txt_dir / (source_file.stem + ".txt")
+            shutil.move(str(txt_path), str(final_txt))
+        else:
+            final_txt = out_txt_dir / source_file.name
+            shutil.copy2(str(source_file), str(final_txt))
+        queue_add("tab2_ready", [_nfc(final_txt.stem)])
+        return True, final_txt, f"{final_txt.name} → 2·장별분할 대기 등록"
+    except Exception as e:
+        return False, None, str(e)[:200]
+
+
 def summarize_one_chapter(ch_path: Path, book_stem: str) -> tuple[bool, str]:
     """단일 챕터 TXT → 위키 JSON 요약. _wiki.json 저장. (ok, summary snippet)."""
     try:
@@ -2303,7 +2328,35 @@ if _next_steps_for_view:
 # ─── 공용 헬퍼 ───────────────────────────────────────────
 
 
-def _checklist(items: list[dict], prefix: str, height: int = 320) -> list:
+def _view_target_from_item(it: dict) -> Path | None:
+    obj = it.get("obj")
+    if isinstance(obj, Path):
+        return obj
+    if isinstance(obj, tuple) and obj and isinstance(obj[0], Path):
+        ko_path = obj[0].with_name(obj[0].stem + "_ko.txt")
+        return ko_path if ko_path.exists() else obj[0]
+    if hasattr(obj, "_p"):
+        return Path(obj._p)
+    if isinstance(obj, dict):
+        if isinstance(obj.get("txt"), Path):
+            return obj["txt"]
+        stem = obj.get("stem")
+        ws = obj.get("ws") or DEFAULT_WS
+        if stem:
+            txt_path = txt_dir(DONE_DIR, ws) / f"{stem}.txt"
+            ch_path = chapters_dir(ws, stem)
+            if txt_path.exists():
+                return txt_path
+            if ch_path.exists():
+                return ch_path
+    if isinstance(obj, str):
+        rel_path = DONE_DIR / obj
+        if rel_path.exists():
+            return rel_path
+    return None
+
+
+def _checklist(items: list[dict], prefix: str, height: int = 320, viewable: bool = False) -> list:
     """체크박스 파일 목록. items=[{"key":str,"label":str,"meta":str,"obj":any}]
     Returns: 선택된 obj 목록."""
     h1, h2, h3 = st.columns([1.3, 1, 4])
@@ -2320,15 +2373,35 @@ def _checklist(items: list[dict], prefix: str, height: int = 320) -> list:
     with st.container(height=height, border=True):
         for it in items:
             k = f"{prefix}_{it['key']}"
-            c1, c2 = st.columns([0.05, 0.95])
+            cols = st.columns([0.05, 0.82, 0.13]) if viewable else st.columns([0.05, 0.95])
+            c1, c2 = cols[0], cols[1]
             chk = c1.checkbox(" ", key=k, label_visibility="collapsed")
             c2.markdown(
                 f"**{it['label']}** &nbsp;<small style='color:#9ca3af'>{it['meta']}</small>",
                 unsafe_allow_html=True,
             )
+            if viewable:
+                target = _view_target_from_item(it)
+                safe_key = _re.sub(r"[^a-zA-Z0-9가-힣_-]+", "_", str(it["key"]))[:80]
+                if cols[2].button("보기", key=f"{prefix}_view_{safe_key}", use_container_width=True,
+                                  disabled=target is None):
+                    open_path(target, reveal=target.is_file())
             if chk:
                 selected.append(it["obj"])
     return selected
+
+
+def _translate_engine_radio(label: str, key: str) -> str:
+    _avail = [(eid, lbl) for eid, lbl, av, _ in translate_engine_options() if av]
+    _ids = [eid for eid, _lbl in _avail]
+    _labels = [lbl for _eid, lbl in _avail]
+    _pref = llm.get_pref("translate_engine", "")
+    _idx = _ids.index(_pref) if _pref in _ids else 0
+    _sel = st.radio(label, _labels, index=_idx, horizontal=True, key=key)
+    _engine = _ids[_labels.index(_sel)]
+    if _engine != _pref:
+        llm.set_pref("translate_engine", _engine)
+    return _engine
 
 
 def _wiki_model_radio(key: str) -> tuple[str, str]:
@@ -2372,13 +2445,11 @@ if _active_view in {"1_txt", "all_run"}:
     # 번역 엔진 (전체 파이프라인 모드일 때만)
     _tr_eng1 = ""
     if "전체" in _mode1:
-        _tr_opts1 = translate_engine_options()
-        _tr_avail1 = [(eid, lbl) for eid, lbl, av, _ in _tr_opts1 if av]
-        if _tr_avail1:
-            _tr_lbl1 = st.radio("번역 엔진", [lbl for _, lbl in _tr_avail1],
-                                 horizontal=True, key="ocr_tr_engine_radio")
-            _tr_eng1 = next(eid for eid, lbl in _tr_avail1 if lbl == _tr_lbl1)
+        if [(eid, lbl) for eid, lbl, av, _ in translate_engine_options() if av]:
+            _tr_eng1 = _translate_engine_radio("번역 엔진", "ocr_tr_engine_radio")
             _wiki_model_radio("ocr1_wiki_ai")
+        else:
+            st.warning("번역 엔진 없음 — ⚙️ 설정 탭에서 API 키를 입력하세요.")
 
     # 파일 업로드
     _uploads1 = st.file_uploader(
@@ -2403,6 +2474,29 @@ if _active_view in {"1_txt", "all_run"}:
             st.success(f"📥 처리 대기 목록에 추가됨: {', '.join(_added1)}")
             st.rerun()  # 대기 목록 갱신 (세션스테이트로 중복 저장 방지됨)
 
+    with st.expander("🔎 논문 출처로 가져오기", expanded=False):
+        _paper_src1 = st.text_input(
+            "논문 출처",
+            key="ocr1_paper_source",
+            placeholder="URL, DOI(10.xxxx/...), doi:..., arXiv 번호 또는 arxiv.org 링크",
+        )
+        if st.button("다운로드 확인 후 TXT 저장", key="ocr1_source_prepare",
+                     use_container_width=True, type="primary",
+                     disabled=not _paper_src1.strip()):
+            with st.status("논문 출처 확인 중…", expanded=True):
+                _ok_dl1, _src_file1, _reason1 = download_paper_source(_paper_src1)
+                if not _ok_dl1 or not _src_file1:
+                    st.error(f"({_reason1}) 때문에 가져올 수 없습니다.")
+                else:
+                    st.write(f"✅ 다운로드 가능: `{_src_file1.name}`")
+                    _ok_prep1, _final_txt1, _msg_prep1 = prepare_downloaded_paper_source(_src_file1)
+                    if _ok_prep1:
+                        st.success(f"✅ TXT 저장 완료: {_msg_prep1}")
+                    else:
+                        st.error(f"({_msg_prep1}) 때문에 TXT로 저장할 수 없습니다.")
+            if _ok_dl1 and _src_file1 and _ok_prep1:
+                st.rerun()
+
     st.divider()
 
     # 처리 대기 목록 (UPLOAD_TMP)
@@ -2420,7 +2514,7 @@ if _active_view in {"1_txt", "all_run"}:
              "obj": _PathAsUpload(f)}
             for f in _pending_all1
         ]
-        _sel1 = _checklist(_items1, "ocr1", height=250)
+        _sel1 = _checklist(_items1, "ocr1", height=250, viewable=True)
         _b1c1, _b1c2 = st.columns(2)
         _run_sel1 = _b1c1.button(f"▶ 선택 처리 ({len(_sel1)}개)", key="ocr1_run_sel",
                                    use_container_width=True, type="primary", disabled=len(_sel1)==0)
@@ -2533,7 +2627,7 @@ if _active_view == "2_split":
 
     st.markdown(f"#### 분할 대기 ({len(_split_pend2)}권)")
     if _split_pend2:
-        _sel2 = _checklist(_split_pend2, "split2", height=280)
+        _sel2 = _checklist(_split_pend2, "split2", height=280, viewable=True)
         _b2c1, _b2c2, _b2c3 = st.columns([2, 2, 1])
         _rs2 = _b2c1.button(f"▶ 선택 분할 ({len(_sel2)}권)", key="split2_run_sel",
                               use_container_width=True, type="primary", disabled=len(_sel2)==0)
@@ -2617,43 +2711,7 @@ if _active_view == "3_translate":
     if not _tr_avail3:
         st.warning("번역 엔진 없음 — ⚙️ 설정 탭에서 API 키를 입력하세요.")
     else:
-        _tr_lbl3 = st.radio("번역 엔진", [lbl for _, lbl in _tr_avail3],
-                             horizontal=True, key="tr3_engine")
-        _tr_eng3 = next(eid for eid, lbl in _tr_avail3 if lbl == _tr_lbl3)
-
-        with st.expander("🔎 논문 출처로 가져와 번역", expanded=True):
-            _paper_src3 = st.text_input(
-                "논문 출처",
-                key="tr3_paper_source",
-                placeholder="URL, DOI(10.xxxx/...), doi:..., arXiv 번호 또는 arxiv.org 링크",
-            )
-            if st.button("다운로드 확인 후 번역", key="tr3_source_translate",
-                         use_container_width=True, type="primary",
-                         disabled=not _paper_src3.strip()):
-                with st.status("논문 출처 확인 중…", expanded=True):
-                    _ok_dl3, _src_file3, _reason3 = download_paper_source(_paper_src3)
-                    if not _ok_dl3 or not _src_file3:
-                        st.error(f"({_reason3}) 때문에 번역할 수 없습니다.")
-                    else:
-                        st.write(f"✅ 다운로드 가능: `{_src_file3.name}`")
-                        _paper_prog3 = st.progress(0, text="번역 준비 중…")
-                        def _paper_progress3(done, total, translated, preserved, dropped, failed):
-                            _paper_prog3.progress(
-                                min(done / max(total, 1), 1.0),
-                                text=(
-                                    f"번역 처리 중 {done}/{total} · 번역 {translated} · "
-                                    f"원문보존 {preserved} · 삭제 {dropped}"
-                                    + (f" · 실패보존 {failed}" if failed else "")
-                                ),
-                            )
-                        _ok_tr3, _msg_tr3 = translate_downloaded_paper(
-                            _src_file3, _tr_eng3, progress_cb=_paper_progress3
-                        )
-                        if _ok_tr3:
-                            _paper_prog3.progress(1.0, text="번역 처리 완료")
-                            st.success(f"✅ 번역 완료: {_msg_tr3}")
-                        else:
-                            st.error(f"({_msg_tr3}) 때문에 번역할 수 없습니다.")
+        _tr_eng3 = _translate_engine_radio("번역 엔진", "tr3_engine")
 
         # TXT 직접 업로드 후 즉시 번역
         _up3 = st.file_uploader("TXT 직접 업로드 (즉시 번역)",
@@ -2703,7 +2761,7 @@ if _active_view == "3_translate":
         st.divider()
         st.markdown(f"#### 번역 대기 ({len(_tr_pend3)}개) / 완료 {_tr_done3}개")
         if _tr_pend3:
-            _sel3 = _checklist(_tr_pend3, "tr3", height=280)
+            _sel3 = _checklist(_tr_pend3, "tr3", height=280, viewable=True)
             _b3c1, _b3c2, _b3c3 = st.columns([2, 2, 1])
             _rs3 = _b3c1.button(f"▶ 선택 번역 ({len(_sel3)}개)", key="tr3_run_sel",
                                   use_container_width=True, type="primary", disabled=len(_sel3)==0)
@@ -2826,7 +2884,7 @@ if _active_view == "4_summary":
         st.divider()
         st.markdown(f"#### 요약 대기 ({len(_sum_pend4)}개) / 완료 {_sum_done4}개")
         if _sum_pend4:
-            _sel4 = _checklist(_sum_pend4, "summ4", height=280)
+            _sel4 = _checklist(_sum_pend4, "summ4", height=280, viewable=True)
             _b4c1, _b4c2, _b4c3 = st.columns([2, 2, 1])
             _rs4 = _b4c1.button(f"▶ 선택 요약 ({len(_sel4)}개)", key="summ4_run_sel",
                                   use_container_width=True, type="primary", disabled=len(_sel4)==0)
@@ -2965,12 +3023,12 @@ if _active_view == "5_wiki":
         # 책 단위 체크리스트 + 챕터 이름 펼치기
         _sel5: list = []
         with st.container(height=320, border=True):
-            _w5h1, _w5h2, _w5h3 = st.columns([0.05, 0.6, 0.35])
+            _w5h1, _w5h2, _w5h3, _w5h4 = st.columns([0.05, 0.5, 0.32, 0.13])
             _w5h2.markdown("**책 제목**", unsafe_allow_html=True)
             _w5h3.markdown("<small style='color:#9ca3af'>챕터</small>", unsafe_allow_html=True)
             for _it5 in _wiki_pend5:
                 _k5 = f"wiki5_{_it5['key']}"
-                _c5a, _c5b, _c5c = st.columns([0.05, 0.6, 0.35])
+                _c5a, _c5b, _c5c, _c5d = st.columns([0.05, 0.5, 0.32, 0.13])
                 _chk5 = _c5a.checkbox(" ", key=_k5, label_visibility="collapsed")
                 if _chk5:
                     _sel5.append(_it5["obj"])
@@ -2979,6 +3037,10 @@ if _active_view == "5_wiki":
                 if len(_it5["ch_names"]) > 4:
                     _ch_preview5 += f" … +{len(_it5['ch_names'])-4}개"
                 _c5c.caption(_it5["meta"])
+                _view_dir5 = chapters_dir(DEFAULT_WS, _it5["obj"]["stem"])
+                if _c5d.button("보기", key=f"wiki5_view_{_it5['key']}", use_container_width=True,
+                                disabled=not _view_dir5.exists()):
+                    open_path(_view_dir5)
                 if _it5["ch_names"]:
                     with st.expander(f"  ↳ {_ch_preview5}", expanded=False):
                         _ch5_dir = chapters_dir(DEFAULT_WS, _it5["obj"]["stem"])
@@ -3138,7 +3200,7 @@ if _active_view == "settings":
         if (_p, _m) != (_wp, _wm) and st.button("✅ 이 모델로 위키 생성", use_container_width=True):
             llm.set_wiki_model(_p, _m); st.success(f"위키 모델 = {_p} · {_m}"); st.rerun()
     else:
-        st.info("키 등록된 공급자가 없어 Gemini 기본값을 씁니다. 아래에서 키를 입력하세요.")
+        st.info("사용 가능한 API 키나 활성화된 CLI가 없습니다. 아래에서 API 키를 입력하거나 CLI 사용을 켜세요.")
     st.caption("번역과 별개로, 위키 노트 생성에 쓸 모델입니다. 구조화 출력은 공급자별로 자동 처리됩니다.")
     st.divider()
 

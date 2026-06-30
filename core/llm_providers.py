@@ -143,13 +143,23 @@ def masked(provider: str) -> str:
 
 
 # ── 위키 생성 모델 설정 (provider+model) ──
+def first_available_provider_model() -> tuple[str, str]:
+    """Return the first configured model, preferring API keys over enabled CLIs."""
+    for prov in (*API_PROVIDERS, *CLI_PROVIDERS):
+        if prov in PROVIDERS and has_key(prov):
+            return prov, PROVIDERS[prov]["models"][0]
+    return "gemini", PROVIDERS["gemini"]["models"][0]
+
+
 def wiki_provider_model() -> tuple[str, str]:
-    """위키 생성에 쓸 (provider, model). 설정 없으면 gemini-2.5-flash."""
+    """위키 생성에 쓸 (provider, model). 설정 없으면 사용 가능한 공급자를 우선 선택."""
     d = _load_all()
-    prov = d.get("wiki_provider") or "gemini"
-    if prov not in PROVIDERS:
-        prov = "gemini"
+    prov = d.get("wiki_provider") or ""
+    if prov not in PROVIDERS or not has_key(prov):
+        return first_available_provider_model()
     model = d.get("wiki_model") or PROVIDERS[prov]["models"][0]
+    if model not in PROVIDERS[prov]["models"]:
+        model = PROVIDERS[prov]["models"][0]
     return prov, model
 
 def set_wiki_model(provider: str, model: str) -> None:
@@ -409,5 +419,4 @@ def complete_json(provider: str, model: str, system: str, prompt: str,
             is_429 = "429" in m or "resource_exhausted" in m or "rate_limit" in m or "overloaded" in m
             time.sleep(65 if is_429 else 4)
     raise last
-
 
