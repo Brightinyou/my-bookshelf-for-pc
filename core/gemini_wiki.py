@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Gemini 위키 생성기 (2026-06-09 신설) — NotebookLM 로컬 대체.
@@ -6,7 +6,7 @@ Gemini 위키 생성기 (2026-06-09 신설) — NotebookLM 로컬 대체.
 TXT(책 전문) → Gemini Flash(책 통째 컨텍스트, RAG·업로드·임베드 없음) → 옵시디언 노트.
 로컬 7b/14b의 한계(얕음·중국어 드리프트·요약오염·인용 OCR노이즈)를 모두 회피.
 
-키: ~/.config/gemini_wiki.key (한 줄) 또는 환경변수 GEMINI_API_KEY.
+키: 앱 설정 화면에 저장한 ~/.config/mybookshelf/keys.json.
 사용:
   gemini_wiki.py --limit 2          # 미완료 앞에서 2권(테스트)
   gemini_wiki.py --file "<txt경로>"  # 특정 책 1권
@@ -22,7 +22,6 @@ import llm_providers as llm
 SRC_DIR  = cfg.PROCESSED_DIR        # 원본 TXT
 OUT_DIR  = cfg.WIKI_DIR             # 옵시디언 출력
 DONE     = cfg.GEMINI_DONE_FILE
-KEY_FILE = Path.home() / ".config/gemini_wiki.key"
 MODEL    = "gemini-2.5-flash"     # 품질↑. 비용 부담되면 gemini-2.0-flash 로 교체
 
 def _max_chars() -> int:
@@ -33,12 +32,10 @@ def _max_chars() -> int:
 def nfc(s): return unicodedata.normalize("NFC", s)
 
 def get_key():
-    if KEY_FILE.exists():
-        k = KEY_FILE.read_text(encoding="utf-8").strip()
-        if k: return k
-    k = os.environ.get("GEMINI_API_KEY", "").strip()
-    if k: return k
-    sys.exit(f"❌ API 키 없음. {KEY_FILE} 에 키 한 줄을 넣으세요(또는 GEMINI_API_KEY).")
+    k = llm.get_key("gemini").strip()
+    if k:
+        return k
+    sys.exit("❌ API 키 없음. 앱 설정 화면에서 Gemini API 키를 저장하세요.")
 
 PROMPT = """당신은 신학·인문학 학술 사서입니다. 아래는 책 『{title}』의 전문(OCR 텍스트, 일부 노이즈 포함)입니다.
 이 책 한 권을 충실하고 깊이 있게 대표하는 옵시디언 위키 노트를 작성하세요.
@@ -235,3 +232,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

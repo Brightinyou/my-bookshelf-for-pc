@@ -1,7 +1,7 @@
-"""llm_providers.py — 멀티 공급자 LLM 통일 호출 + 키 관리 (2026-06-15)
+﻿"""llm_providers.py — 멀티 공급자 LLM 통일 호출 + 키 관리 (2026-06-15)
 
 OpenAI(GPT) / Google(Gemini) / Anthropic(Claude API) + Claude CLI(구독) + Codex CLI(구독).
-키 우선순위: 환경변수 → ~/.config/mybookshelf/keys.json → (gemini는 ~/.config/gemini_wiki.key).
+키는 ~/.config/mybookshelf/keys.json에만 저장한다.
 키는 이 컴퓨터 로컬에만 저장하며 저장소/외부로 전송하지 않는다.
 """
 from __future__ import annotations
@@ -16,38 +16,32 @@ from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".config" / "mybookshelf"
 KEYS_FILE = CONFIG_DIR / "keys.json"
-GEMINI_WIKI_KEY = Path.home() / ".config" / "gemini_wiki.key"  # 위키 생성기 호환
 
-# 공급자 레지스트리 — provider 키: {label, models[], env(환경변수명), hint}
+# 공급자 레지스트리 — provider 키: {label, models[], hint}
 PROVIDERS: dict[str, dict] = {
     "gemini": {
         "label": "Google Gemini",
         "models": ["gemini-2.5-flash", "gemini-2.5-pro"],
-        "env": "GEMINI_API_KEY",
-        "hint": "AIza… 또는 AQ.…",
+        "hint": "Gemini API key",
     },
     "openai": {
         "label": "OpenAI GPT",
         "models": ["gpt-4o", "gpt-4o-mini"],
-        "env": "OPENAI_API_KEY",
         "hint": "sk-…",
     },
     "anthropic": {
         "label": "Anthropic Claude (API)",
         "models": ["claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
-        "env": "ANTHROPIC_API_KEY",
         "hint": "sk-ant-…",
     },
     "claude_cli": {
         "label": "Claude CLI (구독)",
         "models": ["claude-sonnet-4-6", "claude-opus-4-8"],
-        "env": "",
         "hint": "",
     },
     "codex_cli": {
         "label": "Codex CLI (ChatGPT)",
         "models": ["default"],  # ChatGPT 계정은 모델 지정 불가(o3/o4-mini 400오류) → 기본 모델 사용
-        "env": "",
         "hint": "",
     },
 }
@@ -71,26 +65,15 @@ def _load_all() -> dict:
 
 
 def get_key(provider: str) -> str:
-    """우선순위: 설정(keys.json) → (gemini 한정) gemini_wiki.key → 환경변수.
-    keys.json에 provider 키가 존재하면(빈 문자열 포함) 환경변수 폴백을 차단.
-    빈 문자열 = 사용자가 명시적으로 삭제 — 환경변수 무시."""
+    """Return only keys saved from the app settings screen."""
     all_keys = _load_all()
-    if provider in all_keys:          # 명시적 설정이 있으면 (빈 값 포함) 그것만 사용
+    if provider in all_keys:
         return (all_keys[provider] or "").strip()
-    if provider == "gemini" and GEMINI_WIKI_KEY.exists():
-        fk = GEMINI_WIKI_KEY.read_text(encoding="utf-8").strip()
-        if fk:
-            return fk
-    info = PROVIDERS.get(provider, {})
-    env = info.get("env")
-    if env and os.environ.get(env, "").strip():
-        return os.environ[env].strip()
     return ""
 
 
 def save_key(provider: str, key: str) -> None:
-    """keys.json에 저장(빈 값이면 삭제). 파일 권한 0600.
-    gemini는 위키 생성기 호환을 위해 gemini_wiki.key에도 동기화."""
+    """Save keys to keys.json. Empty values intentionally block fallback."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     data = _load_all()
     key = (key or "").strip()
@@ -103,16 +86,6 @@ def save_key(provider: str, key: str) -> None:
         os.chmod(KEYS_FILE, 0o600)
     except Exception:
         pass
-    # gemini → 위키 생성기(gemini_wiki.py)가 읽는 파일에도 반영
-    if provider == "gemini":
-        try:
-            if key:
-                GEMINI_WIKI_KEY.write_text(key, encoding="utf-8")
-                os.chmod(GEMINI_WIKI_KEY, 0o600)
-            elif GEMINI_WIKI_KEY.exists():
-                GEMINI_WIKI_KEY.unlink()
-        except Exception:
-            pass
 
 
 def has_key(provider: str) -> bool:
@@ -394,3 +367,5 @@ def complete_json(provider: str, model: str, system: str, prompt: str,
             is_429 = "429" in m or "resource_exhausted" in m or "rate_limit" in m or "overloaded" in m
             time.sleep(65 if is_429 else 4)
     raise last
+
+

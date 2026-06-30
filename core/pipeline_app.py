@@ -24,8 +24,6 @@ from version import APP_VERSION
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
-
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
 
 UPLOAD_TMP    = cfg.UPLOAD_TMP
@@ -2904,7 +2902,7 @@ if _active_view == "settings":
     st.subheader("⚙️ API 키 설정")
     st.caption(
         "키는 이 컴퓨터의 `~/.config/mybookshelf/keys.json` 에만 저장되며, "
-        "저장소나 외부로 전송되지 않습니다. (Gemini 키는 위키 생성기와 자동 공유됩니다.)"
+        "저장소나 외부로 전송되지 않습니다."
     )
 
     # 🧠 위키 생성 모델 (공급자/모델)
