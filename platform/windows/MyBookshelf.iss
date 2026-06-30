@@ -38,6 +38,7 @@ Source: "..\..\core\pipeline_app.py";    DestDir: "{app}\core"; Flags: ignorever
 Source: "..\..\core\desktop.py";         DestDir: "{app}\core"; Flags: ignoreversion
 Source: "..\..\core\config.py";          DestDir: "{app}\core"; Flags: ignoreversion
 Source: "..\..\core\llm_providers.py";   DestDir: "{app}\core"; Flags: ignoreversion
+Source: "..\..\core\version.py";         DestDir: "{app}\core"; Flags: ignoreversion
 Source: "..\..\core\gemini_wiki.py";     DestDir: "{app}\core"; Flags: ignoreversion
 Source: "..\..\core\chapter_wiki.py";    DestDir: "{app}\core"; Flags: ignoreversion
 Source: "..\..\core\requirements.txt";   DestDir: "{app}"; Flags: ignoreversion
