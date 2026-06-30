@@ -2150,6 +2150,16 @@ _top_l.markdown(f"### {_task_title}")
 if _top_r.button("← 메뉴", key="back_to_menu", use_container_width=True):
     st.session_state.pop("active_view", None)
     st.rerun()
+_NEXT_STEPS = {
+    "1_txt": [("2_split", "다음: 2·장별분할")],
+    "2_split": [("3_translate", "다음: 3·번역"), ("4_summary", "건너뛰기: 4·요약MD")],
+    "3_translate": [("4_summary", "다음: 4·요약MD")],
+    "4_summary": [("5_wiki", "다음: 5·Wiki반영")],
+}
+for _next_view, _next_label in _NEXT_STEPS.get(_active_view, []):
+    if _top_r.button(_next_label, key=f"next_to_{_next_view}", use_container_width=True):
+        st.session_state["active_view"] = _next_view
+        st.rerun()
 
 
 
@@ -3028,4 +3038,3 @@ if _active_view == "settings":
 # 로딩 오버레이 제거 + 이후 재렌더링에서는 오버레이 건너뜀
 _loading_ph.empty()
 st.session_state["_app_loaded"] = True
-
