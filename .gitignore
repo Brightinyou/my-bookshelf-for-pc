@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+dist/
+dev/
+.github/
+AGENTS.md
+DEVLOG.md
+
+*.key
+keys.json
+config.json
