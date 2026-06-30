@@ -2300,7 +2300,7 @@ _brand_col.markdown(
 )
 with _font_col:
     _font_scale_controls()
-st.caption("PDF → TXT변환 → 장별 분할 → 번역 → 요약 → Obsidian Wiki")
+st.caption("PDF → TXT변환 → 장별 분할 → 영문번역 → 요약MD생성 → Obsidian Wiki")
 
 _loading_step("파일 목록 확인 중…", "처리된 파일과 API 설정을 읽고 있습니다")
 
@@ -2322,8 +2322,8 @@ if not _avail_ai_providers:
 TASKS = [
     ("1_txt", "📄 1·TXT변환", "PDF/TXT를 처리 대기열에 올리고 텍스트로 저장"),
     ("2_split", "📂 2·장별분할", "책 TXT를 챕터 단위 파일로 분리"),
-    ("3_translate", "🌐 3·번역", "챕터 또는 논문 출처를 한국어로 번역"),
-    ("4_summary", "📝 4·요약MD", "챕터별 위키 요약 JSON 생성"),
+    ("3_translate", "🌐 3·영문번역", "챕터 TXT 또는 논문 출처를 한국어로 번역"),
+    ("4_summary", "📝 4·요약MD생성", "챕터별 위키 요약 JSON을 생성"),
     ("5_wiki", "📖 5·Wiki반영", "요약을 Obsidian Wiki 노트로 저장"),
     ("settings", "⚙️ 설정", "API 키와 위키 생성 모델 설정"),
     ("all_run", "🚀 전체 실행", "TXT변환 → 장별분할 → 번역 → 요약 → Wiki를 한 번에 실행"),
@@ -2395,13 +2395,13 @@ if _top_menu.button("← 메뉴", key="back_to_menu", use_container_width=True):
 _PREV_STEPS = {
     "2_split": ("1_txt", "이전: 1·TXT"),
     "3_translate": ("2_split", "이전: 2·분할"),
-    "4_summary": ("3_translate", "이전: 3·번역"),
-    "5_wiki": ("4_summary", "이전: 4·요약"),
+    "4_summary": ("3_translate", "이전: 3·영문번역"),
+    "5_wiki": ("4_summary", "이전: 4·요약MD생성"),
 }
 _NEXT_STEPS = {
     "1_txt": [("2_split", "다음: 2·장별분할")],
-    "2_split": [("3_translate", "다음: 3·번역"), ("4_summary", "건너뛰기: 4·요약MD")],
-    "3_translate": [("4_summary", "다음: 4·요약MD")],
+    "2_split": [("3_translate", "다음: 3·영문번역"), ("4_summary", "건너뛰기: 4·요약MD생성")],
+    "3_translate": [("4_summary", "다음: 4·요약MD생성")],
     "4_summary": [("5_wiki", "다음: 5·Wiki반영")],
 }
 if _active_view in _PREV_STEPS:
@@ -2549,7 +2549,6 @@ _loading_step("화면 구성 중…", "탭과 UI를 초기화하고 있습니다
 
 # ── 1: TXT변환 / 전체 실행 ───────────────────────────────
 if _active_view in {"1_txt", "all_run"}:
-    st.subheader("📄 TXT 변환")
     st.caption("텍스트로 저장 (OCR 변환된 문서만 가능) — PDF의 텍스트 레이어를 추출해 TXT로 저장합니다.")
 
     _ws1 = DEFAULT_WS
@@ -2706,7 +2705,6 @@ if _active_view in {"1_txt", "all_run"}:
 
 # ── 2: 장별 분할 ────────────────────────────────────────
 if _active_view == "2_split":
-    st.subheader("📂 장별 분할")
     st.caption("TXT를 장(Chapter) 단위로 분리해 챕터별 파일로 저장합니다.")
 
     # TXT 직접 업로드
@@ -2782,10 +2780,10 @@ if _active_view == "2_split":
                     if _new_chs2:
                         if _needs_translation(_s2["stem"]):
                             queue_add("tab3_ready", _new_chs2)
-                            st.caption("🌐 영문 책 → 3·번역 대기 등록")
+                            st.caption("🌐 영문 책 → 3·영문번역 대기 등록")
                         else:
                             queue_add("tab4_ready", _new_chs2)
-                            st.caption("🇰🇷 한국어 책 → 번역 건너뜀, 4·요약 대기 등록")
+                            st.caption("🇰🇷 한국어 책 → 번역 건너뜀, 4·요약MD생성 대기 등록")
                 _sp2.progress(_si2 / len(_to2))
             st.rerun()
     else:
@@ -2876,13 +2874,12 @@ if _active_view == "2_split":
     else:
         st.caption("완료된 분할 없음")
 
-    st.info("💡 다음 단계: **🌐 3·번역** 탭으로 이동하세요")
+    st.info("💡 다음 단계: **🌐 3·영문번역** 탭으로 이동하세요")
 
 
 # ── 3: 번역 ─────────────────────────────────────────────
 if _active_view == "3_translate":
-    st.subheader("🌐 영문 번역")
-    st.caption("챕터 TXT를 하나씩 또는 일괄로 한국어 번역합니다.")
+    st.caption("챕터 TXT 또는 논문 출처를 한국어로 번역합니다. 설정한 AI 엔진을 기본으로 사용합니다.")
 
     _tr_opts3 = translate_engine_options()
     _tr_avail3 = [(eid, lbl) for eid, lbl, av, _ in _tr_opts3 if av]
@@ -2982,12 +2979,11 @@ if _active_view == "3_translate":
             if st.button(f"➕ 선택 항목 큐에 추가 ({len(_msel3)}개)", key="tr3m_add", disabled=len(_msel3)==0):
                 queue_add("tab3_ready", _msel3); st.rerun()
 
-    st.info("💡 다음 단계: **📝 4·요약MD** 탭으로 이동하세요")
+    st.info("💡 다음 단계: **📝 4·요약MD생성** 탭으로 이동하세요")
 
 
 # ── 4: 요약MD ───────────────────────────────────────────
 if _active_view == "4_summary":
-    st.subheader("📝 요약MD 생성")
     st.caption("챕터 TXT(번역본 우선)로 Obsidian 노트용 요약 JSON을 생성합니다.")
 
     _prov_ok4 = any(llm.has_key(p) for p in llm.PROVIDERS)
@@ -3094,7 +3090,7 @@ if _active_view == "4_summary":
                     queue_add("tab5_ready", [_st5])
                 st.success(f"요약 처리 완료: {len(_to4)}개"); st.rerun()
         else:
-            st.info("요약 대기 없음 — 3·번역 탭 처리 후 자동 등록되거나 아래에서 수동 추가하세요")
+            st.info("요약 대기 없음 — 3·영문번역 탭 처리 후 자동 등록되거나 아래에서 수동 추가하세요")
 
         if _sum_failed4:
             st.markdown(f"#### 요약 실패 ({len(_sum_failed4)}개)")
@@ -3132,7 +3128,6 @@ if _active_view == "4_summary":
 
 # ── 5: Wiki반영 ─────────────────────────────────────────
 if _active_view == "5_wiki":
-    st.subheader("📖 Obsidian Wiki 반영")
     st.caption("챕터 요약(_wiki.json)들을 합쳐 Obsidian 노트로 생성합니다.")
 
     # ── 위키 저장 보관함(Vault) 선택 ──────────────────────────────────
@@ -3282,7 +3277,7 @@ if _active_view == "5_wiki":
                 _wp5.progress(_wi5 / len(_to5))
             st.rerun()
     else:
-        st.info("Wiki 대기 없음 — 4·요약MD 탭에서 요약 완료 후 자동 등록되거나 아래에서 수동 추가하세요")
+        st.info("Wiki 대기 없음 — 4·요약MD생성 탭에서 요약 완료 후 자동 등록되거나 아래에서 수동 추가하세요")
 
     # 수동 추가 expander (책 단위)
     with st.expander("➕ 수동으로 추가 (요약 완료된 책에서 선택)"):
@@ -3359,7 +3354,6 @@ if _active_view == "5_wiki":
 
 # ── 설정 (API 키) ─────────────────────────────────────
 if _active_view == "settings":
-    st.subheader("⚙️ API 키 설정")
     st.caption(
         "앱에 저장한 키를 우선 사용하고, 없으면 이 컴퓨터의 환경변수에서 감지된 키를 사용합니다. "
         "저장 키는 `~/.config/mybookshelf/keys.json`에만 보관되며 저장소에 올라가지 않습니다."
@@ -3464,7 +3458,6 @@ if _active_view == "settings":
             st.info("미설치. `npm install -g @openai/codex`")
 
     st.divider()
-    st.subheader("📓 위키 저장 폴더 (옵시디언 보관함(Vault))")
     st.caption(
         f"현재: `{WIKI_DIR}` — 생성된 위키 노트가 여기 저장되고, "
         "Wiki 목록 탭의 [옵시디언에서 위키 보관함(Vault) 열기]도 이 폴더를 엽니다."
