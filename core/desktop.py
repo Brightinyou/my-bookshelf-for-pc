@@ -29,7 +29,7 @@ import sys as _sys
 
 def _find_app_icon() -> str:
     name = "MyBookshelf.icns" if _sys.platform == "darwin" else "MyBookshelf.ico"
-    for base in (HERE, HERE.parent, HERE.parent / "platform" / "mac", HERE.parent / "platform" / "windows"):
+    for base in (HERE, HERE.parent, HERE.parent / "platform" / "mac"):
         p = base / name
         if p.exists():
             return str(p)
@@ -90,7 +90,7 @@ def main() -> int:
     except ImportError:
         sys.stderr.write(
             "❌ pywebview가 설치되지 않았습니다.\n"
-            "   setup.command(또는 setup.bat)를 다시 실행하거나\n"
+            "   platform/mac/setup.command를 다시 실행하거나\n"
             "   '.venv/bin/pip install pywebview'를 실행하세요.\n"
         )
         return 1
