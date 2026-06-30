@@ -16,6 +16,10 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+CORE_DIR = Path(__file__).resolve().parent
+if str(CORE_DIR) not in sys.path:
+    sys.path.insert(0, str(CORE_DIR))
+
 import pandas as pd
 import streamlit as st
 
