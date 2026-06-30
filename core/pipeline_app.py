@@ -1605,12 +1605,22 @@ def summarize_one_chapter(ch_path: Path, book_stem: str) -> tuple[bool, str]:
         src = (ko_path if ko_path.exists() else ch_path).read_text(encoding="utf-8", errors="ignore")
         chap_title = _re.sub(r"^\d+_", "", ch_path.stem)
         data = _cw.generate_chapter(book_stem, chap_title, src)
+        if not isinstance(data, dict):
+            raise RuntimeError("요약 응답이 JSON 객체가 아님")
+        if not (data.get("summary") and data.get("body")):
+            keys = ", ".join(sorted(map(str, data.keys()))) or "없음"
+            raise RuntimeError(f"요약 응답 필드 부족(summary/body 없음, keys={keys})")
         (ch_path.with_name(ch_path.stem + "_wiki.json")).write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         return True, (data.get("summary") or "")[:120]
     except Exception as e:
-        return False, str(e)[:200]
+        msg = str(e)[:300]
+        try:
+            append_log(f"ERROR: 장별 요약 실패 - {ch_path.name} ({type(e).__name__}) {msg}")
+        except Exception:
+            pass
+        return False, msg[:200]
 
 
 def _ch_link(stem: str, ch_title: str) -> str:
@@ -2084,15 +2094,18 @@ st.caption("PDF → TXT변환 → 장별 분할 → 번역 → 요약 → Obsidi
 _loading_step("파일 목록 확인 중…", "처리된 파일과 API 설정을 읽고 있습니다")
 
 # ── 상태 배너 ────────────────────────────────────────────
-_avail_providers = [info["label"] for prov, info in llm.PROVIDERS.items() if llm.has_key(prov)]
-_wiki_key_ok = any(llm.has_key(p) for p in llm.PROVIDERS)
+_avail_api_providers = [llm.PROVIDERS[p]["label"] for p in llm.API_PROVIDERS if llm.has_key(p)]
+_avail_cli_providers = [llm.PROVIDERS[p]["label"] for p in llm.CLI_PROVIDERS if llm.has_key(p)]
+_avail_ai_providers = _avail_api_providers + _avail_cli_providers
+_wiki_key_ok = bool(_avail_ai_providers)
 wg_ok = wiki_generator_running()
-col_s1, col_s2, col_s3 = st.columns(3)
-col_s1.metric("API 키", f"{len(_avail_providers)}개" if _avail_providers else "❌ 없음")
-col_s2.metric("위키 생성기", "🔄 생성 중" if wg_ok else "대기")
-col_s3.metric("Wiki 완성", sum(1 for _ in WIKI_DIR.rglob("*.md")))
-if not _avail_providers:
-    st.error("⚠️ 사용 가능한 API가 없습니다 — ⚙️ 설정 탭에서 키를 입력하세요.")
+col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+col_s1.metric("API 키", f"{len(_avail_api_providers)}개" if _avail_api_providers else "❌ 없음")
+col_s2.metric("CLI 구독", f"{len(_avail_cli_providers)}개" if _avail_cli_providers else "없음")
+col_s3.metric("위키 생성기", "🔄 생성 중" if wg_ok else "대기")
+col_s4.metric("Wiki 완성", sum(1 for _ in WIKI_DIR.rglob("*.md")))
+if not _avail_ai_providers:
+    st.error("⚠️ 사용 가능한 AI가 없습니다 — ⚙️ 설정 탭에서 API 키를 입력하거나 CLI 구독 도구를 활성화하세요.")
 
 # ── 초기 메뉴 ─────────────────────────────────────────────
 TASKS = [
@@ -2163,21 +2176,39 @@ if not _active_view:
     st.stop()
 
 _task_title = next((title for tid, title, _ in TASKS if tid == _active_view), "작업")
-_top_l, _top_r = st.columns([5, 1])
+_top_l, _top_menu, _top_prev, _top_next, _top_skip = st.columns([5, 1, 1.15, 1.25, 1.45])
 _top_l.markdown(f"### {_task_title}")
-if _top_r.button("← 메뉴", key="back_to_menu", use_container_width=True):
+if _top_menu.button("← 메뉴", key="back_to_menu", use_container_width=True):
     st.session_state.pop("active_view", None)
     st.rerun()
+_PREV_STEPS = {
+    "2_split": ("1_txt", "이전: 1·TXT"),
+    "3_translate": ("2_split", "이전: 2·분할"),
+    "4_summary": ("3_translate", "이전: 3·번역"),
+    "5_wiki": ("4_summary", "이전: 4·요약"),
+}
 _NEXT_STEPS = {
     "1_txt": [("2_split", "다음: 2·장별분할")],
     "2_split": [("3_translate", "다음: 3·번역"), ("4_summary", "건너뛰기: 4·요약MD")],
     "3_translate": [("4_summary", "다음: 4·요약MD")],
     "4_summary": [("5_wiki", "다음: 5·Wiki반영")],
 }
-for _next_view, _next_label in _NEXT_STEPS.get(_active_view, []):
-    if _top_r.button(_next_label, key=f"next_to_{_next_view}", use_container_width=True):
+if _active_view in _PREV_STEPS:
+    _prev_view, _prev_label = _PREV_STEPS[_active_view]
+    if _top_prev.button(_prev_label, key=f"prev_to_{_prev_view}", use_container_width=True):
+        st.session_state["active_view"] = _prev_view
+        st.rerun()
+_next_steps_for_view = _NEXT_STEPS.get(_active_view, [])
+if _next_steps_for_view:
+    _next_view, _next_label = _next_steps_for_view[0]
+    if _top_next.button(_next_label, key=f"next_to_{_next_view}", use_container_width=True):
         st.session_state["active_view"] = _next_view
         st.rerun()
+    if len(_next_steps_for_view) > 1:
+        _skip_view, _skip_label = _next_steps_for_view[1]
+        if _top_skip.button(_skip_label, key=f"next_to_{_skip_view}", use_container_width=True):
+            st.session_state["active_view"] = _skip_view
+            st.rerun()
 
 
 
@@ -2929,8 +2960,8 @@ if _active_view == "5_wiki":
 if _active_view == "settings":
     st.subheader("⚙️ API 키 설정")
     st.caption(
-        "키는 이 컴퓨터의 `~/.config/mybookshelf/keys.json` 에만 저장되며, "
-        "저장소나 외부로 전송되지 않습니다. (Gemini 키는 위키 생성기와 자동 공유됩니다.)"
+        "앱에 저장한 키를 우선 사용하고, 없으면 이 컴퓨터의 환경변수에서 감지된 키를 사용합니다. "
+        "저장 키는 `~/.config/mybookshelf/keys.json`에만 보관되며 저장소에 올라가지 않습니다."
     )
 
     # 🧠 위키 생성 모델 (공급자/모델)
@@ -2956,7 +2987,9 @@ if _active_view == "settings":
         if _prov in _cli_provs:
             continue
         _cur = llm.masked(_prov)
-        with st.expander(f"{_info['label']}  —  {('✅ ' + _cur) if _cur else '미설정'}",
+        _src = llm.key_source(_prov)
+        _src_label = {"saved": "저장됨", "detected": "감지됨"}.get(_src, "미설정")
+        with st.expander(f"{_info['label']}  —  {('✅ ' + _src_label + ' ' + _cur) if _cur else '미설정'}",
                          expanded=not bool(_cur)):
             with st.form(f"keyform_{_prov}", clear_on_submit=True):
                 _newk = st.text_input(f"{_info['label']} API 키", type="password",
@@ -2973,8 +3006,13 @@ if _active_view == "settings":
                         st.warning("키를 입력하세요.")
                 if _del:
                     llm.save_key(_prov, "")
-                    st.info("삭제됨")
+                    st.info("저장 키 삭제됨. 환경변수 키가 있으면 계속 감지됩니다.")
                     st.rerun()
+            if _src == "saved":
+                st.caption("현재 앱 설정에 저장된 키를 사용합니다.")
+            elif _src == "detected":
+                _envs = ", ".join(llm.ENV_KEY_NAMES.get(_prov, ()))
+                st.caption(f"현재 환경변수에서 감지된 키를 사용합니다: `{_envs}`")
             st.caption(f"모델: {', '.join(_info['models'])}")
     st.divider()
     st.markdown("**🖥 CLI 구독 도구** — API 키 없이 구독으로 사용")

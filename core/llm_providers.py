@@ -1,8 +1,8 @@
 """llm_providers.py — 멀티 공급자 LLM 통일 호출 + 키 관리 (2026-06-15)
 
 OpenAI(GPT) / Google(Gemini) / Anthropic(Claude API) + Claude CLI(구독) + Codex CLI(구독).
-키 우선순위: 환경변수 → ~/.config/mybookshelf/keys.json → (gemini는 ~/.config/gemini_wiki.key).
-키는 이 컴퓨터 로컬에만 저장하며 저장소/외부로 전송하지 않는다.
+키는 앱 설정 파일에 저장한 값을 우선 사용하고, 없으면 이 컴퓨터의 환경변수에서 감지한다.
+저장 키는 이 컴퓨터 로컬에만 저장하며 저장소/외부로 전송하지 않는다.
 """
 from __future__ import annotations
 import json
@@ -16,38 +16,40 @@ from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".config" / "mybookshelf"
 KEYS_FILE = CONFIG_DIR / "keys.json"
-GEMINI_WIKI_KEY = Path.home() / ".config" / "gemini_wiki.key"  # 위키 생성기 호환
 
-# 공급자 레지스트리 — provider 키: {label, models[], env(환경변수명), hint}
+ENV_KEY_NAMES: dict[str, tuple[str, ...]] = {
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"),
+    "openai": ("OPENAI_API_KEY",),
+    "anthropic": ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY"),
+}
+API_PROVIDERS = tuple(ENV_KEY_NAMES)
+CLI_PROVIDERS = ("claude_cli", "codex_cli")
+
+# 공급자 레지스트리 — provider 키: {label, models[], hint}
 PROVIDERS: dict[str, dict] = {
     "gemini": {
         "label": "Google Gemini",
         "models": ["gemini-2.5-flash", "gemini-2.5-pro"],
-        "env": "GEMINI_API_KEY",
-        "hint": "AIza… 또는 AQ.…",
+        "hint": "Gemini API key",
     },
     "openai": {
         "label": "OpenAI GPT",
         "models": ["gpt-4o", "gpt-4o-mini"],
-        "env": "OPENAI_API_KEY",
         "hint": "sk-…",
     },
     "anthropic": {
         "label": "Anthropic Claude (API)",
         "models": ["claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
-        "env": "ANTHROPIC_API_KEY",
         "hint": "sk-ant-…",
     },
     "claude_cli": {
         "label": "Claude CLI (구독)",
         "models": ["claude-sonnet-4-6", "claude-opus-4-8"],
-        "env": "",
         "hint": "",
     },
     "codex_cli": {
         "label": "Codex CLI (ChatGPT)",
         "models": ["default"],  # ChatGPT 계정은 모델 지정 불가(o3/o4-mini 400오류) → 기본 모델 사용
-        "env": "",
         "hint": "",
     },
 }
@@ -63,6 +65,17 @@ MAX_INPUT_CHARS: dict[str, int] = {
 }
 
 
+def _no_window_kwargs() -> dict:
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": startupinfo,
+    }
+
+
 def _load_all() -> dict:
     try:
         return json.loads(KEYS_FILE.read_text(encoding="utf-8")) if KEYS_FILE.exists() else {}
@@ -70,49 +83,48 @@ def _load_all() -> dict:
         return {}
 
 
-def get_key(provider: str) -> str:
-    """우선순위: 설정(keys.json) → (gemini 한정) gemini_wiki.key → 환경변수.
-    keys.json에 provider 키가 존재하면(빈 문자열 포함) 환경변수 폴백을 차단.
-    빈 문자열 = 사용자가 명시적으로 삭제 — 환경변수 무시."""
+def saved_key(provider: str) -> str:
+    """Return a key explicitly saved in the app settings screen."""
     all_keys = _load_all()
-    if provider in all_keys:          # 명시적 설정이 있으면 (빈 값 포함) 그것만 사용
-        return (all_keys[provider] or "").strip()
-    if provider == "gemini" and GEMINI_WIKI_KEY.exists():
-        fk = GEMINI_WIKI_KEY.read_text(encoding="utf-8").strip()
-        if fk:
-            return fk
-    info = PROVIDERS.get(provider, {})
-    env = info.get("env")
-    if env and os.environ.get(env, "").strip():
-        return os.environ[env].strip()
+    return (all_keys.get(provider) or "").strip()
+
+
+def detected_key(provider: str) -> str:
+    """Return a key detected from local environment variables."""
+    for name in ENV_KEY_NAMES.get(provider, ()):
+        val = (os.environ.get(name) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+def get_key(provider: str) -> str:
+    """Return the configured key, preferring app settings over detected env keys."""
+    return saved_key(provider) or detected_key(provider)
+
+
+def key_source(provider: str) -> str:
+    if saved_key(provider):
+        return "saved"
+    if detected_key(provider):
+        return "detected"
     return ""
 
 
 def save_key(provider: str, key: str) -> None:
-    """keys.json에 저장(빈 값이면 삭제). 파일 권한 0600.
-    gemini는 위키 생성기 호환을 위해 gemini_wiki.key에도 동기화."""
+    """Save keys to keys.json. Empty values clear the saved key; env fallback still works."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     data = _load_all()
     key = (key or "").strip()
     if key:
         data[provider] = key
     else:
-        data[provider] = ""   # 빈 문자열 유지 = 삭제 의도 명시, 환경변수 폴백 차단
+        data.pop(provider, None)
     KEYS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
         os.chmod(KEYS_FILE, 0o600)
     except Exception:
         pass
-    # gemini → 위키 생성기(gemini_wiki.py)가 읽는 파일에도 반영
-    if provider == "gemini":
-        try:
-            if key:
-                GEMINI_WIKI_KEY.write_text(key, encoding="utf-8")
-                os.chmod(GEMINI_WIKI_KEY, 0o600)
-            elif GEMINI_WIKI_KEY.exists():
-                GEMINI_WIKI_KEY.unlink()
-        except Exception:
-            pass
 
 
 def has_key(provider: str) -> bool:
@@ -281,6 +293,7 @@ def _claude_cli(model: str, system: str, prompt: str) -> str:
         capture_output=True, text=True, timeout=600, cwd=tempfile.gettempdir(),
         encoding="utf-8", errors="replace",   # 윈도우 cp949가 한글 UTF-8 출력 못 읽음 (2026-06-11)
         stdin=subprocess.DEVNULL,             # 미지정 시 CLI가 stdin 3초 대기 — 단락마다 지연
+        **_no_window_kwargs(),
     )
     if r.returncode != 0:
         raise RuntimeError(f"claude CLI exit {r.returncode}: {(r.stderr or '')[:200]}")
@@ -315,6 +328,7 @@ def _codex_cli(model: str, system: str, prompt: str) -> str:
                 capture_output=True, text=True, timeout=600,
                 cwd=tempfile.gettempdir(), encoding="utf-8", errors="replace",
                 stdin=subprocess.DEVNULL,
+                **_no_window_kwargs(),
             )
             if r.returncode == 0:
                 if out_file.exists():
@@ -394,3 +408,5 @@ def complete_json(provider: str, model: str, system: str, prompt: str,
             is_429 = "429" in m or "resource_exhausted" in m or "rate_limit" in m or "overloaded" in m
             time.sleep(65 if is_429 else 4)
     raise last
+
+
