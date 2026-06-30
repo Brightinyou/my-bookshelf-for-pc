@@ -1,9 +1,10 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """My Bookshelf — PDF→Wiki 파이프라인 (Streamlit GUI)"""
 
 import json
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -1514,6 +1515,14 @@ def _extract_pdf_link_from_html(html: str, base_url: str) -> str | None:
     return None
 
 
+def _download_ssl_context():
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
 def download_paper_source(source: str) -> tuple[bool, Path | None, str]:
     """논문 출처가 실제 다운로드 가능한 PDF/TXT인지 확인하고 임시 파일로 저장."""
     candidates = _paper_source_candidates(source)
@@ -1526,13 +1535,14 @@ def download_paper_source(source: str) -> tuple[bool, Path | None, str]:
     }
     last_reason = "다운로드 가능한 PDF/TXT 링크를 찾지 못했습니다"
     seen: set[str] = set()
+    ssl_context = _download_ssl_context()
     for url in candidates:
         if url in seen:
             continue
         seen.add(url)
         try:
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with urllib.request.urlopen(req, timeout=20, context=ssl_context) as resp:
                 data = resp.read(25 * 1024 * 1024 + 1)
                 if len(data) > 25 * 1024 * 1024:
                     return False, None, "파일이 25MB를 초과합니다"
