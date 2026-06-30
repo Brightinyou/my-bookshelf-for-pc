@@ -2,7 +2,9 @@
 # My Bookshelf 실행 스크립트 — 더블클릭하면 앱 창이 열립니다.
 # (먼저 setup.command 로 설치를 한 번 마쳐야 합니다.)
 set -e
-cd "$(dirname "$0")"
+SCRIPT_DIR="$( cd "$( dirname "$0" )" && pwd )"
+ROOT_DIR="$( cd "$SCRIPT_DIR/../.." && pwd )"
+cd "$ROOT_DIR"
 
 if [ ! -x .venv/bin/python ]; then
     echo "❌ 설치가 안 되어 있습니다. setup.command 를 먼저 실행해 주세요."

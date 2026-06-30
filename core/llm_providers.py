@@ -187,7 +187,15 @@ def claude_cli_path() -> str | None:
 
 
 def claude_cli_available() -> bool:
+    return bool(get_pref("use_claude_cli", False)) and bool(claude_cli_path())
+
+
+def claude_cli_installed() -> bool:
     return bool(claude_cli_path())
+
+
+def set_claude_cli_enabled(enabled: bool) -> None:
+    set_pref("use_claude_cli", bool(enabled))
 
 
 # ── Codex CLI (OpenAI 구독) ──
@@ -208,7 +216,15 @@ def codex_cli_path() -> str | None:
 
 
 def codex_cli_available() -> bool:
+    return bool(get_pref("use_codex_cli", False)) and bool(codex_cli_path())
+
+
+def codex_cli_installed() -> bool:
     return bool(codex_cli_path())
+
+
+def set_codex_cli_enabled(enabled: bool) -> None:
+    set_pref("use_codex_cli", bool(enabled))
 
 
 # ── 통일 호출: text-in → text-out ──

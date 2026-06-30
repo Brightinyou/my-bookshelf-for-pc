@@ -6,18 +6,25 @@
 
 set -e
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-DIST="$SCRIPT_DIR/dist"
+ROOT_DIR="$( cd "$SCRIPT_DIR/../.." && pwd )"
+DIST="$ROOT_DIR/dist/mac"
 APP="$DIST/MyBookshelf.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
+APP_VERSION="$(python3 - "$ROOT_DIR/core/version.py" <<'PY'
+import pathlib, runpy, sys
+data = runpy.run_path(str(pathlib.Path(sys.argv[1])))
+print(data["APP_VERSION_NUMBER"])
+PY
+)"
 
 echo "📦 MyBookshelf.app 빌드 시작…"
 rm -rf "$APP"
 mkdir -p "$MACOS" "$RESOURCES"
 
 # ── Info.plist ─────────────────────────────────────────────
-cat > "$CONTENTS/Info.plist" <<'PLIST'
+cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -25,8 +32,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key>    <string>MyBookshelf</string>
   <key>CFBundleIdentifier</key>   <string>com.mybookshelf.app</string>
   <key>CFBundleName</key>         <string>My Bookshelf</string>
-  <key>CFBundleVersion</key>      <string>1.0</string>
-  <key>CFBundleShortVersionString</key> <string>1.0</string>
+  <key>CFBundleVersion</key>      <string>$APP_VERSION</string>
+  <key>CFBundleShortVersionString</key> <string>$APP_VERSION</string>
   <key>CFBundlePackageType</key>  <string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -114,8 +121,8 @@ LAUNCHER
 chmod +x "$MACOS/MyBookshelf"
 
 # ── core/ 파일을 Resources에 복사 ──────────────────────────
-cp "$SCRIPT_DIR/core/"*.py "$RESOURCES/"
-cp "$SCRIPT_DIR/core/requirements.txt" "$RESOURCES/"
+cp "$ROOT_DIR/core/"*.py "$RESOURCES/"
+cp "$ROOT_DIR/core/requirements.txt" "$RESOURCES/"
 
 # ── 메뉴바 앱 + 아이콘 포함 (통합) ────────────────────────
 [ -f "$SCRIPT_DIR/core/menubar_app.py"       ] && cp "$SCRIPT_DIR/core/menubar_app.py"       "$RESOURCES/"
@@ -212,7 +219,11 @@ echo "✅ 완료: $APP"
 echo
 
 # ── DMG 생성 (선택) ────────────────────────────────────────
-read -n 1 -r -p "DMG 파일도 만들까요? (y/n) " yn; echo
+if [ -t 0 ]; then
+    read -n 1 -r -p "DMG 파일도 만들까요? (y/n) " yn; echo
+else
+    yn="n"
+fi
 if [[ "$yn" =~ [Yy] ]]; then
     DMG="$DIST/MyBookshelf.dmg"
     rm -f "$DMG"
@@ -226,7 +237,7 @@ fi
 
 echo
 echo "배포 방법:"
-echo "  1. dist/MyBookshelf.app 을 동료에게 전달 (또는 /Applications 로 이동)"
+echo "  1. dist/mac/MyBookshelf.app 을 동료에게 전달 (또는 /Applications 로 이동)"
 echo "  2. 동료: 우클릭 → 열기 (첫 실행 시 Gatekeeper 경고 무시)"
 echo "  3. 첫 실행: 패키지 자동 설치 (5~20분)"
 echo "  4. 이후: 더블클릭(또는 Dock 아이콘) → 네이티브 앱 창 (터미널·브라우저 없음)"

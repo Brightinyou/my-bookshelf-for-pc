@@ -25,7 +25,18 @@ DEFAULT_PORT = 8501
 HERE = Path(__file__).resolve().parent
 APP_SCRIPT = HERE / "pipeline_app.py"
 import sys as _sys
-APP_ICON = str(HERE.parent / ("MyBookshelf.icns" if _sys.platform == "darwin" else "MyBookshelf.ico"))
+
+
+def _find_app_icon() -> str:
+    name = "MyBookshelf.icns" if _sys.platform == "darwin" else "MyBookshelf.ico"
+    for base in (HERE, HERE.parent, HERE.parent / "platform" / "mac", HERE.parent / "platform" / "windows"):
+        p = base / name
+        if p.exists():
+            return str(p)
+    return str(HERE.parent / name)
+
+
+APP_ICON = _find_app_icon()
 
 
 def _port_in_use(port: int) -> bool:
@@ -103,8 +114,8 @@ def main() -> int:
     # 네이티브 창 생성 (주소창 없음)
     webview.create_window(
         APP_TITLE, url,
-        width=1280, height=860,
-        min_size=(900, 600),
+        width=1280, height=1040,
+        min_size=(980, 820),
         text_select=True,
     )
     _icon = APP_ICON if os.path.exists(APP_ICON) else None

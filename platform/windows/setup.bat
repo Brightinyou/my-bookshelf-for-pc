@@ -1,6 +1,10 @@
 @echo off
 chcp 65001 >nul
-cd /d "%~dp0"
+if exist "%~dp0..\..\core\requirements.txt" (
+    cd /d "%~dp0..\.."
+) else (
+    cd /d "%~dp0"
+)
 REM My Bookshelf 설치 스크립트(윈도우) — 더블클릭으로 실행하세요.
 REM 하는 일: 파이썬 확인 -> 전용 가상환경(.venv) 생성 -> 필요 패키지 설치.
 REM 인터넷 연결 필요. 처음 설치는 몇 분 걸릴 수 있습니다.

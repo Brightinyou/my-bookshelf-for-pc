@@ -18,18 +18,18 @@ PDF 책을 넣으면 **TXT 변환 → (선택) 영→한 번역 → 옵시디언
 
 1. 이 폴더를 원하는 위치에 둡니다.
 2. 설치 스크립트 실행:
-   - **맥**: `setup.command` 를 우클릭 → **열기** (처음엔 보안 경고가 떠서 더블클릭이 안 됩니다).
-   - **윈도우**: `setup.bat` 더블클릭. "Windows의 PC 보호" 경고가 뜨면 **추가 정보 → 실행**.
+   - **맥**: `platform/mac/setup.command` 를 우클릭 → **열기** (처음엔 보안 경고가 떠서 더블클릭이 안 됩니다).
+   - **윈도우**: `platform/windows/setup.bat` 더블클릭. "Windows의 PC 보호" 경고가 뜨면 **추가 정보 → 실행**.
      파이썬 설치 시 첫 화면에서 **"Add python.exe to PATH" 체크 필수**.
    - 파이썬 3.10+가 없으면 안내 페이지가 열립니다. 설치 후 다시 실행하세요.
    - 처음 설치는 몇 분 걸릴 수 있습니다.
-3. (선택) 옵시디언 설치 — 위키 노트 열람용: 맥 `install-obsidian.command` / 윈도우 `install-obsidian.bat`.
+3. (선택) 옵시디언 설치 — 위키 노트 열람용: `platform/mac/install-obsidian.command` / `platform/windows/install-obsidian.bat`.
 
 ## 실행
 
-- **맥**: `start.command` 더블클릭
-- **윈도우**: `start-app.vbs` 더블클릭 — 검은 창 없이 실행됩니다. 끌 때는 `stop-app.bat`.
-  (오류 메시지를 봐야 할 때만 `start.bat`으로 실행)
+- **맥**: `platform/mac/start.command` 더블클릭
+- **윈도우**: `platform/windows/start-app.vbs` 더블클릭 — 검은 창 없이 실행됩니다. 끌 때는 `platform/windows/stop-app.bat`.
+  (오류 메시지를 봐야 할 때만 `platform/windows/start.bat`으로 실행)
 
 → 브라우저에 앱이 열립니다 (http://localhost:8501).
 
@@ -54,6 +54,13 @@ PDF 책을 넣으면 **TXT 변환 → (선택) 영→한 번역 → 옵시디언
 
 경로를 바꾸고 싶으면 홈 폴더의 `.config/mybookshelf/config.json` 에 원하는 키만 적으면 됩니다
 (`config.py` 상단 주석에 전체 키 목록).
+
+## 개발 구조
+
+- `core/`: 맥·윈도우가 공유하는 앱 핵심 코드
+- `platform/mac/`: macOS 실행·설치·앱 번들 빌드 파일
+- `platform/windows/`: Windows 실행·설치·Inno Setup 파일과 `.exe` 산출물
+- `dist/mac/`, `dist/windows/`: 플랫폼별 배포 산출물
 
 ## 문제 해결
 

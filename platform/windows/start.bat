@@ -1,6 +1,10 @@
 @echo off
 chcp 65001 >nul
-cd /d "%~dp0"
+if exist "%~dp0..\..\core\desktop.py" (
+    cd /d "%~dp0..\.."
+) else (
+    cd /d "%~dp0"
+)
 REM My Bookshelf 실행 스크립트(윈도우) — 더블클릭하면 앱 창이 열립니다.
 REM (먼저 setup.bat 로 설치를 한 번 마쳐야 합니다.)
 

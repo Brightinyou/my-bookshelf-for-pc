@@ -3,7 +3,9 @@
 # 하는 일: 파이썬 확인 → 전용 가상환경(.venv) 생성 → 필요 패키지 설치.
 # 인터넷 연결 필요. 처음 설치는 몇 분 걸릴 수 있습니다.
 set -e
-cd "$(dirname "$0")"
+SCRIPT_DIR="$( cd "$( dirname "$0" )" && pwd )"
+ROOT_DIR="$( cd "$SCRIPT_DIR/../.." && pwd )"
+cd "$ROOT_DIR"
 
 echo "📚 My Bookshelf 설치를 시작합니다."
 echo

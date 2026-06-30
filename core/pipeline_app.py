@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -18,11 +19,11 @@ import streamlit as st
 
 import config as cfg
 import llm_providers as llm
+from version import APP_VERSION
 
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
-APP_VERSION = "v0.5.17"   # 배포 zip 버전과 함께 올린다
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
 WORKSPACES = cfg.WORKSPACES   # 보관 폴더 이름 목록. 첫 항목이 기본값.
@@ -1460,6 +1461,139 @@ def translate_one_chapter(ch_path: Path, engine: str) -> tuple[bool, str]:
         return False, str(e)[:200]
 
 
+def _safe_source_stem(source: str, fallback: str = "paper") -> str:
+    stem = _re.sub(r"^https?://", "", source.strip(), flags=_re.I)
+    stem = _re.sub(r"[^0-9A-Za-z가-힣._-]+", "_", stem).strip("._-")
+    return (stem[:90] or fallback)
+
+
+def _paper_source_candidates(source: str) -> list[str]:
+    """논문 출처(URL/DOI/arXiv)에서 다운로드를 시도할 후보 URL 목록."""
+    from urllib.parse import quote
+
+    src = source.strip()
+    if not src:
+        return []
+    candidates: list[str] = []
+    arxiv = _re.search(r"(?:arxiv\.org/(?:abs|pdf)/)?(\d{4}\.\d{4,5})(?:v\d+)?", src, _re.I)
+    if arxiv:
+        candidates.append(f"https://arxiv.org/pdf/{arxiv.group(1)}")
+    if src.lower().startswith(("http://", "https://")):
+        candidates.append(src)
+    elif src.lower().startswith("doi:"):
+        candidates.append("https://doi.org/" + quote(src[4:].strip(), safe="/.()"))
+    elif src.startswith("10.") and "/" in src:
+        candidates.append("https://doi.org/" + quote(src, safe="/.()"))
+    return list(dict.fromkeys(candidates))
+
+
+def _response_filename(resp, fallback_stem: str, suffix: str) -> str:
+    from urllib.parse import unquote, urlparse
+
+    cd = resp.headers.get("Content-Disposition", "")
+    m = _re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)', cd, _re.I)
+    if m:
+        name = unquote(m.group(1)).strip()
+    else:
+        name = Path(urlparse(resp.geturl()).path).name or fallback_stem + suffix
+    if not Path(name).suffix:
+        name += suffix
+    return _re.sub(r'[/\\:*?"<>|]', "_", name)
+
+
+def _extract_pdf_link_from_html(html: str, base_url: str) -> str | None:
+    from urllib.parse import urljoin
+
+    patterns = [
+        r'<meta[^>]+name=["\']citation_pdf_url["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']citation_pdf_url["\']',
+        r'href=["\']([^"\']+\.pdf(?:\?[^"\']*)?)["\']',
+    ]
+    for pat in patterns:
+        m = _re.search(pat, html, _re.I)
+        if m:
+            return urljoin(base_url, m.group(1).replace("&amp;", "&"))
+    return None
+
+
+def download_paper_source(source: str) -> tuple[bool, Path | None, str]:
+    """논문 출처가 실제 다운로드 가능한 PDF/TXT인지 확인하고 임시 파일로 저장."""
+    candidates = _paper_source_candidates(source)
+    if not candidates:
+        return False, None, "URL/DOI/arXiv 형식이 아닙니다"
+    fallback_stem = _safe_source_stem(source)
+    headers = {
+        "User-Agent": "MyBookshelf/0.6 (+https://localhost)",
+        "Accept": "application/pdf,text/plain,text/html;q=0.8,*/*;q=0.5",
+    }
+    last_reason = "다운로드 가능한 PDF/TXT 링크를 찾지 못했습니다"
+    seen: set[str] = set()
+    for url in candidates:
+        if url in seen:
+            continue
+        seen.add(url)
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = resp.read(25 * 1024 * 1024 + 1)
+                if len(data) > 25 * 1024 * 1024:
+                    return False, None, "파일이 25MB를 초과합니다"
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                final_url = resp.geturl()
+                if data.startswith(b"%PDF") or "application/pdf" in ctype:
+                    name = _response_filename(resp, fallback_stem, ".pdf")
+                    out = Path(tempfile.gettempdir()) / name
+                    out.write_bytes(data)
+                    return True, out, ""
+                if "text/plain" in ctype:
+                    name = _response_filename(resp, fallback_stem, ".txt")
+                    out = Path(tempfile.gettempdir()) / name
+                    out.write_bytes(data)
+                    return True, out, ""
+                if "html" in ctype or data[:512].lstrip().lower().startswith(b"<!doctype html") or b"<html" in data[:2048].lower():
+                    html = data.decode("utf-8", errors="ignore")
+                    pdf_url = _extract_pdf_link_from_html(html, final_url)
+                    if pdf_url and pdf_url not in seen:
+                        candidates.append(pdf_url)
+                    else:
+                        last_reason = "페이지는 열리지만 PDF 다운로드 링크를 찾지 못했습니다"
+                else:
+                    last_reason = f"지원하지 않는 응답 형식입니다: {ctype or '알 수 없음'}"
+        except urllib.error.HTTPError as e:
+            last_reason = f"서버가 HTTP {e.code}로 거부했습니다"
+        except urllib.error.URLError as e:
+            last_reason = f"네트워크 오류: {getattr(e, 'reason', e)}"
+        except Exception as e:
+            last_reason = f"{type(e).__name__}: {str(e)[:160]}"
+    return False, None, last_reason
+
+
+def translate_downloaded_paper(source_file: Path, engine: str) -> tuple[bool, str]:
+    """다운로드한 논문 파일을 TXT로 준비한 뒤 한국어 번역본을 저장."""
+    try:
+        txt_dir(DONE_DIR, DEFAULT_WS).mkdir(parents=True, exist_ok=True)
+        pdf_dir = DONE_DIR / DEFAULT_WS / PDF_SUB
+        pdf_dir.mkdir(parents=True, exist_ok=True)
+        if source_file.suffix.lower() == ".pdf":
+            txt_path, _md, err = pdf_to_txt(source_file)
+            if not txt_path:
+                return False, f"PDF 텍스트 추출 실패: {err}"
+            final_pdf = pdf_dir / source_file.name
+            shutil.copy2(str(source_file), str(final_pdf))
+            final_txt = txt_dir(DONE_DIR, DEFAULT_WS) / (source_file.stem + ".txt")
+            shutil.move(str(txt_path), str(final_txt))
+        else:
+            final_txt = txt_dir(DONE_DIR, DEFAULT_WS) / source_file.name
+            shutil.copy2(str(source_file), str(final_txt))
+        ok, msg = translate_one_chapter(final_txt, engine)
+        if ok:
+            queue_add("tab4_ready", [str(final_txt.relative_to(DONE_DIR))])
+            return True, f"{msg} → {final_txt.with_name(final_txt.stem + '_ko.txt').name}"
+        return False, msg
+    except Exception as e:
+        return False, str(e)[:200]
+
+
 def summarize_one_chapter(ch_path: Path, book_stem: str) -> tuple[bool, str]:
     """단일 챕터 TXT → 위키 JSON 요약. _wiki.json 저장. (ok, summary snippet)."""
     try:
@@ -1709,7 +1843,7 @@ def _find_app_icon(name: str) -> Path | None:
     - .app 번들: Resources/ (pipeline_app.py와 같은 폴더)
     - SSD 실행본: pipeline_app.py와 같은 폴더"""
     here = Path(__file__).resolve().parent
-    for base in (here.parent, here):
+    for base in (here.parent, here, here.parent / "platform" / "mac"):
         p = base / "MyBookshelf.iconset" / name
         if p.exists():
             return p
@@ -1744,6 +1878,27 @@ _loading_step("My Bookshelf 실행 중…")
 # 잔잔한 segmented control + 모노톤 칩. 선택된 것만 도드라지는 미감.
 st.markdown("""
 <style>
+/* 앱 상단 기본 여백 축소 */
+[data-testid="stHeader"],
+header[data-testid="stHeader"] {
+    display: none !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    background: transparent !important;
+}
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+#MainMenu {
+    display: none !important;
+}
+.block-container,
+[data-testid="stAppViewContainer"] .block-container,
+[data-testid="stAppViewContainer"] section.main .block-container {
+    padding-top: 1.25rem !important;
+    padding-bottom: 2.25rem !important;
+    margin-top: 0 !important;
+}
+
 /* === 탭 — Segmented Control (macOS/iOS 영감) === */
 .stTabs [data-baseweb="tab-list"] {
     gap: 2px;
@@ -1939,15 +2094,80 @@ col_s3.metric("Wiki 완성", sum(1 for _ in WIKI_DIR.rglob("*.md")))
 if not _avail_providers:
     st.error("⚠️ 사용 가능한 API가 없습니다 — ⚙️ 설정 탭에서 키를 입력하세요.")
 
-# ── 탭 6개 ────────────────────────────────────────────────
-tab_ocr, tab_split, tab_tr, tab_summ, tab_wiki5, tab_settings = st.tabs([
-    "📄 1·TXT변환",
-    "📂 2·장별분할",
-    "🌐 3·번역",
-    "📝 4·요약MD",
-    "📖 5·Wiki반영",
-    "⚙️ 설정",
-])
+# ── 초기 메뉴 ─────────────────────────────────────────────
+TASKS = [
+    ("1_txt", "📄 1·TXT변환", "PDF/TXT를 처리 대기열에 올리고 텍스트로 저장"),
+    ("2_split", "📂 2·장별분할", "책 TXT를 챕터 단위 파일로 분리"),
+    ("3_translate", "🌐 3·번역", "챕터 또는 논문 출처를 한국어로 번역"),
+    ("4_summary", "📝 4·요약MD", "챕터별 위키 요약 JSON 생성"),
+    ("5_wiki", "📖 5·Wiki반영", "요약을 Obsidian Wiki 노트로 저장"),
+    ("settings", "⚙️ 설정", "API 키와 위키 생성 모델 설정"),
+    ("all_run", "🚀 전체 실행", "TXT변환 → 장별분할 → 번역 → 요약 → Wiki를 한 번에 실행"),
+]
+
+_active_view = st.session_state.get("active_view")
+if not _active_view:
+    st.markdown("""
+<style>
+.menu-card {
+    display: block;
+    width: 100%;
+    padding: 13px 17px;
+    margin: 0 0 10px 0;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 10px;
+    background: #ffffff;
+    color: inherit !important;
+    text-decoration: none !important;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.menu-card:hover {
+    border-color: rgba(0, 0, 0, 0.28);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+    transform: translateY(-1px);
+}
+.menu-title {
+    display: block;
+    font-size: 1.28rem;
+    font-weight: 800;
+    line-height: 1.25;
+}
+.menu-desc {
+    display: block;
+    margin-top: 3px;
+    color: #6b7280;
+    font-size: 0.96rem;
+    line-height: 1.25;
+}
+</style>
+""", unsafe_allow_html=True)
+    st.markdown("#### 작업 메뉴")
+    for _tid, _title, _desc in TASKS:
+        _clicked = st.query_params.get("view") == _tid
+        st.markdown(
+            f'<a class="menu-card" href="?view={_tid}" target="_self">'
+            f'<span class="menu-title">{_title}</span>'
+            f'<span class="menu-desc">{_desc}</span>'
+            f'</a>',
+            unsafe_allow_html=True,
+        )
+        if _clicked:
+            st.session_state["active_view"] = _tid
+            st.query_params.clear()
+            if _tid == "all_run":
+                st.session_state["ocr_mode"] = "🚀 전체 실행 (TXT변환→장별분할→번역(영어문서인 경우)→Wiki)"
+            st.rerun()
+    _loading_ph.empty()
+    st.session_state["_app_loaded"] = True
+    st.stop()
+
+_task_title = next((title for tid, title, _ in TASKS if tid == _active_view), "작업")
+_top_l, _top_r = st.columns([5, 1])
+_top_l.markdown(f"### {_task_title}")
+if _top_r.button("← 메뉴", key="back_to_menu", use_container_width=True):
+    st.session_state.pop("active_view", None)
+    st.rerun()
 
 
 
@@ -2005,8 +2225,8 @@ def _wiki_model_radio(key: str) -> tuple[str, str]:
 
 _loading_step("화면 구성 중…", "탭과 UI를 초기화하고 있습니다")
 
-# ── 탭1: TXT변환 ─────────────────────────────────────────
-with tab_ocr:
+# ── 1: TXT변환 / 전체 실행 ───────────────────────────────
+if _active_view in {"1_txt", "all_run"}:
     st.subheader("📄 TXT 변환")
     st.caption("텍스트로 저장 (OCR 변환된 문서만 가능) — PDF의 텍스트 레이어를 추출해 TXT로 저장합니다.")
 
@@ -2141,8 +2361,8 @@ with tab_ocr:
     st.info("💡 다음 단계: **📂 2·장별분할** 탭으로 이동하세요")
 
 
-# ── 탭2: 장별 분할 ────────────────────────────────────────
-with tab_split:
+# ── 2: 장별 분할 ────────────────────────────────────────
+if _active_view == "2_split":
     st.subheader("📂 장별 분할")
     st.caption("TXT를 장(Chapter) 단위로 분리해 챕터별 파일로 저장합니다.")
 
@@ -2258,8 +2478,8 @@ with tab_split:
     st.info("💡 다음 단계: **🌐 3·번역** 탭으로 이동하세요")
 
 
-# ── 탭3: 번역 ─────────────────────────────────────────────
-with tab_tr:
+# ── 3: 번역 ─────────────────────────────────────────────
+if _active_view == "3_translate":
     st.subheader("🌐 영문 번역")
     st.caption("챕터 TXT를 하나씩 또는 일괄로 한국어 번역합니다.")
 
@@ -2271,6 +2491,27 @@ with tab_tr:
         _tr_lbl3 = st.radio("번역 엔진", [lbl for _, lbl in _tr_avail3],
                              horizontal=True, key="tr3_engine")
         _tr_eng3 = next(eid for eid, lbl in _tr_avail3 if lbl == _tr_lbl3)
+
+        with st.expander("🔎 논문 출처로 가져와 번역", expanded=True):
+            _paper_src3 = st.text_input(
+                "논문 출처",
+                key="tr3_paper_source",
+                placeholder="URL, DOI(10.xxxx/...), doi:..., arXiv 번호 또는 arxiv.org 링크",
+            )
+            if st.button("다운로드 확인 후 번역", key="tr3_source_translate",
+                         use_container_width=True, type="primary",
+                         disabled=not _paper_src3.strip()):
+                with st.status("논문 출처 확인 중…", expanded=True):
+                    _ok_dl3, _src_file3, _reason3 = download_paper_source(_paper_src3)
+                    if not _ok_dl3 or not _src_file3:
+                        st.error(f"({_reason3}) 때문에 번역할 수 없습니다.")
+                    else:
+                        st.write(f"✅ 다운로드 가능: `{_src_file3.name}`")
+                        _ok_tr3, _msg_tr3 = translate_downloaded_paper(_src_file3, _tr_eng3)
+                        if _ok_tr3:
+                            st.success(f"✅ 번역 완료: {_msg_tr3}")
+                        else:
+                            st.error(f"({_msg_tr3}) 때문에 번역할 수 없습니다.")
 
         # TXT 직접 업로드 후 즉시 번역
         _up3 = st.file_uploader("TXT 직접 업로드 (즉시 번역)",
@@ -2352,8 +2593,8 @@ with tab_tr:
     st.info("💡 다음 단계: **📝 4·요약MD** 탭으로 이동하세요")
 
 
-# ── 탭4: 요약MD ───────────────────────────────────────────
-with tab_summ:
+# ── 4: 요약MD ───────────────────────────────────────────
+if _active_view == "4_summary":
     st.subheader("📝 요약MD 생성")
     st.caption("챕터 TXT(번역본 우선)로 Obsidian 노트용 요약 JSON을 생성합니다.")
 
@@ -2451,8 +2692,8 @@ with tab_summ:
     st.info("💡 다음 단계: **📖 5·Wiki반영** 탭으로 이동하세요")
 
 
-# ── 탭5: Wiki반영 ─────────────────────────────────────────
-with tab_wiki5:
+# ── 5: Wiki반영 ─────────────────────────────────────────
+if _active_view == "5_wiki":
     st.subheader("📖 Obsidian Wiki 반영")
     st.caption("챕터 요약(_wiki.json)들을 합쳐 Obsidian 노트로 생성합니다.")
 
@@ -2674,8 +2915,8 @@ with tab_wiki5:
         st.caption("생성된 Wiki 없음")
 
 
-# ── 탭: 설정 (API 키) ─────────────────────────────────────
-with tab_settings:
+# ── 설정 (API 키) ─────────────────────────────────────
+if _active_view == "settings":
     st.subheader("⚙️ API 키 설정")
     st.caption(
         "키는 이 컴퓨터의 `~/.config/mybookshelf/keys.json` 에만 저장되며, "
@@ -2730,16 +2971,46 @@ with tab_settings:
     _cc1, _cc2 = st.columns(2)
     with _cc1:
         st.markdown("**Claude CLI**")
-        if llm.claude_cli_available():
-            st.success(f"✅ 감지됨\n`{llm.claude_cli_path()}`")
+        _claude_installed = llm.claude_cli_installed()
+        _claude_enabled = bool(llm.get_pref("use_claude_cli", False))
+        if _claude_installed:
+            st.success(f"설치됨\n`{llm.claude_cli_path()}`")
+            _new_enabled_label = st.radio(
+                "Claude 구독 CLI",
+                ["비활성", "활성"],
+                index=1 if _claude_enabled else 0,
+                key="set_use_claude_cli",
+                horizontal=True,
+                help="Claude 구독을 사용 중이고 CLI 로그인이 되어 있을 때만 켜세요.",
+            )
+            _new_enabled = _new_enabled_label == "활성"
+            if _new_enabled != _claude_enabled:
+                llm.set_claude_cli_enabled(_new_enabled)
+                st.rerun()
+            if not _claude_enabled:
+                st.caption("현재 비활성화됨 — API 키 방식 Claude와는 별개입니다.")
         else:
             st.info("미설치. `npm install -g @anthropic-ai/claude-code`")
     with _cc2:
         st.markdown("**Codex CLI**")
-        if llm.codex_cli_available():
-            _cstatus = "로그인됨" if True else ""
-            st.success(f"✅ 감지됨\n`{llm.codex_cli_path()}`")
-            st.caption("ChatGPT 계정 또는 API 키로 로그인 필요: `codex login --device-auth`")
+        _codex_installed = llm.codex_cli_installed()
+        _codex_enabled = bool(llm.get_pref("use_codex_cli", False))
+        if _codex_installed:
+            st.success(f"설치됨\n`{llm.codex_cli_path()}`")
+            _new_codex_enabled_label = st.radio(
+                "Codex CLI",
+                ["비활성", "활성"],
+                index=1 if _codex_enabled else 0,
+                key="set_use_codex_cli",
+                horizontal=True,
+                help="ChatGPT 계정 또는 API 키로 Codex CLI 로그인이 되어 있을 때만 켜세요.",
+            )
+            _new_codex_enabled = _new_codex_enabled_label == "활성"
+            if _new_codex_enabled != _codex_enabled:
+                llm.set_codex_cli_enabled(_new_codex_enabled)
+                st.rerun()
+            if not _codex_enabled:
+                st.caption("현재 비활성화됨 — OpenAI API 키 방식과는 별개입니다.")
         else:
             st.info("미설치. `npm install -g @openai/codex`")
 

@@ -3,6 +3,10 @@
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set sh  = CreateObject("Wscript.Shell")
 dir_ = fso.GetParentFolderName(WScript.ScriptFullName)
+repoDir = fso.GetParentFolderName(fso.GetParentFolderName(dir_))
+If fso.FileExists(repoDir & "\core\desktop.py") Then
+    dir_ = repoDir
+End If
 sh.CurrentDirectory = dir_
 
 If Not fso.FileExists(dir_ & "\.venv\Scripts\pythonw.exe") Then

@@ -1,13 +1,13 @@
 ; MyBookshelf-Launcher.iss — 앱 실행용 독립 EXE 빌더
 ; 컴파일: ISCC.exe MyBookshelf-Launcher.iss
-; 결과물: dist\MyBookshelf.exe  (더블클릭 → 앱 실행, 콘솔 창 없음)
+; 결과물: dist\windows\MyBookshelf.exe  (더블클릭 → 앱 실행, 콘솔 창 없음)
 
 [Setup]
 AppName=My Bookshelf Launcher
 AppVersion=1.0
 CreateAppDir=no
 Uninstallable=no
-OutputDir=.
+OutputDir=..\..\dist\windows
 OutputBaseFilename=MyBookshelf
 WizardStyle=modern
 DisableWelcomePage=yes

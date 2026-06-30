@@ -1,13 +1,13 @@
 ; MyBookshelf-Uninstall.iss — 별도 배포용 제거 도우미
 ; 컴파일: ISCC.exe MyBookshelf-Uninstall.iss
-; 결과물: dist\MyBookshelf-Uninstall.exe
+; 결과물: dist\windows\Uninstall.exe
 
 [Setup]
 AppName=My Bookshelf Uninstaller
 AppVersion=1.0
 CreateAppDir=no
 Uninstallable=no
-OutputDir=.
+OutputDir=..\..\dist\windows
 OutputBaseFilename=Uninstall
 WizardStyle=modern
 DisableWelcomePage=yes
