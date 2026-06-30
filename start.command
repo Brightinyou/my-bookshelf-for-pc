@@ -25,6 +25,12 @@ if [ -z "$APP_PATH" ]; then
     exit 1
 fi
 
-nohup open -gja "$APP_PATH" >/dev/null 2>&1 &
-( nohup sh -c 'sleep 1; osascript -e "tell application \"Terminal\" to close front window" >/dev/null 2>&1' >/dev/null 2>&1 & )
+APP_BIN="$APP_PATH/Contents/MacOS/MyBookshelf"
+if [ ! -x "$APP_BIN" ]; then
+    osascript -e 'display alert "My Bookshelf 실행 파일을 찾을 수 없습니다." message "앱 번들을 다시 설치하거나 빌드하세요." as critical' >/dev/null 2>&1
+    exit 1
+fi
+
+nohup "$APP_BIN" >/dev/null 2>&1 &
+osascript -e 'tell application "Terminal" to close front window' >/dev/null 2>&1 &
 exit 0
