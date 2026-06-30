@@ -1436,7 +1436,7 @@ def split_book_to_chapters(ws_name: str, stem: str) -> tuple[int, str]:
     return saved, ""
 
 
-def translate_one_chapter(ch_path: Path, engine: str) -> tuple[bool, str]:
+def translate_one_chapter(ch_path: Path, engine: str, progress_cb=None) -> tuple[bool, str]:
     """단일 챕터 TXT 번역 → _ko.txt 저장. (ok, msg)."""
     try:
         text = ch_path.read_text(encoding="utf-8", errors="ignore")
@@ -1446,16 +1446,36 @@ def translate_one_chapter(ch_path: Path, engine: str) -> tuple[bool, str]:
             return True, "이미 한국어 — 그대로 복사"
         paras = _split_paragraphs_robust(text)
         out: list[str] = []
-        for p in paras:
+        translated_n = preserved_n = dropped_n = failed_n = 0
+        total = len(paras) or 1
+        for idx, p in enumerate(paras, 1):
             if should_drop_paragraph(p):
+                dropped_n += 1
+                if progress_cb:
+                    progress_cb(idx, total, translated_n, preserved_n, dropped_n, failed_n)
                 continue
             if should_skip_translation(p):
                 out.append(p)
+                preserved_n += 1
             else:
                 ko = translate(p, engine)
-                out.append(ko if ko else p)
+                if ko:
+                    out.append(ko)
+                    translated_n += 1
+                else:
+                    out.append(p)
+                    failed_n += 1
+            if progress_cb:
+                progress_cb(idx, total, translated_n, preserved_n, dropped_n, failed_n)
         ko_path.write_text("\n\n".join(out), encoding="utf-8")
-        return True, f"{len(out)}단락 번역 완료"
+        detail = f"{len(out)}단락 처리 완료 · 번역 {translated_n} · 원문보존 {preserved_n}"
+        if dropped_n:
+            detail += f" · 삭제 {dropped_n}"
+        if failed_n:
+            detail += f" · 실패보존 {failed_n}"
+        if translated_n == 0:
+            detail += " — API 번역 호출 없음"
+        return True, detail
     except Exception as e:
         return False, str(e)[:200]
 
@@ -1576,7 +1596,7 @@ def download_paper_source(source: str) -> tuple[bool, Path | None, str]:
     return False, None, last_reason
 
 
-def translate_downloaded_paper(source_file: Path, engine: str) -> tuple[bool, str]:
+def translate_downloaded_paper(source_file: Path, engine: str, progress_cb=None) -> tuple[bool, str]:
     """다운로드한 논문 파일을 TXT로 준비한 뒤 한국어 번역본을 저장."""
     try:
         txt_dir(DONE_DIR, DEFAULT_WS).mkdir(parents=True, exist_ok=True)
@@ -1593,7 +1613,7 @@ def translate_downloaded_paper(source_file: Path, engine: str) -> tuple[bool, st
         else:
             final_txt = txt_dir(DONE_DIR, DEFAULT_WS) / source_file.name
             shutil.copy2(str(source_file), str(final_txt))
-        ok, msg = translate_one_chapter(final_txt, engine)
+        ok, msg = translate_one_chapter(final_txt, engine, progress_cb=progress_cb)
         if ok:
             queue_add("tab4_ready", [str(final_txt.relative_to(DONE_DIR))])
             return True, f"{msg} → {final_txt.with_name(final_txt.stem + '_ko.txt').name}"
@@ -2611,8 +2631,21 @@ if _active_view == "3_translate":
                         st.error(f"({_reason3}) 때문에 번역할 수 없습니다.")
                     else:
                         st.write(f"✅ 다운로드 가능: `{_src_file3.name}`")
-                        _ok_tr3, _msg_tr3 = translate_downloaded_paper(_src_file3, _tr_eng3)
+                        _paper_prog3 = st.progress(0, text="번역 준비 중…")
+                        def _paper_progress3(done, total, translated, preserved, dropped, failed):
+                            _paper_prog3.progress(
+                                min(done / max(total, 1), 1.0),
+                                text=(
+                                    f"번역 처리 중 {done}/{total} · 번역 {translated} · "
+                                    f"원문보존 {preserved} · 삭제 {dropped}"
+                                    + (f" · 실패보존 {failed}" if failed else "")
+                                ),
+                            )
+                        _ok_tr3, _msg_tr3 = translate_downloaded_paper(
+                            _src_file3, _tr_eng3, progress_cb=_paper_progress3
+                        )
                         if _ok_tr3:
+                            _paper_prog3.progress(1.0, text="번역 처리 완료")
                             st.success(f"✅ 번역 완료: {_msg_tr3}")
                         else:
                             st.error(f"({_msg_tr3}) 때문에 번역할 수 없습니다.")
@@ -2625,7 +2658,21 @@ if _active_view == "3_translate":
                 _tmp3 = Path(tempfile.gettempdir()) / _u3.name
                 _tmp3.write_bytes(_u3.read())
                 with st.status(f"번역 중: {_u3.name}", expanded=True):
-                    _ok3u, _msg3u = translate_one_chapter(_tmp3, _tr_eng3)
+                    _up_prog3 = st.progress(0, text="번역 준비 중…")
+                    def _upload_progress3(done, total, translated, preserved, dropped, failed):
+                        _up_prog3.progress(
+                            min(done / max(total, 1), 1.0),
+                            text=(
+                                f"번역 처리 중 {done}/{total} · 번역 {translated} · "
+                                f"원문보존 {preserved} · 삭제 {dropped}"
+                                + (f" · 실패보존 {failed}" if failed else "")
+                            ),
+                        )
+                    _ok3u, _msg3u = translate_one_chapter(
+                        _tmp3, _tr_eng3, progress_cb=_upload_progress3
+                    )
+                    if _ok3u:
+                        _up_prog3.progress(1.0, text="번역 처리 완료")
                 (st.success if _ok3u else st.error)(f"{'✅' if _ok3u else '❌'} {_u3.name}: {_msg3u}")
             st.rerun()
 
