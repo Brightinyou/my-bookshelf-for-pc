@@ -90,7 +90,7 @@ def main() -> int:
     except ImportError:
         sys.stderr.write(
             "❌ pywebview가 설치되지 않았습니다.\n"
-            "   platform/mac/setup.command를 다시 실행하거나\n"
+            "   setup.command를 다시 실행하거나\n"
             "   '.venv/bin/pip install pywebview'를 실행하세요.\n"
         )
         return 1
