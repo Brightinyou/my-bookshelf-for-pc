@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """My Bookshelf — PDF→Wiki 파이프라인 (Streamlit GUI)"""
 
 import json
@@ -1861,6 +1861,24 @@ _icon_path = _find_app_icon("icon_32x32.png")
 _page_icon = str(_icon_path) if _icon_path else "📚"
 st.set_page_config(page_title="My Bookshelf", page_icon=_page_icon, layout="wide")
 
+if "ui_font_scale" not in st.session_state:
+    st.session_state["ui_font_scale"] = 1.0
+
+def _font_scale_controls():
+    cur = float(st.session_state.get("ui_font_scale", 1.0))
+    c1, c2, c3 = st.columns([0.75, 1, 0.75])
+    if c1.button("-", key="font_size_minus", use_container_width=True, help="글자 크기 줄이기"):
+        st.session_state["ui_font_scale"] = max(0.85, round(cur - 0.05, 2))
+        st.rerun()
+    c2.markdown(
+        f"<div style='text-align:center;color:#6b7280;font-size:0.82rem;line-height:2.35'>"
+        f"{int(cur * 100)}%</div>",
+        unsafe_allow_html=True,
+    )
+    if c3.button("+", key="font_size_plus", use_container_width=True, help="글자 크기 키우기"):
+        st.session_state["ui_font_scale"] = min(1.35, round(cur + 0.05, 2))
+        st.rerun()
+
 # 로딩 오버레이 — 세션 최초 진입 시에만 표시 (LLM 작업 중 재렌더링 때는 건너뜀)
 _loading_ph = st.empty()
 
@@ -1884,8 +1902,12 @@ _loading_step("My Bookshelf 실행 중…")
 
 # ── 글로벌 스타일 (2026-05-18 v2 — Linear·Vercel 톤) ────────────
 # 잔잔한 segmented control + 모노톤 칩. 선택된 것만 도드라지는 미감.
+_ui_font_scale = float(st.session_state.get("ui_font_scale", 1.0))
 st.markdown("""
 <style>
+:root {
+    --mb-font-scale: __MB_FONT_SCALE__;
+}
 /* 앱 상단 기본 여백 축소 */
 [data-testid="stHeader"],
 header[data-testid="stHeader"] {
@@ -2072,8 +2094,38 @@ div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) > div:
 [data-testid="stStatusWidget"] button:hover {
     background: #d93036 !important;
 }
+
+/* 사용자 글자 크기 조절 */
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li,
+[data-testid="stMarkdownContainer"] span,
+[data-testid="stMarkdownContainer"] div,
+[data-testid="stText"],
+[data-testid="stCaptionContainer"],
+label,
+input,
+textarea,
+.stButton button,
+[data-testid="stSelectbox"] *,
+[data-testid="stRadio"] *,
+[data-testid="stCheckbox"] *,
+[data-testid="stMetric"] * {
+    font-size: calc(1em * var(--mb-font-scale)) !important;
+}
+[data-testid="stMarkdownContainer"] h1 {
+    font-size: calc(2.0rem * var(--mb-font-scale)) !important;
+}
+[data-testid="stMarkdownContainer"] h2 {
+    font-size: calc(1.55rem * var(--mb-font-scale)) !important;
+}
+[data-testid="stMarkdownContainer"] h3 {
+    font-size: calc(1.28rem * var(--mb-font-scale)) !important;
+}
+[data-testid="stMarkdownContainer"] h4 {
+    font-size: calc(1.08rem * var(--mb-font-scale)) !important;
+}
 </style>
-""", unsafe_allow_html=True)
+""".replace("__MB_FONT_SCALE__", str(_ui_font_scale)), unsafe_allow_html=True)
 
 _logo_path = _find_app_icon("icon_128x128.png")
 if _logo_path:
@@ -2082,11 +2134,14 @@ if _logo_path:
     _logo_html = f'<img src="data:image/png;base64,{_logo_b64}" width="52" style="vertical-align:middle;margin-right:10px">'
 else:
     _logo_html = "📚 "
-st.markdown(
+_brand_col, _font_col = st.columns([6, 1.6])
+_brand_col.markdown(
     f"# {_logo_html}My Bookshelf <span style='font-size:0.42em;color:#9aa0a6;"
     f"font-weight:400;vertical-align:middle'>{APP_VERSION}</span>",
     unsafe_allow_html=True,
 )
+with _font_col:
+    _font_scale_controls()
 st.caption("PDF → TXT변환 → 장별 분할 → 번역 → 요약 → Obsidian Wiki")
 
 _loading_step("파일 목록 확인 중…", "처리된 파일과 API 설정을 읽고 있습니다")
