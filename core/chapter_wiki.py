@@ -140,6 +140,44 @@ def parse_toc(txt: str, head_chars: int = 14000):
         entries.append((expect, [title] + sub)); expect += 1
     return entries
 
+_ROMAN_VAL = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+
+def _roman_to_int(s: str) -> int:
+    total, prev = 0, 0
+    for ch in reversed(s.upper()):
+        val = _ROMAN_VAL.get(ch, 0)
+        total += -val if val < prev else val
+        prev = max(prev, val)
+    return total
+
+def _clean_toc_title(title: str) -> tuple[str, bool]:
+    raw = re.sub(r"\s+", " ", title).strip()
+    cleaned = re.sub(r"\s*[.·ㆍ…]{2,}\s*(?:\d+|[ivxlcdm]+)\s*$", "", raw, flags=re.I).strip()
+    cleaned = re.sub(r"\s*(.)\1{3,}\s*(?:\d+|[ivxlcdm]+)\s*$", "", cleaned, flags=re.I).strip()
+    cleaned = cleaned.strip(" .·ㆍ…")
+    return cleaned, cleaned != raw
+
+def parse_roman_toc(txt: str, head_chars: int = 18000):
+    lines = txt[:head_chars].split("\n")
+    entries, seen = [], set()
+    for ln in lines:
+        s = re.sub(r"\s+", " ", ln).strip()
+        m = re.match(r"^([IVX]+)\.\s+(.+)$", s)
+        if not m:
+            continue
+        roman = m.group(1).upper()
+        title, had_leader = _clean_toc_title(m.group(2))
+        if not had_leader or not title or roman in seen:
+            continue
+        entries.append((roman, title))
+        seen.add(roman)
+    if len(entries) < 3:
+        return []
+    nums = [_roman_to_int(r) for r, _ in entries]
+    if nums[0] != 1 or nums != list(range(1, len(nums) + 1)):
+        return []
+    return entries
+
 def _candidates(tl):
     order = (tl[1:] + tl[:1]) if len(tl) > 1 else tl
     return [r for r in (_mk_re(t) for t in order) if r]
@@ -162,7 +200,50 @@ def _notes_start(body, after):
             return p + (m.start() if m else 0)
     return len(body)
 
+def _find_roman_heading(txt: str, roman: str, title: str, start: int):
+    words = [re.escape(w) for w in re.findall(r"\S+", title)]
+    if not words:
+        return None
+    title_pat = r"\s+".join(words)
+    pat = re.compile(rf"(?m)^\s*{re.escape(roman)}\.\s+{title_pat}\s*$", re.I)
+    m = pat.search(txt, start)
+    if m:
+        return m.start()
+
+    # OCR often changes spacing in Korean headings; fall back to same roman marker
+    # and a title prefix on a non-TOC line.
+    prefix = re.escape(title[: min(len(title), 12)])
+    pat = re.compile(rf"(?m)^\s*{re.escape(roman)}\.\s+.*{prefix}.*$", re.I)
+    for m in pat.finditer(txt, start):
+        line = m.group(0)
+        if not re.search(r"(?:[.·ㆍ…]{2,}|(.)\1{3,})\s*(?:\d+|[ivxlcdm]+)\s*$", line, re.I):
+            return m.start()
+    return None
+
+def roman_toc_split(txt: str):
+    toc = parse_roman_toc(txt)
+    if len(toc) < 3:
+        return None
+    cur = _toc_end(txt, [(i + 1, [title]) for i, (_, title) in enumerate(toc)])
+    positions, titles = [], []
+    for roman, title in toc:
+        pos = _find_roman_heading(txt, roman, title, cur)
+        if pos is None:
+            return None
+        positions.append(pos)
+        titles.append(f"{roman}. {title}")
+        cur = pos + 200
+    if positions != sorted(positions):
+        return None
+    end = _notes_start(txt, positions[-1] + 3000)
+    bounds = positions + [end]
+    return [(titles[k], txt[bounds[k]:bounds[k+1]].strip()) for k in range(len(positions))]
+
 def toc_split(txt: str):
+    roman_chs = roman_toc_split(txt)
+    if roman_chs:
+        return roman_chs
+
     toc = parse_toc(txt)
     if len(toc) < 3:
         return None
