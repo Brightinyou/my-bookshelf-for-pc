@@ -273,42 +273,121 @@ def toc_split(txt: str):
     return [(titles[k], txt[bounds[k]:bounds[k+1]].strip()) for k in range(len(positions))]
 
 
+def _clean_heading_title(title: str) -> str:
+    title = re.sub(r"\s+", " ", title).strip()
+    title = re.sub(r"\s*[.·ㆍ…]{2,}\s*\d+\s*$", "", title).strip()
+    title = re.sub(r"\s*[_\-–—|/]\s*\d+\s*$", "", title).strip()
+    title = re.sub(r"\s+\d{1,4}\s*$", "", title).strip()
+    return title.strip(" .:：;·ㆍ…-_|")
+
+
+def _title_case_if_english(title: str) -> str:
+    if re.search(r"[가-힣]", title):
+        return title
+    if title.isupper():
+        return title.title()
+    return title
+
+
+def _heading_candidates(txt: str):
+    """Return sequential major heading candidates from Korean/English books and papers."""
+    candidates = []
+    generic_numbered_allowed = len(txt) < 180_000
+    line_start = 0
+    for raw in txt.splitlines(True):
+        line = raw.rstrip("\r\n")
+        s = re.sub(r"\s+", " ", line).strip()
+        pos = line_start
+        line_start += len(raw)
+        if not s or len(s) > 140:
+            continue
+        if re.search(r"(?:[.·ㆍ…]{3,}|(.)\1{4,})\s*\d+\s*$", s):
+            continue
+        num, title = None, ""
+        m = re.match(r"^(?:제\s*)?(\d{1,2})\s*장\s*[\.:：)>〉\-–—]?\s*(.*)$", s)
+        if m:
+            num, title = int(m.group(1)), m.group(2)
+        if num is None:
+            m = re.match(r"^chapter\s+(\d{1,2})\s*[\.:：\-–—]?\s*(.*)$", s, re.I)
+            if m:
+                num, title = int(m.group(1)), m.group(2)
+        if num is None:
+            m = re.match(r"^(\d{1,2})\s+([A-Z][A-Z0-9 ,:;()/'&\\-]{3,})$", s)
+            if m:
+                num, title = int(m.group(1)), m.group(2)
+        if num is None:
+            m = re.match(r"^(\d{1,2})[.)]\s+(.{2,90})$", s)
+            if m:
+                cand_title = m.group(2).strip()
+                bad_inline = re.search(r"[.!?。]$|[;\"“”]|https?://|\b(?:19|20)\d{2}\b|\d+[)]", cand_title)
+                ko_title = bool(re.search(r"[가-힣]", cand_title))
+                ko_section = bool(re.search(r"서론|결론|개요|연구|방법|결과|논의|고찰|배경|목적|정책|윤리|분석|차원|사례|제언|나가는 말", cand_title))
+                en_section = bool(re.match(r"[A-Z][A-Za-z0-9 /,:&'\\-]{2,90}$", cand_title))
+                if generic_numbered_allowed and not bad_inline and not re.match(r"^\d", cand_title) and ((ko_title and ko_section) or (not ko_title and en_section)):
+                    num, title = int(m.group(1)), cand_title
+        if num is None or not (1 <= num <= MAX_CHAPTERS):
+            continue
+        title = _clean_heading_title(title)
+        if not title:
+            title = f"{num}장" if re.search(r"장", s) else f"Chapter {num}"
+        if title.lower() in _NOTE_SECTION or len(title) > 90:
+            continue
+        candidates.append({"num": num, "title": title, "pos": pos, "line": s})
+    return candidates
+
+
 def numbered_heading_split(txt: str):
-    """Academic paper fallback: split numbered all-caps section headings."""
-    heading_re = re.compile(r"(?m)^\s*(\d{1,2})\s+([A-Z][A-Z0-9 ,:;()/'&\\-]{3,})\s*$")
-    hits = []
-    seen = set()
-    expected = 1
-    for m in heading_re.finditer(txt):
-        num = int(m.group(1))
-        title = re.sub(r"\s+", " ", m.group(2)).strip(" .")
-        if num != expected or num in seen:
-            continue
-        if title.lower() in _NOTE_SECTION:
-            continue
-        if len(title) < 4:
-            continue
-        hits.append((num, title, m.start()))
-        seen.add(num)
-        expected += 1
-    if len(hits) < 3:
+    """Fallback: split sequential Korean/English numbered headings, with or without TOC."""
+    candidates = _heading_candidates(txt)
+    if len(candidates) < 3:
         return None
-    positions = [pos for _, _, pos in hits]
-    if positions != sorted(positions):
+    min_gap = 800 if len(txt) < 120_000 else 1600
+    best = None
+    for start_idx, start in enumerate(candidates):
+        if start["num"] != 1:
+            continue
+        seq = [start]
+        prev = start
+        expected = 2
+        for cand in candidates[start_idx + 1:]:
+            if cand["pos"] <= prev["pos"] + min_gap:
+                continue
+            if cand["num"] == expected:
+                seq.append(cand)
+                prev = cand
+                expected += 1
+            elif cand["num"] == 1 and len(seq) < 3:
+                break
+        if len(seq) < 3:
+            continue
+        gaps = [seq[i + 1]["pos"] - seq[i]["pos"] for i in range(len(seq) - 1)]
+        if min(gaps) < min_gap:
+            continue
+        coverage = min(len(txt), seq[-1]["pos"] + max(gaps[-1], min_gap)) - seq[0]["pos"]
+        score = len(seq) * 10_000 + min(coverage // 1000, 500) - seq[0]["pos"] // 200_000
+        if not best or score > best[0]:
+            best = (score, seq)
+    if not best:
         return None
+    hits = best[1]
+    positions = [h["pos"] for h in hits]
     tail = txt[positions[-1]:]
     end = len(txt)
-    m_tail = re.search(r"(?m)^\s*(ACKNOWLEDGMENTS?|REFERENCES|BIBLIOGRAPHY|APPENDIX)\s*$", tail)
+    m_tail = re.search(r"(?m)^\s*(ACKNOWLEDGMENTS?|REFERENCES|BIBLIOGRAPHY|APPENDIX|참고문헌|미주|주석)\s*$", tail, re.I)
     if m_tail:
         end = positions[-1] + m_tail.start()
     else:
         end = _notes_start(txt, positions[-1] + 3000)
     bounds = positions + [end]
     chapters = []
-    for idx, (num, title, _pos) in enumerate(hits):
+    for idx, hit in enumerate(hits):
         body = txt[bounds[idx]:bounds[idx + 1]].strip()
-        if body:
-            chapters.append((f"{num}. {title.title()}", body))
+        if len(body) < 300 and idx:
+            if chapters:
+                chapters[-1] = (chapters[-1][0], chapters[-1][1] + "\n\n" + body)
+            continue
+        title = _title_case_if_english(hit["title"])
+        chapters.append((f"{hit['num']}. {title}", body))
     return chapters if len(chapters) >= 3 else None
 
 
