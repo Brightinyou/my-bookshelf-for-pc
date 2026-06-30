@@ -1,34 +1,30 @@
 #!/bin/bash
-# My Bookshelf 실행 스크립트 — 더블클릭하면 앱 창이 열립니다.
-# (먼저 setup.command 로 설치를 한 번 마쳐야 합니다.)
+# My Bookshelf 실행 스크립트 — 더블클릭하면 설치된 앱을 백그라운드로 엽니다.
+# Terminal 창은 잠깐 뜰 수 있으나 즉시 닫히도록 시도합니다.
 set -e
 SCRIPT_DIR="$( cd "$( dirname "$0" )" && pwd )"
 ROOT_DIR="$SCRIPT_DIR"
 cd "$ROOT_DIR"
 
-if [ ! -x .venv/bin/python ]; then
-    echo "❌ 설치가 안 되어 있습니다. setup.command 를 먼저 실행해 주세요."
-    read -n 1 -s -r -p "아무 키나 누르면 창이 닫힙니다…"
+APP_CANDIDATES=(
+    "/Applications/MyBookshelf.app"
+    "$ROOT_DIR/dist/mac/MyBookshelf.app"
+    "$ROOT_DIR/dist/MyBookshelf.app"
+)
+
+APP_PATH=""
+for p in "${APP_CANDIDATES[@]}"; do
+    if [ -d "$p" ]; then
+        APP_PATH="$p"
+        break
+    fi
+done
+
+if [ -z "$APP_PATH" ]; then
+    osascript -e 'display alert "My Bookshelf 앱을 찾을 수 없습니다." message "먼저 빌드/설치를 완료한 뒤 다시 실행하세요." as critical' >/dev/null 2>&1
     exit 1
 fi
 
-# venv 활성화 — PATH에 .venv/bin이 들어가 보조 CLI 탐지가 작동한다.
-source .venv/bin/activate
-
-echo "📚 My Bookshelf 를 시작합니다 — 잠시 후 앱 창이 열립니다."
-echo "   앱 창을 닫으면 자동으로 종료됩니다."
-# 네이티브 창(PyWebView)으로 실행. 모듈 없으면 브라우저 모드로 폴백.
-if python -c "import webview" 2>/dev/null; then
-    # 앱 창을 터미널과 분리해 띄운 뒤 스크립트만 정상 종료한다.
-    # Terminal 창을 AppleScript로 강제 종료하면 macOS가 프로세스 종료 확인창을 띄울 수 있다.
-    nohup python core/desktop.py >/dev/null 2>&1 &
-    disown
-    sleep 1
-    exit 0
-else
-    echo "⚠️ 네이티브 창 모듈(pywebview)이 없어 브라우저로 엽니다."
-    echo "   setup.command 를 다시 실행하면 네이티브 창을 쓸 수 있습니다."
-    exec python -m streamlit run core/pipeline_app.py \
-        --server.port 8501 \
-        --browser.gatherUsageStats false
-fi
+nohup open -gja "$APP_PATH" >/dev/null 2>&1 &
+( nohup sh -c 'sleep 1; osascript -e "tell application \"Terminal\" to close front window" >/dev/null 2>&1' >/dev/null 2>&1 & )
+exit 0
