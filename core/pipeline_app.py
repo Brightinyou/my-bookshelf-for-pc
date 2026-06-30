@@ -2371,7 +2371,7 @@ def _checklist(items: list[dict], prefix: str, height: int = 320, viewable: bool
     h3.caption(f"총 {len(items)}개")
     selected = []
     with st.container(height=height, border=True):
-        for it in items:
+        for idx, it in enumerate(items):
             k = f"{prefix}_{it['key']}"
             cols = st.columns([0.05, 0.82, 0.13]) if viewable else st.columns([0.05, 0.95])
             c1, c2 = cols[0], cols[1]
