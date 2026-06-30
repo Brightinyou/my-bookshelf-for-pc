@@ -2416,7 +2416,10 @@ def _translate_engine_radio(label: str, key: str) -> str:
     _ids = [eid for eid, _lbl in _avail]
     _labels = [lbl for _eid, lbl in _avail]
     _pref = llm.get_pref("translate_engine", "")
-    _idx = _ids.index(_pref) if _pref in _ids else 0
+    _wp, _wm = llm.wiki_provider_model()
+    _wiki_engine = f"{_wp}:{_wm}" if _wp and _wm else ""
+    _default = _pref if _pref in _ids else (_wiki_engine if _wiki_engine in _ids else (_ids[0] if _ids else ""))
+    _idx = _ids.index(_default) if _default in _ids else 0
     _sel = st.radio(label, _labels, index=_idx, horizontal=True, key=key)
     _engine = _ids[_labels.index(_sel)]
     if _engine != _pref:
