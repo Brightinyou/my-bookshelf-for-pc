@@ -1,8 +1,8 @@
 ﻿"""llm_providers.py — 멀티 공급자 LLM 통일 호출 + 키 관리 (2026-06-15)
 
 OpenAI(GPT) / Google(Gemini) / Anthropic(Claude API) + Claude CLI(구독) + Codex CLI(구독).
-키는 ~/.config/mybookshelf/keys.json에만 저장한다.
-키는 이 컴퓨터 로컬에만 저장하며 저장소/외부로 전송하지 않는다.
+키는 앱 설정 파일에 저장한 값을 우선 사용하고, 없으면 이 컴퓨터의 환경변수에서 감지한다.
+저장 키는 이 컴퓨터 로컬에만 저장하며 저장소/외부로 전송하지 않는다.
 """
 from __future__ import annotations
 import json
@@ -16,6 +16,12 @@ from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".config" / "mybookshelf"
 KEYS_FILE = CONFIG_DIR / "keys.json"
+
+ENV_KEY_NAMES: dict[str, tuple[str, ...]] = {
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"),
+    "openai": ("OPENAI_API_KEY",),
+    "anthropic": ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY"),
+}
 
 # 공급자 레지스트리 — provider 키: {label, models[], hint}
 PROVIDERS: dict[str, dict] = {
@@ -75,23 +81,43 @@ def _load_all() -> dict:
         return {}
 
 
-def get_key(provider: str) -> str:
-    """Return only keys saved from the app settings screen."""
+def saved_key(provider: str) -> str:
+    """Return a key explicitly saved in the app settings screen."""
     all_keys = _load_all()
-    if provider in all_keys:
-        return (all_keys[provider] or "").strip()
+    return (all_keys.get(provider) or "").strip()
+
+
+def detected_key(provider: str) -> str:
+    """Return a key detected from local environment variables."""
+    for name in ENV_KEY_NAMES.get(provider, ()):
+        val = (os.environ.get(name) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+def get_key(provider: str) -> str:
+    """Return the configured key, preferring app settings over detected env keys."""
+    return saved_key(provider) or detected_key(provider)
+
+
+def key_source(provider: str) -> str:
+    if saved_key(provider):
+        return "saved"
+    if detected_key(provider):
+        return "detected"
     return ""
 
 
 def save_key(provider: str, key: str) -> None:
-    """Save keys to keys.json. Empty values intentionally block fallback."""
+    """Save keys to keys.json. Empty values clear the saved key; env fallback still works."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     data = _load_all()
     key = (key or "").strip()
     if key:
         data[provider] = key
     else:
-        data[provider] = ""   # 빈 문자열 유지 = 삭제 의도 명시, 환경변수 폴백 차단
+        data.pop(provider, None)
     KEYS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
         os.chmod(KEYS_FILE, 0o600)

@@ -2939,8 +2939,8 @@ if _active_view == "5_wiki":
 if _active_view == "settings":
     st.subheader("⚙️ API 키 설정")
     st.caption(
-        "키는 이 컴퓨터의 `~/.config/mybookshelf/keys.json` 에만 저장되며, "
-        "저장소나 외부로 전송되지 않습니다."
+        "앱에 저장한 키를 우선 사용하고, 없으면 이 컴퓨터의 환경변수에서 감지된 키를 사용합니다. "
+        "저장 키는 `~/.config/mybookshelf/keys.json`에만 보관되며 저장소에 올라가지 않습니다."
     )
 
     # 🧠 위키 생성 모델 (공급자/모델)
@@ -2966,7 +2966,9 @@ if _active_view == "settings":
         if _prov in _cli_provs:
             continue
         _cur = llm.masked(_prov)
-        with st.expander(f"{_info['label']}  —  {('✅ ' + _cur) if _cur else '미설정'}",
+        _src = llm.key_source(_prov)
+        _src_label = {"saved": "저장됨", "detected": "감지됨"}.get(_src, "미설정")
+        with st.expander(f"{_info['label']}  —  {('✅ ' + _src_label + ' ' + _cur) if _cur else '미설정'}",
                          expanded=not bool(_cur)):
             with st.form(f"keyform_{_prov}", clear_on_submit=True):
                 _newk = st.text_input(f"{_info['label']} API 키", type="password",
@@ -2983,8 +2985,13 @@ if _active_view == "settings":
                         st.warning("키를 입력하세요.")
                 if _del:
                     llm.save_key(_prov, "")
-                    st.info("삭제됨")
+                    st.info("저장 키 삭제됨. 환경변수 키가 있으면 계속 감지됩니다.")
                     st.rerun()
+            if _src == "saved":
+                st.caption("현재 앱 설정에 저장된 키를 사용합니다.")
+            elif _src == "detected":
+                _envs = ", ".join(llm.ENV_KEY_NAMES.get(_prov, ()))
+                st.caption(f"현재 환경변수에서 감지된 키를 사용합니다: `{_envs}`")
             st.caption(f"모델: {', '.join(_info['models'])}")
     st.divider()
     st.markdown("**🖥 CLI 구독 도구** — API 키 없이 구독으로 사용")
