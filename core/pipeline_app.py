@@ -2721,6 +2721,7 @@ if _active_view == "2_split":
     _q2_stems = queue_list("tab2_ready")
     _split_pend2: list[dict] = []
     _split_done2: list[dict] = []
+    _split_short2: list[dict] = []
     _txt_root2 = DONE_DIR / DEFAULT_WS / TXT_SUB
 
     # 큐에 없어도 1_txt/에 있는 TXT 모두 포함
