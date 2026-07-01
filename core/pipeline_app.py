@@ -2326,6 +2326,30 @@ textarea,
 [data-testid="stMarkdownContainer"] h4 {
     font-size: calc(1.08rem * var(--mb-font-scale)) !important;
 }
+
+.stage-nav-link {
+    display: block;
+    width: 100%;
+    text-align: center;
+    padding: 10px 12px;
+    border-radius: 9px;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    background: #ffffff;
+    color: #4b5563 !important;
+    text-decoration: none !important;
+    font-weight: 600;
+    line-height: 1.15;
+    transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.stage-nav-link:hover {
+    border-color: rgba(0, 0, 0, 0.28);
+    color: #111827 !important;
+}
+.stage-nav-link.active {
+    background: #111827;
+    border-color: #111827;
+    color: #ffffff !important;
+}
 </style>
 """.replace("__MB_FONT_SCALE__", str(_ui_font_scale)), unsafe_allow_html=True)
 
@@ -2354,7 +2378,7 @@ _avail_cli_providers = [llm.PROVIDERS[p]["label"] for p in llm.CLI_PROVIDERS if 
 _avail_ai_providers = _avail_api_providers + _avail_cli_providers
 _wiki_key_ok = bool(_avail_ai_providers)
 wg_ok = wiki_generator_running()
-col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+_status_spacer, col_s1, col_s2, col_s3, col_s4 = st.columns([2.8, 1.1, 1.1, 1.1, 1.1])
 col_s1.metric("API 키", f"{len(_avail_api_providers)}개" if _avail_api_providers else "❌ 없음")
 col_s2.metric("CLI 구독", f"{len(_avail_cli_providers)}개" if _avail_cli_providers else "없음")
 col_s3.metric("위키 생성기", "🔄 생성 중" if wg_ok else "대기")
@@ -2430,40 +2454,27 @@ if not _active_view:
     st.session_state["_app_loaded"] = True
     st.stop()
 
-_task_title = next((title for tid, title, _ in TASKS if tid == _active_view), "작업")
-_top_l, _top_menu, _top_prev, _top_next, _top_skip = st.columns([5, 1, 1.15, 1.25, 1.45])
-_top_l.markdown(f"### {_task_title}")
-if _top_menu.button("← 메뉴", key="back_to_menu", use_container_width=True):
-    st.session_state.pop("active_view", None)
-    st.rerun()
-_PREV_STEPS = {
-    "2_split": ("1_txt", "이전: 1·TXT"),
-    "3_translate": ("2_split", "이전: 2·분할"),
-    "4_summary": ("3_translate", "이전: 3·영문번역"),
-    "5_wiki": ("4_summary", "이전: 4·요약MD생성"),
-}
-_NEXT_STEPS = {
-    "1_txt": [("2_split", "다음: 2·장별분할")],
-    "2_split": [("3_translate", "다음: 3·영문번역"), ("4_summary", "건너뛰기: 4·요약MD생성")],
-    "3_translate": [("4_summary", "다음: 4·요약MD생성")],
-    "4_summary": [("5_wiki", "다음: 5·Wiki반영")],
-}
-if _active_view in _PREV_STEPS:
-    _prev_view, _prev_label = _PREV_STEPS[_active_view]
-    if _top_prev.button(_prev_label, key=f"prev_to_{_prev_view}", use_container_width=True):
-        st.session_state["active_view"] = _prev_view
+_STAGE_TASKS = [
+    ("1_txt", "1-TXT변환"),
+    ("2_split", "2-장별분할"),
+    ("3_translate", "3-영문번역"),
+    ("4_summary", "4-요약MD생성"),
+    ("5_wiki", "5-Wiki반영"),
+]
+_nav_cols = st.columns(len(_STAGE_TASKS))
+for _col, (_tid, _label) in zip(_nav_cols, _STAGE_TASKS):
+    _active_cls = " active" if _active_view == _tid else ""
+    with _col:
+        st.markdown(
+            f'<a class="stage-nav-link{_active_cls}" href="?view={_tid}" target="_self">{_label}</a>',
+            unsafe_allow_html=True,
+        )
+if st.query_params.get("view") in {tid for tid, _ in _STAGE_TASKS}:
+    _view = st.query_params.get("view")
+    if _view != _active_view:
+        st.session_state["active_view"] = _view
+        st.query_params.clear()
         st.rerun()
-_next_steps_for_view = _NEXT_STEPS.get(_active_view, [])
-if _next_steps_for_view:
-    _next_view, _next_label = _next_steps_for_view[0]
-    if _top_next.button(_next_label, key=f"next_to_{_next_view}", use_container_width=True):
-        st.session_state["active_view"] = _next_view
-        st.rerun()
-    if len(_next_steps_for_view) > 1:
-        _skip_view, _skip_label = _next_steps_for_view[1]
-        if _top_skip.button(_skip_label, key=f"next_to_{_skip_view}", use_container_width=True):
-            st.session_state["active_view"] = _skip_view
-            st.rerun()
 
 with st.expander("📁 저장 위치", expanded=False):
     _loc_rows = [
