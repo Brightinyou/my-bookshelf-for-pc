@@ -634,6 +634,12 @@ def _save_en_ko_split(bilingual_path: Path, blocks: list[str]):
         pass
 
 
+def _save_json_atomic(path: Path, data) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
 # ─── 재시도 대기 파일 wrapper (file_uploader 인터페이스 모방, 2026-05-19) ──
 class _PathAsUpload:
     """Path를 file_uploader 결과와 같은 인터페이스로 감싸기."""
@@ -1545,33 +1551,71 @@ def translate_one_chapter(ch_path: Path, engine: str, progress_cb=None) -> tuple
     try:
         text = ch_path.read_text(encoding="utf-8", errors="ignore")
         ko_path = ch_path.with_name(ch_path.stem + "_ko.txt")
+        progress_path = ch_path.with_name(ch_path.stem + "_ko.progress.json")
         if not needs_translation(ch_path):
             ko_path.write_text(text, encoding="utf-8")
             return True, "이미 한국어 — 그대로 복사"
         paras = _split_paragraphs_robust(text)
         out: list[str] = []
-        translated_n = preserved_n = dropped_n = failed_n = 0
+        translated_n = preserved_n = dropped_n = failed_n = resumed_n = api_calls = 0
         total = len(paras) or 1
+        cached_rows: dict[int, dict] = {}
+        if progress_path.exists():
+            try:
+                loaded = json.loads(progress_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, list):
+                    cached_rows = {
+                        int(row.get("idx")): row
+                        for row in loaded
+                        if isinstance(row, dict) and isinstance(row.get("idx"), int)
+                    }
+            except Exception:
+                cached_rows = {}
         for idx, p in enumerate(paras, 1):
+            cached = cached_rows.get(idx)
+            if cached and cached.get("src") == p and isinstance(cached.get("tgt"), str):
+                status = cached.get("status")
+                tgt = cached.get("tgt", "")
+                if status == "dropped":
+                    dropped_n += 1
+                else:
+                    out.append(tgt)
+                    if status == "preserved":
+                        preserved_n += 1
+                    elif status == "failed":
+                        failed_n += 1
+                    else:
+                        translated_n += 1
+                resumed_n += 1
+                if progress_cb:
+                    progress_cb(idx, total, translated_n, preserved_n, dropped_n, failed_n, resumed_n, api_calls)
+                continue
             if should_drop_paragraph(p):
                 dropped_n += 1
+                cached_rows[idx] = {"idx": idx, "src": p, "tgt": "", "status": "dropped"}
+                _save_json_atomic(progress_path, [cached_rows[i] for i in sorted(cached_rows)])
                 if progress_cb:
-                    progress_cb(idx, total, translated_n, preserved_n, dropped_n, failed_n)
+                    progress_cb(idx, total, translated_n, preserved_n, dropped_n, failed_n, resumed_n, api_calls)
                 continue
             if should_skip_translation(p):
                 out.append(p)
                 preserved_n += 1
+                cached_rows[idx] = {"idx": idx, "src": p, "tgt": p, "status": "preserved"}
             else:
                 ko = _translate_paragraph(p, engine)
+                api_calls += 1
                 if _translation_is_valid(p, ko):
                     out.append(ko)
                     translated_n += 1
+                    cached_rows[idx] = {"idx": idx, "src": p, "tgt": ko, "status": "translated"}
                 else:
                     out.append(p)
                     failed_n += 1
+                    cached_rows[idx] = {"idx": idx, "src": p, "tgt": p, "status": "failed"}
+            _save_json_atomic(progress_path, [cached_rows[i] for i in sorted(cached_rows)])
             if progress_cb:
-                progress_cb(idx, total, translated_n, preserved_n, dropped_n, failed_n)
-        detail = f"{len(out)}단락 처리 완료 · 번역 {translated_n} · 원문보존 {preserved_n}"
+                progress_cb(idx, total, translated_n, preserved_n, dropped_n, failed_n, resumed_n, api_calls)
+        detail = f"{len(out)}단락 처리 완료 · 재사용 {resumed_n} · 신규번역 {translated_n} · 원문보존 {preserved_n}"
         if dropped_n:
             detail += f" · 삭제 {dropped_n}"
         if failed_n:
@@ -2898,11 +2942,11 @@ if _active_view == "3_translate":
                 _tmp3.write_bytes(_u3.read())
                 with st.status(f"번역 중: {_u3.name}", expanded=True):
                     _up_prog3 = st.progress(0, text="번역 준비 중…")
-                    def _upload_progress3(done, total, translated, preserved, dropped, failed):
+                    def _upload_progress3(done, total, translated, preserved, dropped, failed, resumed, api_calls):
                         _up_prog3.progress(
                             min(done / max(total, 1), 1.0),
                             text=(
-                                f"번역 처리 중 {done}/{total} · 번역 {translated} · "
+                                f"번역 처리 중 {done}/{total} · 재사용 {resumed} · 신규API {api_calls} · 번역 {translated} · "
                                 f"원문보존 {preserved} · 삭제 {dropped}"
                                 + (f" · 실패보존 {failed}" if failed else "")
                             ),
@@ -2949,8 +2993,20 @@ if _active_view == "3_translate":
             if _to3:
                 _tp3 = st.progress(0.0)
                 for _ti3, _tf3 in enumerate(_to3, 1):
-                    st.caption(f"번역 [{_ti3}/{len(_to3)}]: {_tf3.name}")
-                    _ok3, _msg3 = translate_one_chapter(_tf3, _tr_eng3)
+                    _prog3 = st.progress(0, text=f"번역 준비 중… ({_tf3.name})")
+                    def _queue_progress3(done, total, translated, preserved, dropped, failed, resumed, api_calls):
+                        _prog3.progress(
+                            min(done / max(total, 1), 1.0),
+                            text=(
+                                f"{_tf3.name} · {done}/{total} · 재사용 {resumed} · 신규API {api_calls} · "
+                                f"번역 {translated} · 원문보존 {preserved}"
+                                + (f" · 삭제 {dropped}" if dropped else "")
+                                + (f" · 실패보존 {failed}" if failed else "")
+                            ),
+                        )
+                    _ok3, _msg3 = translate_one_chapter(_tf3, _tr_eng3, progress_cb=_queue_progress3)
+                    if _ok3:
+                        _prog3.progress(1.0, text=f"번역 처리 완료 ({_tf3.name})")
                     (st.success if _ok3 else st.warning)(
                         f"{'✅' if _ok3 else '⚠️'} {_tf3.name}: {_msg3}")
                     if _ok3:
