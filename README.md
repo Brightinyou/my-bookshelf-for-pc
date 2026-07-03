@@ -7,6 +7,7 @@ PDF 또는 TXT를 넣으면 `TXT 변환 -> 장별 분할 -> 번역 -> 문서 요
 ## 설치
 
 배포 파일은 `Setup.exe` 하나입니다.
+**다운로드**: [최신 릴리스](https://github.com/Brightinyou/my-bookshelf-for-pc/releases/latest)에서 `Setup.exe`를 받으세요.
 
 1. **파이썬 3.10 이상을 먼저 설치**합니다 (<https://www.python.org/downloads/>, "Add to PATH" 체크).
 2. `Setup.exe`를 실행합니다. 설치 언어(한국어/English)를 고를 수 있고, 선택한 언어가 앱 화면 언어의 기본값이 됩니다.
