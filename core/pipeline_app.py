@@ -981,6 +981,61 @@ def _stage_folder(stage_id: str) -> Path:
     return DONE_DIR / DEFAULT_WS
 
 
+def _chapter_rel_paths(ws_name: str, stem: str) -> list[str]:
+    ch_dir = chapters_dir(ws_name, stem)
+    if not ch_dir.exists():
+        return []
+    return [
+        str(f.relative_to(DONE_DIR))
+        for f in sorted(ch_dir.glob("??_*.txt"))
+        if not f.stem.endswith(("_ko", "_wiki"))
+    ]
+
+
+def _dismiss_split_nosplit(stem: str) -> None:
+    pending = st.session_state.get("split2_nosplit", [])
+    if isinstance(pending, list) and stem in pending:
+        st.session_state["split2_nosplit"] = [item for item in pending if item != stem]
+
+
+def _queue_book_chapters_for_next_stage(ws_name: str, stem: str) -> list[str]:
+    chapter_rels = _chapter_rel_paths(ws_name, stem)
+    if not chapter_rels:
+        return []
+    if _needs_translation(stem):
+        queue_add("tab3_ready", chapter_rels)
+    else:
+        queue_add("tab4_ready", chapter_rels)
+    return chapter_rels
+
+
+def _save_book_as_single_chapter(ws_name: str, stem: str) -> tuple[bool, str, list[str]]:
+    existing_rels = _chapter_rel_paths(ws_name, stem)
+    if existing_rels:
+        queue_remove("tab2_ready", [stem])
+        _dismiss_split_nosplit(stem)
+        _queue_book_chapters_for_next_stage(ws_name, stem)
+        return True, t("기존 장 파일을 다시 사용했습니다."), existing_rels
+
+    txt_path = find_txt(DONE_DIR, ws_name, stem)
+    md_path = find_md(DONE_DIR, ws_name, stem)
+    source_path = txt_path or md_path
+    if source_path is None:
+        return False, t("TXT/MD 파일이 없습니다."), []
+
+    source_text = source_path.read_text(encoding="utf-8", errors="ignore")
+    if not source_text.strip():
+        return False, t("TXT/MD 내용이 비어 있습니다."), []
+
+    ch_path, _ = _write_single_chapter_from_text(ws_name, stem, source_text)
+    queue_remove("tab2_ready", [stem])
+    _dismiss_split_nosplit(stem)
+    chapter_rels = _queue_book_chapters_for_next_stage(ws_name, stem)
+    if not chapter_rels:
+        return False, t("단일장 파일 생성에 실패했습니다."), []
+    return True, ch_path.name, chapter_rels
+
+
 def _count_files(path: Path, patterns: list[str], exclude_suffixes: tuple = ()) -> int:
     """폴더에서 패턴에 맞는 파일 수. exclude_suffixes는 stem 끝 필터 (_ko 등)."""
     if not path.exists():
@@ -1416,7 +1471,64 @@ if _active_view == "2_split":
         if _b2c3.button(t("🗑 큐 비우기"), key="split2_clear", use_container_width=True):
             queue_clear("tab2_ready"); st.rerun()
         _to2 = [it["obj"] for it in _split_pend2] if _ra2 else (_sel2 if _rs2 else [])
+        _keep2c1, _keep2c2 = st.columns(2)
+        _single_sel2 = _keep2c1.button(
+            tf("선택 단일장 처리 (%d건)", len(_sel2)),
+            key="split2_keep_sel",
+            use_container_width=True,
+            disabled=len(_sel2) == 0,
+        )
+        _single_all2 = _keep2c2.button(
+            tf("전체 단일장 처리 (%d건)", len(_split_pend2)),
+            key="split2_keep_all",
+            use_container_width=True,
+        )
+        _single_mode2 = False
+        if _single_sel2:
+            _to2 = _sel2
+            _single_mode2 = True
+        elif _single_all2:
+            _to2 = [it["obj"] for it in _split_pend2]
+            _single_mode2 = True
         if _to2:
+            if _single_mode2:
+                _sp2 = st.progress(0.0)
+                _completed2 = 0
+                _queued_translate2 = 0
+                _queued_summary2 = 0
+                for _si2, _s2 in enumerate(_to2, 1):
+                    _target_stage2 = "3_translate" if _needs_translation(_s2["stem"]) else "4_summary"
+                    with st.status(f"단일장 처리 [{_si2}/{len(_to2)}]: {_s2['stem']}", expanded=False):
+                        _ok2, _detail2, _new_chs2 = _save_book_as_single_chapter(_s2["ws"], _s2["stem"])
+                    if _ok2 and _new_chs2:
+                        _completed2 += 1
+                        st.success(f"✅ {_s2['stem']} -> {_detail2}")
+                        if _target_stage2 == "3_translate":
+                            _queued_translate2 += 1
+                            st.caption("영문 문서라 3-영문번역 대기에 등록했습니다.")
+                        else:
+                            _queued_summary2 += 1
+                            st.caption("분할 없이 4-문서요약 대기에 등록했습니다.")
+                    else:
+                        st.warning(f"⚠️ {_s2['stem']}: {_detail2}")
+                    _sp2.progress(_si2 / len(_to2))
+                if _completed2:
+                    if _queued_translate2 and _queued_summary2:
+                        _next_stage2 = "3_translate"
+                        _done_msg2 = tf("%d건을 다음 단계로 보냈습니다. 영문 문서는 3-영문번역, 한글 문서는 4-문서요약에서 이어서 진행하세요.", _completed2)
+                    elif _queued_translate2:
+                        _next_stage2 = "3_translate"
+                        _done_msg2 = tf("%d건을 3-영문번역 대기로 보냈습니다.", _completed2)
+                    else:
+                        _next_stage2 = "4_summary"
+                        _done_msg2 = tf("%d건을 4-문서요약 대기로 보냈습니다.", _completed2)
+                    _set_stage_completion(
+                        t("2-장 처리 완료"),
+                        _done_msg2,
+                        next_stage=_next_stage2,
+                        open_target=_stage_folder("2_split"),
+                    )
+                st.rerun()
             _sp2 = st.progress(0.0)
             _completed2 = 0
             for _si2, _s2 in enumerate(_to2, 1):
@@ -1716,6 +1828,51 @@ if _active_view == "3_translate":
             _msel3 = _checklist(_mitems3, "tr3m", height=200)
             if st.button(tf("➕ 선택 항목 큐에 추가 (%d개)", len(_msel3)), key="tr3m_add", disabled=len(_msel3)==0):
                 queue_add("tab3_ready", _msel3); st.rerun()
+        with st.expander(t("➕ 1-TXT변환 결과에서 단일장으로 추가")):
+            _txt3a, _txt3b = st.columns([3, 2])
+            _search3_txt = _txt3a.text_input(t("책 이름 검색"), key="tr3_txt_search", placeholder=t("검색어 입력"))
+            _sort3_txt = _txt3b.radio(t("정렬"), [t("최근 추가순"), t("이름순")], horizontal=True, key="tr3_txt_sort")
+            _txt_root3 = txt_dir(DONE_DIR, DEFAULT_WS)
+            _txt_candidates3: dict[str, Path] = {}
+            for _src3 in (list(_txt_root3.glob("*.txt")) + list(_txt_root3.glob("*.md"))) if _txt_root3.exists() else []:
+                _stem3 = _nfc(_src3.stem)
+                if not _needs_translation(_stem3):
+                    continue
+                if _chapter_rel_paths(DEFAULT_WS, _stem3):
+                    continue
+                _prev3 = _txt_candidates3.get(_stem3)
+                if _prev3 is None or _src3.stat().st_mtime > _prev3.stat().st_mtime:
+                    _txt_candidates3[_stem3] = _src3
+            _all_txt3 = list(_txt_candidates3.values())
+            _all_txt3 = sorted(_all_txt3, key=lambda f: f.stat().st_mtime, reverse=True) \
+                        if _sort3_txt == t("최근 추가순") else sorted(_all_txt3, key=lambda f: f.name)
+            _filt_txt3 = [f for f in _all_txt3 if _search3_txt.lower() in f.stem.lower()] if _search3_txt else _all_txt3
+            _mitems3_txt = [{
+                "key": f"txt-{_nfc(f.stem)}",
+                "label": _nfc(f.stem),
+                "meta": f"{f.stat().st_size//1024}KB",
+                "obj": {"ws": DEFAULT_WS, "stem": _nfc(f.stem)},
+            } for f in _filt_txt3]
+            _msel3_txt = _checklist(_mitems3_txt, "tr3txt", height=180)
+            if st.button(
+                tf("선택 항목을 단일장으로 등록 (%d건)", len(_msel3_txt)),
+                key="tr3txt_add",
+                disabled=len(_msel3_txt) == 0,
+                use_container_width=True,
+            ):
+                _added3_txt = 0
+                _failed3_txt: list[str] = []
+                for _item3_txt in _msel3_txt:
+                    _ok3_txt, _detail3_txt, _new3_txt = _save_book_as_single_chapter(_item3_txt["ws"], _item3_txt["stem"])
+                    if _ok3_txt and _new3_txt:
+                        _added3_txt += 1
+                    else:
+                        _failed3_txt.append(f"{_item3_txt['stem']}: {_detail3_txt}")
+                if _added3_txt:
+                    st.success(tf("%d건을 번역 대기에 추가했습니다.", _added3_txt))
+                for _msg3_txt in _failed3_txt[:5]:
+                    st.warning(_msg3_txt)
+                st.rerun()
 
     st.info(t("💡 다음 단계: **📝 문서요약 앱**으로 이동하세요"))
 
