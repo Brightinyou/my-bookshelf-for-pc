@@ -50,7 +50,7 @@ def pdf_to_txt(pdf_path: Path, fast: bool = True) -> tuple[Path | None, Path | N
         _nw = {}
 
     if not pdftotext or not Path(pdftotext).exists():
-        return None, None, "TXT 변환에 필요한 pdftotext가 없습니다. Windows용 Poppler 설치를 확인하세요."
+        return None, None, "TXT 변환에 필요한 pdftotext가 없습니다. 맥은 brew install poppler, 윈도우는 번들 Poppler를 확인하세요."
 
     r = subprocess.run([pdftotext, "-layout", str(pdf_path), str(txt_path)],
                        capture_output=True, text=True, **_nw)
