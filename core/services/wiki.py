@@ -4,6 +4,7 @@ import json
 import os
 import re as _re
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -122,6 +123,9 @@ def check_wiki_orphans() -> dict:
 # ─── Obsidian 보관함(Vault) 관리 ─────────────────────────────
 
 def _obsidian_config() -> Path:
+    # 맥은 APPDATA가 없음 — Application Support 경로 사용 (2026-07-03)
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "obsidian" / "obsidian.json"
     return Path(os.environ.get("APPDATA", "")) / "obsidian" / "obsidian.json"
 
 
@@ -176,7 +180,10 @@ def open_wiki_vault():
     from urllib.parse import quote
     uri = "obsidian://open?path=" + quote(str(WIKI_DIR.resolve()))
     try:
-        os.startfile(uri)
+        if sys.platform == "darwin":   # os.startfile은 윈도우 전용 (2026-07-03)
+            subprocess.run(["open", uri])
+        else:
+            os.startfile(uri)
     except Exception:
         open_path(WIKI_DIR)
 

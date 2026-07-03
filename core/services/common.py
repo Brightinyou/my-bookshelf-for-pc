@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import sys
 import unicodedata
 from datetime import datetime
 from pathlib import Path
@@ -67,9 +68,14 @@ def _save_json_atomic(path: Path, data) -> None:
 
 def open_path(p: Path, reveal: bool = False):
     """파일을 OS 기본 앱으로 열기. reveal=폴더에서 선택 표시.
-    (2026-06-11 윈도우 수정 — 'open'은 맥 전용)"""
+    (2026-07-03 맥/윈도우 분기 — os.startfile·explorer는 윈도우 전용)"""
     try:
-        if reveal:
+        if sys.platform == "darwin":
+            if reveal:
+                subprocess.run(["open", "-R", str(p)])
+            else:
+                subprocess.run(["open", str(p)])
+        elif reveal:
             # 리스트로 넘기면 인자 전체가 따옴표로 감싸여 explorer가 무시하고
             # 문서 폴더를 열어버림 — 경로만 따옴표한 문자열로 직접 구성 (2026-06-11)
             subprocess.run(f'explorer /select,"{p}"')

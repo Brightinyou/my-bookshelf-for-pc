@@ -12,7 +12,8 @@ RAW_DIR      = SSD / "llm-wiki/raw"
 PROCESSED    = RAW_DIR / "processed"
 OLLAMA_URL   = "http://localhost:11434"
 PIPELINE_URL = "http://localhost:8501"
-PIPELINE_APP = str(SSD / "Thesis_SSD/pipeline_app.py")
+# SSD 사본 동기화 폐지 — 레포 core/를 직접 실행 (2026-07-03)
+PIPELINE_APP = str(Path.home() / "Projects/my-bookshelf/core/pipeline_app.py")
 PYTHON_BIN   = "/opt/homebrew/bin/python3"
 
 
