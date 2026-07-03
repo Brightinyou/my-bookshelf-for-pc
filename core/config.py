@@ -116,7 +116,11 @@ def find_binary(name: str, extra: tuple = ()) -> str | None:
 
 
 _PARENT = _HERE.parent   # core/ → 상위 폴더 (.venv가 여기 있을 수도 있음)
-PDFTOTEXT = find_binary("pdftotext")
+# 번들 poppler (2026-07-03): 인스톨러가 {app}\poppler로 설치, 개발 레포는 vendor\poppler
+PDFTOTEXT = find_binary("pdftotext", extra=(
+    str(_PARENT / "poppler" / "Library" / "bin" / "pdftotext.exe"),
+    str(_PARENT / "vendor" / "poppler" / "Library" / "bin" / "pdftotext.exe"),
+))
 PYTHON    = sys.executable   # 보조 스크립트는 앱과 같은 인터프리터로 실행
 
 

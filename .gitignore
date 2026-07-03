@@ -13,3 +13,9 @@ DEVLOG.md
 *.key
 keys.json
 config.json
+
+# 빌드 산출물·번들 재료 (레포 제외, 2026-07-03)
+/Setup.exe
+/Uninstall.exe
+vendor/
+app_lang.txt

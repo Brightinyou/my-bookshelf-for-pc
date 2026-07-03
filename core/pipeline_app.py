@@ -27,6 +27,51 @@ import config as cfg
 import llm_providers as llm
 from version import APP_VERSION
 
+# ── 처리 로직 서비스 (2026-07-03 pipeline_app.py에서 분리) ──
+# UI 코드가 기존 이름 그대로 쓰도록 명시적으로 재노출한다.
+from services import wiki as wiki_svc
+from services.common import (
+    DEFAULT_WS, MD_SUB, PAUSE_DIR, PDF_SUB, TRANS_SUB, TXT_SUB,
+    _PathAsUpload, _nfc, _save_json_atomic, append_log, is_paused,
+    load_pipeline_results, notify, open_path, pause_flag_path, read_log,
+    save_pipeline_results, set_paused,
+)
+from services.files import (
+    _bilingual_candidates, _ko_block_count, _move_unassigned_to_ws,
+    _parse_bilingual_block, _save_bilingual_atomic, _save_en_ko_split,
+    collect_cross_ws_cache, find_bilingual, find_cross_ws_bilingual,
+    find_md, find_pdf, find_split_mds, find_txt, md_dir, processed_stems,
+    translated_dir, txt_dir,
+)
+from services.pipeline_queue import (
+    queue_add, queue_clear, queue_list, queue_remove,
+)
+from services.convert import _do_ocr_only, pdf_to_txt
+from services.translate import (
+    _needs_translation, _paragraph_already_target, _split_paragraphs_robust,
+    _translate_paragraph, _translation_is_valid, build_translate_system,
+    engine_label, find_sequential_footnotes, find_skip_section_paragraphs,
+    is_english, needs_translation, should_drop_paragraph,
+    should_skip_translation, target_lang, translate, translate_engine_options,
+    translate_one_chapter,
+)
+from services.chapters import (
+    _is_small_document_for_whole_translation, _merge_chapter_folder,
+    _write_single_chapter_from_text, chapters_dir, list_done_books,
+    list_summary_files, load_summary_file, split_book_to_chapters,
+    summarize_one_chapter, summary_file_for,
+)
+from services.papers import (
+    download_paper_source, prepare_downloaded_paper_source,
+    translate_downloaded_paper,
+)
+from services.wiki import (
+    build_single_chapter_wiki, build_wiki_from_chapter_summaries,
+    check_wiki_orphans, ensure_obsidian_vault, list_obsidian_vaults,
+    open_wiki_vault, set_wiki_dir, wiki_generator_running,
+)
+from services.i18n import get_lang, set_lang, t, tf
+
 # ── 설정 ─────────────────────────────────────────────────
 # 기계 의존 값(경로·바이너리·분류 폴더)은 전부 config.py가 해석한다.
 # 기본값 ~/Documents/My Bookshelf, 덮어쓰기 ~/.config/mybookshelf/config.json.
@@ -42,12 +87,6 @@ FAILED_DIR    = cfg.FAILED_DIR
 # translated/는 done/<ws>/_translated/로 통합 (2026-05-18).
 # OLD_TRANSLATED_DIR은 데이터 이동 이전 옛 위치 — fallback 용도로만 유지.
 OLD_TRANSLATED_DIR = cfg.OLD_TRANSLATED_DIR
-# done/<ws>/ 하위 산출물 폴더명 — 텍스트 처리 순서대로 번호 접두 (2026-06-09).
-#   1_txt(②변환 TXT, Gemini 입력) → 2_md(③MD, 장 구조) → 3_translated(④번역)
-TXT_SUB   = "1_txt"
-MD_SUB    = "2_md"
-TRANS_SUB = "3_translated"
-PDF_SUB   = "pdf"          # 원본 PDF 보관 폴더
 LOG_FILE      = cfg.LOG_FILE
 RESULTS_FILE  = cfg.RESULTS_FILE
 
@@ -57,623 +96,15 @@ for _d in [DONE_DIR, FAILED_DIR, RAW_DIR, WIKI_DIR, PROCESSED_DIR, UPLOAD_TMP,
 
 CATEGORY_ICONS: dict[str, str] = {}  # 워크스페이스 이름 → 이모지. 빈 경우 기본 📚 사용
 
-GEMINI_WIKI    = cfg.find_script("gemini_wiki.py")    # 2026-06-09 위키=Gemini로 교체
-CHAPTER_WIKI   = cfg.find_script("chapter_wiki.py")   # 2026-06-09 챕터 모드(긴 책 자동 장별)
-WIKI_LOG       = cfg.WIKI_LOG_DIR
-
-
-# ── 폴더 구조 헬퍼 ────────────────────────────────────────
-# done/<ws>/<file>.pdf      ← PDF는 워크스페이스 루트
-# done/<ws>/_txt/<file>.txt ← MD 성공 시 TXT는 _txt/
-# done/<ws>/_md/<file>.md   ← MD는 _md/ (분할본도 동일)
-# MD 생성 실패 시 TXT는 루트에 남아 미완료 신호로 사용
-
 import re as _re
 
-def txt_dir(base: Path, ws_name: str) -> Path:
-    return base / ws_name / TXT_SUB
-
-def md_dir(base: Path, ws_name: str) -> Path:
-    return base / ws_name / MD_SUB
-
-def translated_dir(base: Path, ws_name: str) -> Path:
-    """bilingual.txt를 두는 폴더. done/<ws>/_translated/. (2026-05-18 통합)"""
-    return base / ws_name / TRANS_SUB
-
-def _nfc(s: str) -> str:
-    """맥 파일명은 NFD라 비교 전 NFC 정규화 필수 (한글)."""
-    return unicodedata.normalize("NFC", s)
-
-
-_PROC_STEMS_CACHE: dict = {"t": 0.0, "stems": set()}
-
-
-def processed_stems(max_age: float = 60.0) -> set[str]:
-    """이미 처리된 파일의 NFC stem 집합 — done 폴더 산출물 + 위키 완료 기록.
-    업로드 중복 건너뛰기용. 대량 배치 중 파일마다 rglob하지 않게 60초 캐시. (v0.3.2)"""
-    now = time.time()
-    if now - _PROC_STEMS_CACHE["t"] < max_age and _PROC_STEMS_CACHE["stems"]:
-        return _PROC_STEMS_CACHE["stems"]
-    stems: set[str] = set()
-    try:
-        if DONE_DIR.exists():
-            for p in DONE_DIR.rglob("*"):
-                if p.is_file() and p.suffix.lower() in {".pdf", ".txt", ".md", ".docx", ".doc"}:
-                    stems.add(_nfc(p.stem))
-        gd = cfg.GEMINI_DONE_FILE
-        if gd.exists():
-            for line in gd.read_text(encoding="utf-8", errors="ignore").splitlines():
-                line = line.strip()
-                if line:
-                    stems.add(_nfc(Path(line).stem))
-    except Exception as e:
-        append_log(f"WARN: processed_stems 수집 실패 ({type(e).__name__}) {str(e)[:120]}")
-    _PROC_STEMS_CACHE["t"] = now
-    _PROC_STEMS_CACHE["stems"] = stems
-    return stems
-
-
-def _bilingual_candidates(stem: str, exclude_ws: str | None = None) -> list[Path]:
-    """모든 워크스페이스에서 같은 stem의 bilingual.txt 후보 경로 수집. (2026-05-18 cross-ws resume)"""
-    paths: list[Path] = []
-    if DONE_DIR.exists():
-        for ws_dir in DONE_DIR.iterdir():
-            if not ws_dir.is_dir() or ws_dir.name == exclude_ws:
-                continue
-            bil = translated_dir(DONE_DIR, ws_dir.name) / f"{stem}_bilingual.txt"
-            if bil.exists():
-                paths.append(bil)
-    if OLD_TRANSLATED_DIR.exists():
-        for ws_dir in OLD_TRANSLATED_DIR.iterdir():
-            if not ws_dir.is_dir() or ws_dir.name == exclude_ws:
-                continue
-            bil = ws_dir / f"{stem}_bilingual.txt"
-            if bil.exists():
-                paths.append(bil)
-    return paths
-
-
-def _parse_bilingual_block(block: str) -> tuple[str, str] | None:
-    """[EN]/[KO] 구형 또는 태그 없는 교차 신형 블록을 (원문, 번역) 으로 파싱."""
-    block = block.strip()
-    if not block:
-        return None
-    if "\n\n[KO]\n" in block:                          # 구형: [EN]\n...\n\n[KO]\n...
-        en_part, tgt = block.split("\n\n[KO]\n", 1)
-        src = en_part[len("[EN]\n"):].strip() if en_part.startswith("[EN]\n") else en_part.strip()
-        return src, tgt.strip()
-    if not block.startswith("[") and "\n\n" in block:  # 신형: 원문\n\n번역
-        src, tgt = block.split("\n\n", 1)
-        return src.strip(), tgt.strip()
-    if block.startswith("[EN]\n"):                      # 미번역 구형 단독 블록
-        return block[len("[EN]\n"):].strip(), ""
-    return None
-
-
-def _ko_block_count(p: Path) -> int:
-    try:
-        text = p.read_text(encoding="utf-8", errors="ignore")
-        if "\n\n[KO]\n" in text:
-            return text.count("\n\n[KO]\n")            # 구형
-        blocks = [b.strip() for b in text.split("\n\n---\n\n") if b.strip()]
-        return sum(1 for b in blocks if "\n\n" in b and not b.startswith("["))  # 신형
-    except Exception:
-        return 0
-
-
-def find_cross_ws_bilingual(stem: str, exclude_ws: str) -> Path | None:
-    """다른 ws에서 같은 stem bilingual.txt 후보 중 [KO] 블록이 가장 많은 파일 반환."""
-    cands = _bilingual_candidates(stem, exclude_ws=exclude_ws)
-    if not cands:
-        return None
-    cands.sort(key=_ko_block_count, reverse=True)
-    top = cands[0]
-    return top if _ko_block_count(top) > 0 else None
-
-
-def collect_cross_ws_cache(stem: str, exclude_ws: str) -> dict:
-    """다른 모든 ws의 bilingual.txt에서 원문→번역 매핑 합쳐 dict 반환. 보존마커 제외."""
-    cache: dict = {}
-    for p in _bilingual_candidates(stem, exclude_ws=exclude_ws):
-        try:
-            for block in p.read_text(encoding="utf-8", errors="ignore").split("\n\n---\n\n"):
-                parsed = _parse_bilingual_block(block)
-                if not parsed:
-                    continue
-                src, tgt = parsed
-                if not src or not tgt or tgt.startswith("(원문 보존"):
-                    continue
-                cache.setdefault(src, tgt)
-        except Exception:
-            continue
-    return cache
-
-
-def find_bilingual(ws_name: str, stem: str) -> Path | None:
-    """bilingual.txt 우선 검색 — 새 위치(done/<ws>/_translated/) 먼저, 옛 위치(translated/<ws>/) fallback."""
-    new = translated_dir(DONE_DIR, ws_name) / f"{stem}_bilingual.txt"
-    if new.exists():
-        return new
-    old = OLD_TRANSLATED_DIR / ws_name / f"{stem}_bilingual.txt"
-    if old.exists():
-        return old
-    return None
-
-def find_txt(base: Path, ws_name: str, stem: str) -> Path | None:
-    """_txt/ 우선, 없으면 워크스페이스 루트에서 .txt 찾기."""
-    p1 = txt_dir(base, ws_name) / f"{stem}.txt"
-    if p1.exists(): return p1
-    p2 = base / ws_name / f"{stem}.txt"
-    return p2 if p2.exists() else None
-
-def find_md(base: Path, ws_name: str, stem: str) -> Path | None:
-    """_md/ 우선, 없으면 워크스페이스 루트에서 .md 찾기."""
-    p1 = md_dir(base, ws_name) / f"{stem}.md"
-    if p1.exists(): return p1
-    p2 = base / ws_name / f"{stem}.md"
-    return p2 if p2.exists() else None
-
-def find_pdf(base: Path, ws_name: str, name: str) -> Path | None:
-    """워크스페이스 루트에서 PDF 찾기."""
-    p = base / ws_name / name
-    return p if p.exists() else None
-
-def find_split_mds(base: Path, ws_name: str, stem: str) -> list[Path]:
-    """<stem>_NN_*.md 분할본."""
-    pat = _re.compile(rf"^{_re.escape(stem)}_\d{{2}}_.+\.md$")
-    out: list[Path] = []
-    for d in (md_dir(base, ws_name), base / ws_name):
-        if d.exists():
-            out.extend(p for p in d.iterdir() if p.is_file() and pat.match(p.name))
-    return out
-
-
-# ── 파이프라인 함수들 ─────────────────────────────────────
-
-def pdf_to_txt(pdf_path: Path, fast: bool = True) -> tuple[Path | None, Path | None, str]:
-    """텍스트 레이어가 있는 PDF를 TXT로 변환한다."""
-    pdftotext = cfg.PDFTOTEXT
-
-    txt_path = Path(tempfile.gettempdir()) / (pdf_path.stem + ".txt")
-
-    # Windows에서 터미널 창이 뜨지 않도록 STARTUPINFO + CREATE_NO_WINDOW 조합 사용
-    if sys.platform == "win32":
-        _si = subprocess.STARTUPINFO()
-        _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        _si.wShowWindow = 0  # SW_HIDE
-        _nw = {"creationflags": subprocess.CREATE_NO_WINDOW, "startupinfo": _si,
-               "stdin": subprocess.DEVNULL}
-    else:
-        _nw = {}
-
-    if not pdftotext or not Path(pdftotext).exists():
-        return None, None, "TXT 변환에 필요한 pdftotext가 없습니다. Windows용 Poppler 설치를 확인하세요."
-
-    r = subprocess.run([pdftotext, "-layout", str(pdf_path), str(txt_path)],
-                       capture_output=True, text=True, **_nw)
-    if r.returncode != 0:
-        return None, None, f"pdftotext 오류 (exit {r.returncode}): {(r.stderr or '').strip() or '알 수 없는 오류'}"
-
-    if not txt_path.exists() or txt_path.stat().st_size == 0:
-        return None, None, "텍스트 추출 실패 — 텍스트 레이어가 있는 PDF만 변환할 수 있습니다"
-
-    return txt_path, None, ""
-
-
-# ── 번역: 영어→한국어 고정 ────────────────────────────────
-_KO_SCRIPT = _re.compile(r"[가-힣]")
-
-
-def target_lang() -> str:
-    return "en"
-
-
-def needs_translation(txt_path: Path, threshold: float = 0.3) -> bool:
-    """한글 비율이 낮으면 번역 필요로 판단."""
-    sample = txt_path.read_text(encoding="utf-8", errors="ignore")[:3000]
-    ko_ratio = len(_KO_SCRIPT.findall(sample)) / max(len(sample), 1)
-    return ko_ratio < threshold
-
-
-def is_english(txt_path: Path, threshold: float = 0.3) -> bool:
-    return needs_translation(txt_path, threshold)
-
-
-def _ko_ratio(text: str) -> float:
-    return len(_KO_SCRIPT.findall(text or "")) / max(len(text or ""), 1)
-
-
-def _translation_is_valid(src: str, out: str | None) -> bool:
-    """번역 결과가 실제 한국어 번역인지 확인한다."""
-    if not out:
-        return False
-    cleaned_src = _re.sub(r"\s+", " ", src or "").strip()
-    cleaned_out = _re.sub(r"\s+", " ", out or "").strip()
-    if not cleaned_out:
-        return False
-    if _ko_ratio(cleaned_out) < 0.08:
-        return False
-    if cleaned_src and SequenceMatcher(None, cleaned_src[:2000], cleaned_out[:2000]).ratio() > 0.82:
-        return False
-    return True
-
-
-_HEADING_LIKE_RE = _re.compile(r"^\s*(?:\d+(?:\.\d+)*|[IVXLC]+)\s+.+", _re.I)
-
-
-def _translate_retry_prompt(paragraph: str) -> str:
-    return (
-        "Translate the following academic paragraph into Korean. "
-        "Preserve numbering such as section numbers or chapter numbers. "
-        "Do not leave any sentence or title in English. "
-        "If this is a section heading, translate only the heading text while keeping the numbering. "
-        "Output ONLY the Korean text.\n\n"
-        f"{paragraph}"
-    )
-
-
-def _translate_paragraph(paragraph: str, engine: str, glossary: dict | None = None) -> str | None:
-    ko = translate(paragraph, engine, glossary=glossary)
-    if _translation_is_valid(paragraph, ko):
-        return ko
-    if not paragraph.strip():
-        return ko
-    retry = translate(_translate_retry_prompt(paragraph), engine, glossary=glossary)
-    if _translation_is_valid(paragraph, retry):
-        return retry
-    if _HEADING_LIKE_RE.match(paragraph.strip()):
-        heading_retry = translate(
-            "This is a section heading from an academic chapter. Translate it into Korean and keep the numbering.\n\n"
-            f"{paragraph}",
-            engine,
-            glossary=glossary,
-        )
-        if _translation_is_valid(paragraph, heading_retry):
-            return heading_retry
-    return None
-
-
-def build_translate_system() -> str:
-    """한국어 번역 시스템 프롬프트."""
-    return (
-        "You are a professional theological/academic translator. "
-        "Detect the source language automatically and translate the user's text into Korean. "
-        "Proper nouns (personal names, place names): on FIRST mention write the Korean "
-        "rendering followed by the original in parentheses; "
-        "if a name is listed below as already introduced, write the Korean form ONLY. "
-        "Preserve technical terms and scripture references as-is. "
-        "Use ONLY plain declarative academic Korean (평서체/하다체): "
-        "endings such as -다, -이다, -한다, -였다, -이었다. "
-        "DO NOT use any polite/honorific forms — never use -습니다, -입니다, "
-        "-해요, -이에요, -지요, -군요, -네요, or any other -요/-니다 endings. "
-        "The text may be an incomplete fragment cut mid-sentence (PDF page breaks): "
-        "translate it as-is anyway — NEVER comment on it, NEVER ask for more context, "
-        "NEVER say the text is incomplete. "
-        "Output ONLY the Korean translation, nothing else."
-    )
-
-# 번역 엔진 ID (UI 라디오와 1:1)
-# 번역 엔진 id = "provider:model". 공급자는 llm_providers.PROVIDERS + Claude CLI(구독).
-_translate_error_logged = False
-
-
-def translate_engine_options() -> list[tuple[str, str, bool, str]]:
-    """[(engine_id, label, available, hint)]. 키 있는 공급자만 available=True."""
-    opts: list[tuple[str, str, bool, str]] = []
-    for prov in llm.API_PROVIDERS:
-        info = llm.PROVIDERS[prov]
-        avail = llm.has_key(prov)
-        for m in info["models"]:
-            opts.append((f"{prov}:{m}", f"{m} · {info['label']}", avail, info["hint"]))
-    for prov in llm.CLI_PROVIDERS:
-        info = llm.PROVIDERS[prov]
-        avail = llm.has_key(prov)
-        for m in info["models"]:
-            opts.append((f"{prov}:{m}", f"{m} · {info['label']}", avail, info["hint"]))
-    return opts
-
-
-def engine_label(engine_id) -> str:
-    if not engine_id:
-        return "?"
-    for eid, lbl, _av, _h in translate_engine_options():
-        if eid == engine_id:
-            return lbl
-    return engine_id
-
-
-def _merge_dangling(paras: list[str], max_chunk: int = 3000) -> list[str]:
-    """PDF 페이지 경계·각주 번호 때문에 문장 중간에서 끊긴 단락을 병합. (2026-06-11)
-    이전 단락이 종결부호 없이 끝났거나 현재 단락이 소문자로 시작하면 같은 문장으로 본다."""
-    _terminal = _re.compile(r'[.!?:;"”’)\]]\s*$')
-    merged: list[str] = []
-    for p in paras:
-        if merged:
-            prev = merged[-1]
-            if (not prev.lstrip().startswith("#")          # 제목은 단독 유지
-                    and len(prev) + len(p) + 1 <= max_chunk
-                    and (not _terminal.search(prev) or _re.match(r"^[a-z]", p))):
-                merged[-1] = prev.rstrip() + " " + p.lstrip()
-                continue
-        merged.append(p)
-    return merged
-
-
-def _split_paragraphs_robust(text_raw: str, target_chunk: int = 1500, min_para: int = 5) -> list[str]:
-    """단락 분할 보강. \\n\\n 의존이 실패하면 단일 줄바꿈·문장 단위 fallback.
-    OCR 출력 형식에 무관하게 작동. (2026-05-16 신설)
-
-    1차: \\n\\n 분리. 단락 수 ≥ min_para 이고 평균 길이 ≤ target_chunk*2 이면 통과.
-    2차: \\n 단일 분리 후 target_chunk 자 단위 누적 청크.
-    3차: 문장(. ! ?) 단위 분리 후 target_chunk 자 단위 누적 청크.
-    """
-    primary = [p.strip() for p in text_raw.split("\n\n") if len(p.strip()) > 50]
-    if len(primary) >= min_para:
-        avg = sum(len(p) for p in primary) / len(primary)
-        if avg <= target_chunk * 2:
-            return _merge_dangling(primary)
-
-    # 2차 — 단일 줄바꿈 후 누적 청크
-    lines = [ln.strip() for ln in text_raw.split("\n") if ln.strip()]
-    chunks: list[str] = []
-    buf = ""
-    for ln in lines:
-        if len(buf) + len(ln) + 1 <= target_chunk:
-            buf = (buf + " " + ln).strip() if buf else ln
-        else:
-            if len(buf) > 50:
-                chunks.append(buf)
-            buf = ln
-    if buf and len(buf) > 50:
-        chunks.append(buf)
-    if len(chunks) >= min_para:
-        return chunks
-
-    # 3차 — 문장 단위 누적 청크
-    import re as _re
-    sentences = _re.split(r"(?<=[.!?])\s+", text_raw.replace("\n", " "))
-    sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
-    chunks = []
-    buf = ""
-    for s in sentences:
-        if len(buf) + len(s) + 1 <= target_chunk:
-            buf = (buf + " " + s).strip() if buf else s
-        else:
-            if len(buf) > 50:
-                chunks.append(buf)
-            buf = s
-    if buf and len(buf) > 50:
-        chunks.append(buf)
-    return chunks if chunks else primary  # 정말 아무것도 안 잡히면 1차 반환
-
-
-def translate(text: str, engine: str, glossary: dict | None = None) -> str | None:
-    """단락 하나를 'provider:model' 엔진으로 영→한 번역. 실패 시 None(영어 유지).
-    glossary: 앞 단락들에서 이미 소개된 고유명사 {원어: 한글} — 한글만 쓰게 지시."""
-    global _translate_error_logged
-    if not engine or ":" not in engine:
-        return None
-    provider, model = engine.split(":", 1)
-    sys_prompt = build_translate_system()
-    if glossary:
-        # 이미 소개된 고유명사 — 목표 언어 표기만 쓰게 지시 (최근 80개 제한)
-        _pairs = "; ".join(f"{en} = {ko}" for en, ko in list(glossary.items())[-80:])
-        sys_prompt += " Already-introduced proper nouns (target-language form only, no parentheses): " + _pairs
-    try:
-        out = llm.complete(provider, model, sys_prompt, text, max_tokens=8192)
-        return out.strip() or None
-    except Exception as e:
-        if not _translate_error_logged:
-            append_log(f"ERROR: 번역 실패 [{engine}] ({type(e).__name__}): {str(e)[:300]}")
-            _translate_error_logged = True
-        return None
-
-
-def wiki_generator_running() -> bool:
-    # 윈도우: pgrep 없음 — psutil로 커맨드라인 검사 (2026-06-11 윈도우 크래시 수정)
-    try:
-        import psutil
-        return any(
-            "gemini_wiki.py" in " ".join(p.info.get("cmdline") or [])
-            for p in psutil.process_iter(["cmdline"])
-        )
-    except Exception:
-        return False
-
-
-def _wiki_env() -> dict:
-    """위키 생성기 자식 프로세스 환경. 업로드 탭에서 고른 보관함(Vault)가 있으면
-    MYBOOKSHELF_WIKI_DIR로 전달(config.py가 WIKI_DIR로 해석). (2026-06-11)"""
-    env = {**os.environ, "PYTHONUTF8": "1"}   # 윈도우 cp949에서 이모지 출력 크래시 방지
-    target = (st.session_state.get("wiki_target_dir") or "").strip()
-    if target and Path(target).expanduser().resolve() != WIKI_DIR.resolve():
-        env["MYBOOKSHELF_WIKI_DIR"] = target
-    return env
+# ── UI 래퍼: 세션에서 고른 보관함(Vault)을 위키 서비스에 전달 ──────
+def trigger_gemini_wiki(txt_path: Path) -> bool:
+    return wiki_svc.trigger_gemini_wiki(txt_path, st.session_state.get("wiki_target_dir"))
 
 
 def trigger_wiki_generation() -> int:
-    """미처리 책을 Gemini 위키 생성기로 일괄 생성(--all). (2026-06-09 Gemini화)
-    add_pdf/raw/processed의 *.txt 중 gemini_done에 없는 것을 처리한다."""
-    if wiki_generator_running():
-        return 0
-    if not GEMINI_WIKI.exists():
-        append_log(f"ERROR: GEMINI_WIKI 부재 - {GEMINI_WIKI}")
-        return 0
-    log_path = WIKI_LOG / f"gemini_wiki_{datetime.now().strftime('%Y%m%d')}.log"
-    try:
-        env = _wiki_env()
-        subprocess.Popen(
-            [cfg.PYTHON, "-u", str(GEMINI_WIKI), "--all"],
-            stdout=open(log_path, "a", encoding="utf-8"), stderr=subprocess.STDOUT,
-            env=env,
-        )
-        append_log("Gemini Wiki 일괄 생성(--all) 트리거"
-                   + (f" → 보관함(Vault) {env['MYBOOKSHELF_WIKI_DIR']}" if "MYBOOKSHELF_WIKI_DIR" in env else ""))
-    except Exception as e:
-        append_log(f"ERROR: gemini_wiki --all Popen 실패 ({type(e).__name__}) {str(e)[:200]}")
-    return 0
-
-
-def trigger_gemini_wiki(txt_path: Path) -> bool:
-    """주어진 TXT(책 전문)를 Gemini 위키 생성기로 백그라운드 생성. (2026-06-09)
-    RAG·임베드 없이 책 통째를 Gemini에 넣어 옵시디언 노트를 만든다."""
-    if not txt_path or not Path(txt_path).exists():
-        append_log(f"WARN: Gemini wiki — TXT 없음 ({txt_path})")
-        return False
-    if not GEMINI_WIKI.exists():
-        append_log(f"ERROR: GEMINI_WIKI 부재 - {GEMINI_WIKI}")
-        return False
-    log_path = WIKI_LOG / f"gemini_wiki_{datetime.now().strftime('%Y%m%d')}.log"
-    # 챕터 모드 auto: 긴 책(30만자↑)+진짜 장구조면 장별 노트, 아니면 단일 노트로 자동 폴백.
-    if CHAPTER_WIKI.exists():
-        cmd = [cfg.PYTHON, "-u", str(CHAPTER_WIKI), "--file", str(txt_path), "--mode", "auto"]
-    else:
-        cmd = [cfg.PYTHON, "-u", str(GEMINI_WIKI), "--file", str(txt_path)]
-    try:
-        env = _wiki_env()
-        subprocess.Popen(cmd, stdout=open(log_path, "a", encoding="utf-8"),
-                         stderr=subprocess.STDOUT, env=env)
-        append_log(f"Wiki 트리거({'챕터auto' if CHAPTER_WIKI.exists() else 'gemini'}): {Path(txt_path).name}"
-                   + (f" → 보관함(Vault) {env['MYBOOKSHELF_WIKI_DIR']}" if "MYBOOKSHELF_WIKI_DIR" in env else ""))
-        return True
-    except Exception as e:
-        append_log(f"ERROR: gemini_wiki Popen 실패 ({type(e).__name__}) {str(e)[:200]}")
-        return False
-
-
-def check_wiki_orphans() -> dict:
-    """raw → wiki → processed 3단계 누락 자리 감지 (2026-05-16 신설).
-    raw/processed 이동 버그(2026-05-14 관측) 흔적 자동 감지용.
-
-    반환:
-      - wiki_done_raw_remaining: wiki 본문(.md)은 생성됐는데 raw .txt가 남아 있는 자리
-        (wiki_generator.py가 raw → processed 이동에 실패한 흔적)
-      - raw_pending: 아직 처리되지 않은 raw .txt 개수
-      - wiki_total: 생성된 wiki .md 총 개수
-    """
-    wiki_stems = {p.stem for p in WIKI_DIR.rglob("*.md")}
-    raw_files = [f for f in RAW_DIR.rglob("*.txt")
-                 if not (PROCESSED_DIR / f.name).exists()]
-    # wiki는 됐는데 raw가 남아 있는 자리
-    orphans = [f for f in raw_files if f.stem in wiki_stems]
-    pending = [f for f in raw_files if f.stem not in wiki_stems]
-    return {
-        "wiki_done_raw_remaining": len(orphans),
-        "orphan_files": [str(f) for f in orphans[:10]],  # 표시용 상위 10건
-        "raw_pending": len(pending),
-        "wiki_total": len(wiki_stems),
-    }
-
-
-def append_log(msg: str):   # encoding 미지정이면 윈도우 cp949 → 이모지에서 크래시 (2026-06-11)
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(LOG_FILE, "a", encoding="utf-8", errors="replace") as f:
-        f.write(f"[{ts}] {msg}\n")
-
-
-def _save_bilingual_atomic(path: Path, blocks: list[str]):
-    """tmp 경유 원자적 저장 — 단락마다 호출해도 파일이 깨지지 않음.
-
-    덮어쓰기 가드 (2026-05-17 추가, 2602.21012 손실 사고 재발 방지):
-    기존 파일의 블록 수가 새 블록 수보다 *크면* 진행분 손실 위험으로 판단,
-    `.bakN` 회전 후 저장. N은 1부터 시작, 기존 .bakN 존재 시 N+1.
-    """
-    new_n = len(blocks)
-    if path.exists() and new_n >= 0:
-        try:
-            existing = path.read_text(encoding="utf-8", errors="ignore")
-            existing_n = sum(
-                1 for b in existing.split("\n\n---\n\n") if b.strip()
-            )
-        except Exception:
-            existing_n = 0
-        if new_n < existing_n:
-            i = 1
-            while True:
-                bak = path.with_name(path.name + f".bak{i}")
-                if not bak.exists():
-                    break
-                i += 1
-            try:
-                path.rename(bak)
-                append_log(
-                    f"GUARD: 덮어쓰기 차단 — 기존 {existing_n}블록 > "
-                    f"새 {new_n}블록 ({path.name}), 백업 회전 → {bak.name}"
-                )
-            except Exception as e:
-                append_log(
-                    f"GUARD: 백업 회전 실패 ({type(e).__name__}): {e} — "
-                    f"저장은 진행"
-                )
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text("\n\n---\n\n".join(blocks), encoding="utf-8")
-    tmp.replace(path)
-
-
-def _save_en_ko_split(bilingual_path: Path, blocks: list[str]):
-    """bilingual blocks에서 영어 원본·한글 본만 분리해 _en.txt·_ko.txt로 저장 (2026-05-19)."""
-    stem = bilingual_path.stem.removesuffix("_bilingual")
-    en_path = bilingual_path.parent / f"{stem}_en.txt"
-    ko_path = bilingual_path.parent / f"{stem}_ko.txt"
-    en_lines = []
-    ko_lines = []
-    for b in blocks:
-        b = b.strip()
-        if not b: continue
-        parsed = _parse_bilingual_block(b)
-        if parsed:
-            src_text, tgt_text = parsed
-            if src_text:
-                en_lines.append(src_text)
-            if tgt_text and not tgt_text.startswith("(원문 보존"):
-                ko_lines.append(tgt_text)
-    try:
-        en_path.write_text("\n\n".join(en_lines), encoding="utf-8")
-        ko_path.write_text("\n\n".join(ko_lines), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _save_json_atomic(path: Path, data) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
-
-
-# ─── 재시도 대기 파일 wrapper (file_uploader 인터페이스 모방, 2026-05-19) ──
-class _PathAsUpload:
-    """Path를 file_uploader 결과와 같은 인터페이스로 감싸기."""
-    def __init__(self, p):
-        self._p = Path(p)
-        self.name = self._p.name
-    def read(self) -> bytes:
-        return self._p.read_bytes()
-    def seek(self, pos: int):
-        pass   # read()가 매번 디스크에서 새로 읽음 — UploadedFile.seek 호환용 (2026-06-11)
-
-
-# ─── 일시정지 플래그 (워커 thread ↔ 메인 UI 통신, 2026-05-19) ──────────
-PAUSE_DIR = cfg.PAUSE_DIR
-PAUSE_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def pause_flag_path(stem: str) -> Path:
-    """파일명 안전화 — 한글·공백 그대로 둠 (Path가 처리)."""
-    return PAUSE_DIR / f"{stem}.pause"
-
-
-def is_paused(stem: str) -> bool:
-    return pause_flag_path(stem).exists()
-
-
-def set_paused(stem: str, paused: bool):
-    p = pause_flag_path(stem)
-    if paused:
-        p.touch()
-    else:
-        if p.exists():
-            try: p.unlink()
-            except Exception: pass
+    return wiki_svc.trigger_wiki_generation(st.session_state.get("wiki_target_dir"))
 
 
 # ─── 한 파일 통째 처리 함수 (Phase 1 + Phase 2, 2026-05-19 추출) ────
@@ -994,1055 +425,6 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
         "md_path": str(final_md) if final_md else "",
         "bilingual_path": str(bilingual_p) if bilingual_p is not None else "",
     }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# P6. 각주·미주·인용 번역 skip (2026-05-17 추가)
-# 학술 인용은 번역 가치 낮음 (저자명·연도·DOI·URL 형식). 원어 보존이 학술 추적
-# 에 유리. 본 PDF 검증: 단락의 ~49% skip → 번역 비용·시간 절반 절감.
-# ─────────────────────────────────────────────────────────────────────────────
-
-_FOOTNOTE_DAGGER    = _re.compile(r"^\s*†\s")
-_CITATION_NUMBERED  = _re.compile(r"^\s*\[?[0-9]+\*?\]?\s+[A-Z][^.]*,\s+[A-Z]")
-_CITATION_BULLET    = _re.compile(r"^\s*-\s+[0-9]+\*?\s+[A-Z]")
-_CITATION_URL_HEAVY = _re.compile(r"(https?://|arXiv|doi\.org|dx\.doi)", _re.IGNORECASE)
-# 단독 페이지번호·그래프 레이블: 숫자·공백·쉼표·점·하이픈만으로 이루어진 짧은 단락
-# "100", "80", "3,000 4,000 5,000", "1-10" 등 → 번역 불필요
-_PAGE_NUMBER_ONLY   = _re.compile(r"^[\d\s,.\-–—%]+$")
-# OCR 분리 또는 일반 각주 번호로 시작하는 단락 감지
-# "1 ", "[1] ", "1.", "1)", "1 0 " (OCR split 10), "1 2 " (OCR split 12) 등
-_FOOTNOTE_NUM_START = _re.compile(
-    r"^\s*(?:"
-    r"\[?\d{1,3}\]?[\s.,):]"    # 일반: [1] · 1. · 1) · 1:
-    r"|"
-    r"\d\s\d[\s.,):]"           # OCR 분리 두 자리: "1 0 " "2 3." 등
-    r")\s*\S"
-)
-# 소제목·목차 오탐 방지: 인용 마커(숫자·참조 키워드) 없는 짧은 텍스트를 각주로 처리 안 함
-_RE_CITE_MARKER = _re.compile(
-    r"\d|같은|참조|ibid|op\.|p\.|각주|위의|앞의|출처|see\s|cf\.", _re.IGNORECASE
-)
-_RE_EDITION_INFO = _re.compile(r"^판\s*\d")   # "판 1 쇄…" 등 출판 판수 정보
-# 명시적 인용 마커: 쪽수·연도·저자이니셜·성경책·URL 등 — 소제목과 구별
-_RE_EXPLICIT_CITE = _re.compile(
-    r"같은\s*책|위의\s*책|앞의\s*책|ibid|op\.\s*cit|"
-    r"p\.\s*\d+|pp\.\s*\d+|각주\s*\d|"
-    r"\d+\s*쪽|쪽[,. ]|"
-    r"[A-Z][a-z]{1,15},\s+[A-Z]|"          # Author, I. 패턴
-    r"\b(19|20)\d{2}[),]|"                 # (2020) 또는 2020) 연도
-    r"마태|누가복음|요한복음|로마서|고린도|갈라디|에베|"
-    r"시편\s*\d|잠언\s*\d|창세기|출애굽|이사야|예레미야|"
-    r"https?://|doi:\s*10|www\.",
-    _re.IGNORECASE
-)
-
-
-def _is_short_heading(text: str) -> bool:
-    """목차·소제목(각주 아님) 판별: 20자 이하이고 인용 마커가 없으면 True."""
-    text = text.strip()
-    if _RE_EDITION_INFO.match(text):   # "판 N 쇄" 형태 = 출판 정보
-        return True
-    if len(text) > 20:
-        return False
-    return not _RE_CITE_MARKER.search(text)
-
-
-def _parse_footnote_number(p: str) -> int | None:
-    """단락 선두 각주 번호를 정수로 반환. OCR 분리 숫자("1 0"→10) 포함. 없으면 None.
-
-    오탐 방지:
-    - 줄바꿈 포함 → 섹션 제목+본문 합체, None
-    - "1.3.4" 형태 소단원 번호 → None
-    - 20자 이하 + 인용 마커 없음 → 목차·소제목, None
-    """
-    p = p.strip()
-    # 줄바꿈 포함 = 섹션 본문(제목+내용) → 각주 아님
-    if "\n" in p:
-        return None
-    # OCR 분리 두 자리 숫자 우선 ("1 0 text" → 10)
-    m = _re.match(r"^(\d)\s(\d)[\s.,):]\s*\S", p)
-    if m:
-        remaining = p[m.end() - 1:].strip()
-        if _is_short_heading(remaining):
-            return None
-        return int(m.group(1) + m.group(2))
-    # 일반 숫자 (최대 3자리): 구분자가 "."이고 바로 뒤가 숫자면 소수점 → 제외
-    m = _re.match(r"^\[?(\d{1,3})\]?([\s.,):])(.)", p)
-    if m:
-        sep, nxt = m.group(2), m.group(3)
-        if sep == "." and nxt.isdigit():   # "1.3.4" 같은 소단원 번호
-            return None
-        remaining = p[m.end() - 1:].strip()
-        if _is_short_heading(remaining):
-            return None
-        return int(m.group(1))
-    return None
-
-
-def find_sequential_footnotes(paragraphs: list[str], min_run: int = 3,
-                               max_len: int = 300) -> set[int]:
-    """연속 번호(1,2,3…)로 이루어진 각주 단락 인덱스를 반환.
-
-    조건:
-    - 단락이 각주 번호로 시작하고 max_len 이하
-    - 3개 이상 연속 증가 번호 묶음(run)이 존재
-    OCR 분리 숫자("1 0" = 10)도 처리.
-
-    오탐 방지 (Q&A 문답/목차 구조):
-    - 첫 번째 런 위치가 문서 앞 50% 이내 AND 감지 비율 > 15% → 본문 구조로 판정, 빈 셋 반환
-    """
-    total = len(paragraphs)
-    # (index, number) 후보 수집
-    candidates: list[tuple[int, int]] = []
-    for i, p in enumerate(paragraphs):
-        if len(p.strip()) > max_len:
-            continue
-        n = _parse_footnote_number(p)
-        if n is not None and 1 <= n <= 999:
-            candidates.append((i, n))
-
-    if len(candidates) < min_run:
-        return set()
-
-    skip: set[int] = set()
-    # 연속 run 탐지: n, n+1, n+2 … 가 연달아 나오는 구간 찾기
-    run_start = 0
-    first_run_idx: int | None = None
-    for k in range(1, len(candidates)):
-        prev_n = candidates[k - 1][1]
-        curr_n = candidates[k][1]
-        if curr_n != prev_n + 1:
-            run_len = k - run_start
-            if run_len >= min_run:
-                if first_run_idx is None:
-                    first_run_idx = candidates[run_start][0]
-                for j in range(run_start, k):
-                    skip.add(candidates[j][0])
-            run_start = k
-    # 마지막 run 처리
-    run_len = len(candidates) - run_start
-    if run_len >= min_run:
-        if first_run_idx is None:
-            first_run_idx = candidates[run_start][0]
-        for j in range(run_start, len(candidates)):
-            skip.add(candidates[j][0])
-
-    if not skip:
-        return set()
-
-    # Q&A 문답·목차 오탐 방지: 첫 런이 앞 50%에 있고 감지 비율이 15% 초과면 제외
-    if first_run_idx is not None and total > 0:
-        position_ratio = first_run_idx / total
-        detect_ratio   = len(skip) / total
-        if position_ratio < 0.5 and detect_ratio > 0.15:
-            return set()
-
-    # 명시적 인용 마커 부재 시 오탐 처리: 소제목·통계표 등 비인용 구조
-    # 정상 각주는 반드시 쪽수·저자·성경책명·URL 등 하나 이상 포함
-    has_any_cite = any(
-        _RE_EXPLICIT_CITE.search(paragraphs[i])
-        for i in skip
-        if i < total
-    )
-    if not has_any_cite:
-        return set()
-
-    return skip
-
-_SKIP_SECTION_NAMES = {
-    "references", "bibliography", "works cited", "참고문헌",
-    "literaturverzeichnis", "bibliographie", "références",
-    "referencias", "参考文献", "referências", "referenties",
-    "список литературы", "список источников",   # Russian
-    "المراجع", "قائمة المراجع",                  # Arabic
-    "ביבליוגרפיה", "מקורות",                      # Hebrew
-    "ማጣቀሻዎች",                                    # Amharic
-    "tài liệu tham khảo",                        # Vietnamese
-    "daftar pustaka", "referensi",               # Indonesian
-    "รายการอ้างอิง",                               # Thai
-}
-
-
-def _paragraph_already_target(paragraph: str, threshold: float = 0.6) -> bool:
-    """단락에 한글 비율이 threshold 이상이면 이미 번역된 것으로 간주."""
-    p = paragraph.strip()
-    if not p:
-        return False
-    hits = len(_KO_SCRIPT.findall(p))
-    return (hits / max(len(p), 1)) >= threshold
-
-
-def should_skip_translation(paragraph: str) -> bool:
-    """단락 번역 생략 조건: 인용·각주 (이미 목표 언어 단락은 캐시로 별도 처리)."""
-    p = paragraph.strip()
-    if not p:
-        return True
-    if _FOOTNOTE_DAGGER.match(p):
-        return True
-    if _CITATION_NUMBERED.match(p):
-        return True
-    if _CITATION_BULLET.match(p):
-        return True
-    # OCR 분리 포함 각주 번호 시작 + 짧은 단락
-    if len(p) < 500 and _FOOTNOTE_NUM_START.match(p):
-        return True
-    # 짧고 URL 들어간 단락 = 인용일 가능성 (500자 이하 + arXiv/DOI/URL)
-    if len(p) < 500 and _CITATION_URL_HEAVY.search(p):
-        return True
-    return False
-
-
-def should_drop_paragraph(paragraph: str) -> bool:
-    """bilingual에서 완전 제외할 단락 — 번역·미주 어디에도 포함하지 않음.
-    페이지 번호, 그래프 Y축 레이블 등 번역 결과물에 불필요한 OCR 잡음."""
-    p = paragraph.strip()
-    if not p:
-        return True
-    # 숫자·공백·구두점만으로 이루어진 80자 이하 단락 (페이지번호·그래프레이블)
-    if len(p) <= 80 and _PAGE_NUMBER_ONLY.match(p):
-        return True
-    return False
-
-
-def find_skip_section_paragraphs(paragraphs: list[str]) -> set[int]:
-    """`## References` 헤더 ~ 다음 `## ` 헤더 전까지 단락 인덱스 집합 반환.
-
-    `## Glossary`는 *번역 유지* — 학술 용어 한글 번역이 본 논문 자료로 유용.
-
-    헤더가 없는 미주 영역도 tail 휴리스틱으로 자동 감지 (2026-05-18 추가):
-    PDF→MD 변환 과정에서 References/Bibliography 헤더가 누락된 경우, 단락 끝쪽의
-    마지막 *narrative* 단락(>=400자, 인용 신호 없음) 이후가 미주로 추정되면 skip.
-    """
-    skip_idxs: set[int] = set()
-    in_skip = False
-    for i, p in enumerate(paragraphs):
-        stripped = p.strip()
-        if stripped.startswith("## "):
-            section = stripped[3:].strip().lower()
-            if section in _SKIP_SECTION_NAMES:
-                in_skip = True
-                skip_idxs.add(i)
-                continue
-            in_skip = False
-            continue
-        if in_skip:
-            skip_idxs.add(i)
-
-    # tail 자동 감지: 헤더 기반 skip이 *없을 때만* 발동 (오탐 방지)
-    if not skip_idxs and len(paragraphs) >= 50:
-        scan_start = int(len(paragraphs) * 0.6)
-        last_narrative = -1
-        for i in range(len(paragraphs) - 1, scan_start - 1, -1):
-            p = paragraphs[i].strip()
-            if (
-                len(p) >= 400
-                and not _CITATION_URL_HEAVY.search(p)
-                and not _CITATION_NUMBERED.match(p)
-                and not _CITATION_BULLET.match(p)
-                and not _FOOTNOTE_DAGGER.match(p)
-                and not _FOOTNOTE_NUM_START.match(p)
-            ):
-                last_narrative = i
-                break
-        if 0 <= last_narrative < len(paragraphs) - 5:
-            for i in range(last_narrative + 1, len(paragraphs)):
-                skip_idxs.add(i)
-
-    return skip_idxs
-
-
-def _move_unassigned_to_ws(stem: str, new_ws: str) -> int:
-    """_unassigned 아래의 stem 관련 파일을 new_ws로 이동. 이동 건수 반환. (2026-05-18)"""
-    src_ws_dir = DONE_DIR / "_unassigned"
-    dst_ws_dir = DONE_DIR / new_ws
-    if not src_ws_dir.exists():
-        return 0
-    moved = 0
-    pairs = [
-        (src_ws_dir / f"{stem}.pdf",                                 dst_ws_dir / f"{stem}.pdf"),
-        (src_ws_dir / MD_SUB         / f"{stem}.md",                  dst_ws_dir / MD_SUB         / f"{stem}.md"),
-        (src_ws_dir / TXT_SUB        / f"{stem}.txt",                 dst_ws_dir / TXT_SUB        / f"{stem}.txt"),
-        (src_ws_dir / TRANS_SUB / f"{stem}_bilingual.txt",       dst_ws_dir / TRANS_SUB / f"{stem}_bilingual.txt"),
-    ]
-    for src, dst in pairs:
-        if src.exists():
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                shutil.move(str(src), str(dst))
-                moved += 1
-            except Exception as e:
-                append_log(f"WARN: _unassigned→{new_ws} 이동 실패 ({src.name}): {e}")
-    return moved
-
-
-def load_pipeline_results() -> list:
-    if not RESULTS_FILE.exists():
-        return []
-    try:
-        return json.loads(RESULTS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-
-
-def save_pipeline_results(results: list):
-    try:
-        RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        RESULTS_FILE.write_text(
-            json.dumps(results, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except Exception:
-        pass
-
-
-def read_log(n: int = 20) -> list:
-    if not LOG_FILE.exists():
-        return []
-    return LOG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()[-n:]
-
-
-def open_path(p: Path, reveal: bool = False):
-    """파일을 OS 기본 앱으로 열기. reveal=폴더에서 선택 표시.
-    (2026-06-11 윈도우 수정 — 'open'은 맥 전용)"""
-    try:
-        if reveal:
-            # 리스트로 넘기면 인자 전체가 따옴표로 감싸여 explorer가 무시하고
-            # 문서 폴더를 열어버림 — 경로만 따옴표한 문자열로 직접 구성 (2026-06-11)
-            subprocess.run(f'explorer /select,"{p}"')
-        else:
-            os.startfile(str(p))
-    except Exception as e:
-        append_log(f"WARN: 파일 열기 실패 ({type(e).__name__}) {str(e)[:120]}")
-
-
-def _obsidian_config() -> Path:
-    return Path(os.environ.get("APPDATA", "")) / "obsidian" / "obsidian.json"
-
-
-def ensure_obsidian_vault(folder: Path) -> bool:
-    """folder를 옵시디언 보관함(Vault) 목록에 등록(이미 있으면 그대로). (2026-06-11)"""
-    cfgf = _obsidian_config()
-    try:
-        folder.mkdir(parents=True, exist_ok=True)
-        data = json.loads(cfgf.read_text(encoding="utf-8")) if cfgf.exists() else {}
-        vaults = data.setdefault("vaults", {})
-        for v in vaults.values():
-            try:
-                if Path(v.get("path", "")).resolve() == folder.resolve():
-                    return True
-            except Exception:
-                continue
-        import secrets
-        vaults[secrets.token_hex(8)] = {"path": str(folder.resolve()),
-                                        "ts": int(datetime.now().timestamp() * 1000)}
-        cfgf.parent.mkdir(parents=True, exist_ok=True)
-        cfgf.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        return True
-    except Exception as e:
-        append_log(f"WARN: 옵시디언 보관함(Vault) 등록 실패 ({type(e).__name__}) {str(e)[:120]}")
-        return False
-
-
-def list_obsidian_vaults() -> list[str]:
-    """옵시디언에 등록된 보관함(Vault) 경로 목록. (2026-06-11)"""
-    try:
-        data = json.loads(_obsidian_config().read_text(encoding="utf-8"))
-        return [v.get("path", "") for v in data.get("vaults", {}).values() if v.get("path")]
-    except Exception:
-        return []
-
-
-def set_wiki_dir(path_str: str) -> None:
-    """~/.config/mybookshelf/config.json의 dirs.wiki 갱신 — 앱 재시작 후 적용. (2026-06-11)"""
-    f = cfg.CONFIG_FILE
-    try:
-        d = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
-    except Exception:
-        d = {}
-    d.setdefault("dirs", {})["wiki"] = path_str
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-DEFAULT_WS = "My Bookshelf"   # 단일 기본 폴더
-
-# ── 파이프라인 큐 ────────────────────────────────────────────
-# 각 탭이 완료한 항목을 다음 탭 큐에 등록하는 단방향 파이프라인.
-# 큐 파일: done/My Bookshelf/.pipeline_queue.json
-# 단계: tab2_ready(분할), tab3_ready(번역), tab4_ready(요약), tab5_ready(Wiki)
-
-_QUEUE_FILE = DONE_DIR / DEFAULT_WS / ".pipeline_queue.json"
-_QUEUE_STAGES = ["tab2_ready", "tab3_ready", "tab4_ready", "tab4_failed", "tab5_ready"]
-
-def _q_load() -> dict:
-    try:
-        return json.loads(_QUEUE_FILE.read_text(encoding="utf-8")) if _QUEUE_FILE.exists() else {}
-    except Exception:
-        return {}
-
-def _q_save(data: dict) -> None:
-    _QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _QUEUE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-def queue_list(stage: str) -> list[str]:
-    """큐에서 해당 단계 항목 목록 반환."""
-    return _q_load().get(stage, [])
-
-def queue_add(stage: str, items: list[str]) -> None:
-    """큐에 항목 추가 (중복 제거)."""
-    d = _q_load()
-    cur = d.get(stage, [])
-    for it in items:
-        if it not in cur:
-            cur.append(it)
-    d[stage] = cur
-    _q_save(d)
-
-def queue_remove(stage: str, items: list[str]) -> None:
-    """큐에서 항목 제거."""
-    d = _q_load()
-    cur = d.get(stage, [])
-    d[stage] = [x for x in cur if x not in set(items)]
-    _q_save(d)
-
-def queue_clear(stage: str) -> None:
-    d = _q_load()
-    d[stage] = []
-    _q_save(d)
-
-
-_HANGUL_RE = _re.compile(r'[가-힣ᄀ-ᇿ㄰-㆏]')
-
-def _needs_translation(stem: str) -> bool:
-    """책 제목(stem)에 한글이 없으면 번역 필요(영문 등), 한글 있으면 번역 불필요."""
-    return not bool(_HANGUL_RE.search(stem))
-
-
-def open_wiki_vault():
-    """위키 폴더를 옵시디언 보관함(Vault)로 등록 후 옵시디언으로 열기. 실패 시 폴더라도 연다."""
-    ensure_obsidian_vault(WIKI_DIR)
-    from urllib.parse import quote
-    uri = "obsidian://open?path=" + quote(str(WIKI_DIR.resolve()))
-    try:
-        os.startfile(uri)
-    except Exception:
-        open_path(WIKI_DIR)
-
-
-def notify(msg: str, title: str = "My Bookshelf"):
-    return
-
-
-# ─── 단계별 처리 헬퍼 ──────────────────────────────────────
-
-def chapters_dir(ws_name: str, stem: str) -> Path:
-    return DONE_DIR / ws_name / "chapters" / stem
-
-
-def _single_chapter_name(stem: str) -> str:
-    safe = _re.sub(r'[/\\:*?"<>|]', " ", stem).strip()[:50].strip(" .,:-")
-    return f"01_{safe or '본문'}.txt"
-
-
-def _is_small_document_for_whole_translation(text: str) -> bool:
-    sample = (text or "").strip()
-    if not sample:
-        return False
-    paragraphs = _split_paragraphs_robust(sample, target_chunk=1800, min_para=4)
-    return len(sample) <= 120_000 or len(paragraphs) <= 14
-
-
-def _write_single_chapter_from_text(ws_name: str, stem: str, text: str) -> tuple[Path, bool]:
-    ch_dir = chapters_dir(ws_name, stem)
-    ch_dir.mkdir(parents=True, exist_ok=True)
-    for old in ch_dir.glob("*"):
-        if old.is_file():
-            try:
-                old.unlink()
-            except Exception:
-                pass
-    ch_path = ch_dir / _single_chapter_name(stem)
-    ch_path.write_text(text, encoding="utf-8")
-    return ch_path, True
-
-
-def list_done_books() -> list[tuple[str, str, Path]]:
-    """(ws, stem, txt_path) — done 폴더의 모든 책 TXT (1_txt/ 우선, 루트 fallback)."""
-    books: list[tuple[str, str, Path]] = []
-    if not DONE_DIR.exists():
-        return books
-    for ws_dir in sorted(DONE_DIR.iterdir()):
-        if not ws_dir.is_dir() or ws_dir.name.startswith("_"):
-            continue
-        ws = ws_dir.name
-        seen: set[str] = set()
-        txt_sub = ws_dir / TXT_SUB
-        if txt_sub.exists():
-            for txt in sorted(txt_sub.glob("*.txt")):
-                s = _nfc(txt.stem)
-                if s not in seen:
-                    books.append((ws, s, txt)); seen.add(s)
-        for txt in sorted(ws_dir.glob("*.txt")):
-            s = _nfc(txt.stem)
-            if s not in seen:
-                books.append((ws, s, txt)); seen.add(s)
-    return books
-
-
-def split_book_to_chapters(ws_name: str, stem: str, allow_short: bool = False) -> tuple[int, str]:
-    """장 분리 실행. 챕터 TXT 파일 저장. (저장 수, 오류 메시지) 반환."""
-    try:
-        import chapter_wiki as _cw
-    except ImportError:
-        return 0, "chapter_wiki 임포트 실패"
-    txt_p = find_txt(DONE_DIR, ws_name, stem)
-    md_p  = find_md(DONE_DIR, ws_name, stem)
-    md_text  = md_p.read_text(encoding="utf-8", errors="ignore")  if md_p  else None
-    txt_text = txt_p.read_text(encoding="utf-8", errors="ignore") if txt_p else None
-    if not md_text and not txt_text:
-        return 0, "TXT/MD 파일 없음"
-    source_text = txt_text or md_text or ""
-    if _is_small_document_for_whole_translation(source_text) and not allow_short:
-        return 0, "짧은 문서 감지"
-    mode, chapters = _cw.chapter_split(md_text, txt_text)
-    if (mode == "single" or not chapters) and allow_short:
-        ch_path, _ = _write_single_chapter_from_text(ws_name, stem, source_text)
-        return 1, f"짧은 문서라 단일장으로 저장됨 → {ch_path.name}"
-    if mode == "single" or not chapters:
-        return 0, "장 구조 감지 안 됨 — 단일 본문입니다 (기존 위키 생성 탭을 쓰세요)"
-    ch_dir = chapters_dir(ws_name, stem)
-    ch_dir.mkdir(parents=True, exist_ok=True)
-    saved = 0
-    for i, (title, body) in enumerate(chapters, 1):
-        safe = _re.sub(r'[/\\:*?"<>|]', ' ', title).strip()[:50].strip(" .,:-")
-        (ch_dir / f"{i:02d}_{safe}.txt").write_text(body, encoding="utf-8")
-        saved += 1
-    return saved, ""
-
-
-def _merge_chapter_folder(ws_name: str, stem: str, prefer_ko: bool = False) -> tuple[bool, Path | None, str]:
-    """챕터 폴더를 하나의 TXT로 다시 합친다. prefer_ko=True면 각 챕터의 _ko.txt 우선."""
-    ch_dir = chapters_dir(ws_name, stem)
-    if not ch_dir.exists():
-        return False, None, "챕터 폴더 없음"
-    chapters = sorted(
-        [f for f in ch_dir.glob("??_*.txt") if not f.stem.endswith(("_ko", "_wiki"))],
-        key=lambda p: p.name,
-    )
-    if not chapters:
-        return False, None, "합칠 챕터가 없음"
-    out_dir = txt_dir(DONE_DIR, ws_name)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / (f"{stem}__merged_ko.txt" if prefer_ko else f"{stem}__merged.txt")
-    parts: list[str] = [f"# {stem}", ""]
-    used_ko = 0
-    for ch in chapters:
-        body_path = ch.with_name(ch.stem + "_ko.txt") if prefer_ko and ch.with_name(ch.stem + "_ko.txt").exists() else ch
-        if body_path != ch:
-            used_ko += 1
-        title = _re.sub(r"^\d+_", "", ch.stem)
-        parts += [f"## {title}", body_path.read_text(encoding="utf-8", errors="ignore").strip(), ""]
-    out_path.write_text("\n".join(parts).strip() + "\n", encoding="utf-8")
-    return True, out_path, f"{len(chapters)}개 챕터 합침" + (f" · 번역본 {used_ko}개 사용" if used_ko else "")
-
-
-def translate_one_chapter(ch_path: Path, engine: str, progress_cb=None) -> tuple[bool, str]:
-    """단일 챕터 TXT 번역 → _ko.txt 저장. (ok, msg)."""
-    try:
-        text = ch_path.read_text(encoding="utf-8", errors="ignore")
-        ko_path = ch_path.with_name(ch_path.stem + "_ko.txt")
-        progress_path = ch_path.with_name(ch_path.stem + "_ko.progress.json")
-        if not needs_translation(ch_path):
-            ko_path.write_text(text, encoding="utf-8")
-            return True, "이미 한국어 — 그대로 복사"
-        paras = _split_paragraphs_robust(text)
-        out: list[str] = []
-        translated_n = preserved_n = dropped_n = failed_n = resumed_n = api_calls = 0
-        total = len(paras) or 1
-        cached_rows: dict[int, dict] = {}
-        if progress_path.exists():
-            try:
-                loaded = json.loads(progress_path.read_text(encoding="utf-8"))
-                if isinstance(loaded, list):
-                    cached_rows = {
-                        int(row.get("idx")): row
-                        for row in loaded
-                        if isinstance(row, dict) and isinstance(row.get("idx"), int)
-                    }
-            except Exception:
-                cached_rows = {}
-        for idx, p in enumerate(paras, 1):
-            cached = cached_rows.get(idx)
-            if cached and cached.get("src") == p and isinstance(cached.get("tgt"), str):
-                status = cached.get("status")
-                tgt = cached.get("tgt", "")
-                if status == "dropped":
-                    dropped_n += 1
-                else:
-                    out.append(tgt)
-                    if status == "preserved":
-                        preserved_n += 1
-                    elif status == "failed":
-                        failed_n += 1
-                    else:
-                        translated_n += 1
-                resumed_n += 1
-                if progress_cb:
-                    progress_cb(idx, total, translated_n, preserved_n, dropped_n, failed_n, resumed_n, api_calls)
-                continue
-            if should_drop_paragraph(p):
-                dropped_n += 1
-                cached_rows[idx] = {"idx": idx, "src": p, "tgt": "", "status": "dropped"}
-                _save_json_atomic(progress_path, [cached_rows[i] for i in sorted(cached_rows)])
-                if progress_cb:
-                    progress_cb(idx, total, translated_n, preserved_n, dropped_n, failed_n, resumed_n, api_calls)
-                continue
-            if should_skip_translation(p):
-                out.append(p)
-                preserved_n += 1
-                cached_rows[idx] = {"idx": idx, "src": p, "tgt": p, "status": "preserved"}
-            else:
-                ko = _translate_paragraph(p, engine)
-                api_calls += 1
-                if _translation_is_valid(p, ko):
-                    out.append(ko)
-                    translated_n += 1
-                    cached_rows[idx] = {"idx": idx, "src": p, "tgt": ko, "status": "translated"}
-                else:
-                    out.append(p)
-                    failed_n += 1
-                    cached_rows[idx] = {"idx": idx, "src": p, "tgt": p, "status": "failed"}
-            _save_json_atomic(progress_path, [cached_rows[i] for i in sorted(cached_rows)])
-            if progress_cb:
-                progress_cb(idx, total, translated_n, preserved_n, dropped_n, failed_n, resumed_n, api_calls)
-        detail = f"{len(out)}단락 처리 완료 · 재사용 {resumed_n} · 신규번역 {translated_n} · 원문보존 {preserved_n}"
-        if dropped_n:
-            detail += f" · 삭제 {dropped_n}"
-        if failed_n:
-            detail += f" · 실패보존 {failed_n}"
-        if translated_n == 0:
-            ko_path.unlink(missing_ok=True)
-            return False, detail + " — 유효한 한국어 번역 결과가 없습니다"
-        ko_path.write_text("\n\n".join(out), encoding="utf-8")
-        return True, detail
-    except Exception as e:
-        return False, str(e)[:200]
-
-
-def _safe_source_stem(source: str, fallback: str = "paper") -> str:
-    stem = _re.sub(r"^https?://", "", source.strip(), flags=_re.I)
-    stem = _re.sub(r"[^0-9A-Za-z가-힣._-]+", "_", stem).strip("._-")
-    return (stem[:90] or fallback)
-
-
-def _paper_source_candidates(source: str) -> list[str]:
-    """논문 출처(URL/DOI/arXiv)에서 다운로드를 시도할 후보 URL 목록."""
-    from urllib.parse import quote
-
-    src = source.strip()
-    if not src:
-        return []
-    candidates: list[str] = []
-    arxiv = _re.search(r"(?:arxiv\.org/(?:abs|pdf)/)?(\d{4}\.\d{4,5})(?:v\d+)?", src, _re.I)
-    if arxiv:
-        candidates.append(f"https://arxiv.org/pdf/{arxiv.group(1)}")
-    if src.lower().startswith(("http://", "https://")):
-        candidates.append(src)
-    elif src.lower().startswith("doi:"):
-        candidates.append("https://doi.org/" + quote(src[4:].strip(), safe="/.()"))
-    elif src.startswith("10.") and "/" in src:
-        candidates.append("https://doi.org/" + quote(src, safe="/.()"))
-    return list(dict.fromkeys(candidates))
-
-
-def _response_filename(resp, fallback_stem: str, suffix: str) -> str:
-    from urllib.parse import unquote, urlparse
-
-    cd = resp.headers.get("Content-Disposition", "")
-    m = _re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)', cd, _re.I)
-    if m:
-        name = unquote(m.group(1)).strip()
-    else:
-        name = Path(urlparse(resp.geturl()).path).name or fallback_stem + suffix
-    if not Path(name).suffix:
-        name += suffix
-    return _re.sub(r'[/\\:*?"<>|]', "_", name)
-
-
-def _extract_pdf_link_from_html(html: str, base_url: str) -> str | None:
-    from urllib.parse import urljoin
-
-    patterns = [
-        r'<meta[^>]+name=["\']citation_pdf_url["\'][^>]+content=["\']([^"\']+)["\']',
-        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']citation_pdf_url["\']',
-        r'href=["\']([^"\']+\.pdf(?:\?[^"\']*)?)["\']',
-    ]
-    for pat in patterns:
-        m = _re.search(pat, html, _re.I)
-        if m:
-            return urljoin(base_url, m.group(1).replace("&amp;", "&"))
-    return None
-
-
-def _download_ssl_context():
-    try:
-        import certifi
-        return ssl.create_default_context(cafile=certifi.where())
-    except Exception:
-        return ssl.create_default_context()
-
-
-def download_paper_source(source: str) -> tuple[bool, Path | None, str]:
-    """논문 출처가 실제 다운로드 가능한 PDF/TXT인지 확인하고 임시 파일로 저장."""
-    candidates = _paper_source_candidates(source)
-    if not candidates:
-        return False, None, "URL/DOI/arXiv 형식이 아닙니다"
-    fallback_stem = _safe_source_stem(source)
-    headers = {
-        "User-Agent": "MyBookshelf/0.6 (+https://localhost)",
-        "Accept": "application/pdf,text/plain,text/html;q=0.8,*/*;q=0.5",
-    }
-    last_reason = "다운로드 가능한 PDF/TXT 링크를 찾지 못했습니다"
-    seen: set[str] = set()
-    ssl_context = _download_ssl_context()
-    for url in candidates:
-        if url in seen:
-            continue
-        seen.add(url)
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=20, context=ssl_context) as resp:
-                data = resp.read(25 * 1024 * 1024 + 1)
-                if len(data) > 25 * 1024 * 1024:
-                    return False, None, "파일이 25MB를 초과합니다"
-                ctype = (resp.headers.get("Content-Type") or "").lower()
-                final_url = resp.geturl()
-                if data.startswith(b"%PDF") or "application/pdf" in ctype:
-                    name = _response_filename(resp, fallback_stem, ".pdf")
-                    out = Path(tempfile.gettempdir()) / name
-                    out.write_bytes(data)
-                    return True, out, ""
-                if "text/plain" in ctype:
-                    name = _response_filename(resp, fallback_stem, ".txt")
-                    out = Path(tempfile.gettempdir()) / name
-                    out.write_bytes(data)
-                    return True, out, ""
-                if "html" in ctype or data[:512].lstrip().lower().startswith(b"<!doctype html") or b"<html" in data[:2048].lower():
-                    html = data.decode("utf-8", errors="ignore")
-                    pdf_url = _extract_pdf_link_from_html(html, final_url)
-                    if pdf_url and pdf_url not in seen:
-                        candidates.append(pdf_url)
-                    else:
-                        last_reason = "페이지는 열리지만 PDF 다운로드 링크를 찾지 못했습니다"
-                else:
-                    last_reason = f"지원하지 않는 응답 형식입니다: {ctype or '알 수 없음'}"
-        except urllib.error.HTTPError as e:
-            last_reason = f"서버가 HTTP {e.code}로 거부했습니다"
-        except urllib.error.URLError as e:
-            last_reason = f"네트워크 오류: {getattr(e, 'reason', e)}"
-        except Exception as e:
-            last_reason = f"{type(e).__name__}: {str(e)[:160]}"
-    return False, None, last_reason
-
-
-def translate_downloaded_paper(source_file: Path, engine: str, progress_cb=None) -> tuple[bool, str]:
-    """다운로드한 논문 파일을 TXT로 준비한 뒤 한국어 번역본을 저장."""
-    try:
-        txt_dir(DONE_DIR, DEFAULT_WS).mkdir(parents=True, exist_ok=True)
-        pdf_dir = DONE_DIR / DEFAULT_WS / PDF_SUB
-        pdf_dir.mkdir(parents=True, exist_ok=True)
-        if source_file.suffix.lower() == ".pdf":
-            txt_path, _md, err = pdf_to_txt(source_file)
-            if not txt_path:
-                return False, f"PDF 텍스트 추출 실패: {err}"
-            final_pdf = pdf_dir / source_file.name
-            shutil.copy2(str(source_file), str(final_pdf))
-            final_txt = txt_dir(DONE_DIR, DEFAULT_WS) / (source_file.stem + ".txt")
-            shutil.move(str(txt_path), str(final_txt))
-        else:
-            final_txt = txt_dir(DONE_DIR, DEFAULT_WS) / source_file.name
-            shutil.copy2(str(source_file), str(final_txt))
-        ok, msg = translate_one_chapter(final_txt, engine, progress_cb=progress_cb)
-        if ok:
-            queue_add("tab4_ready", [str(final_txt.relative_to(DONE_DIR))])
-            return True, f"{msg} → {final_txt.with_name(final_txt.stem + '_ko.txt').name}"
-        return False, msg
-    except Exception as e:
-        return False, str(e)[:200]
-
-
-def prepare_downloaded_paper_source(source_file: Path) -> tuple[bool, Path | None, str]:
-    """다운로드한 논문 파일을 1_txt에 저장하고 장별분할 대기열에 등록."""
-    try:
-        out_txt_dir = txt_dir(DONE_DIR, DEFAULT_WS)
-        out_txt_dir.mkdir(parents=True, exist_ok=True)
-        pdf_out_dir = DONE_DIR / DEFAULT_WS / PDF_SUB
-        pdf_out_dir.mkdir(parents=True, exist_ok=True)
-        if source_file.suffix.lower() == ".pdf":
-            txt_path, _md, err = pdf_to_txt(source_file)
-            if not txt_path:
-                return False, None, f"PDF 텍스트 추출 실패: {err}"
-            shutil.copy2(str(source_file), str(pdf_out_dir / source_file.name))
-            final_txt = out_txt_dir / (source_file.stem + ".txt")
-            shutil.move(str(txt_path), str(final_txt))
-        else:
-            final_txt = out_txt_dir / source_file.name
-            shutil.copy2(str(source_file), str(final_txt))
-        queue_add("tab2_ready", [_nfc(final_txt.stem)])
-        return True, final_txt, f"{final_txt.name} → 2·장별분할 대기 등록"
-    except Exception as e:
-        return False, None, str(e)[:200]
-
-
-def summarize_one_chapter(ch_path: Path, book_stem: str) -> tuple[bool, str]:
-    """단일 챕터 TXT → 위키 JSON 요약. _wiki.json 저장. (ok, summary snippet)."""
-    try:
-        import chapter_wiki as _cw
-    except ImportError:
-        return False, "chapter_wiki 임포트 실패"
-    try:
-        ko_path = ch_path.with_name(ch_path.stem + "_ko.txt")
-        src = (ko_path if ko_path.exists() else ch_path).read_text(encoding="utf-8", errors="ignore")
-        chap_title = _re.sub(r"^\d+_", "", ch_path.stem)
-        data = _cw.generate_chapter(book_stem, chap_title, src)
-        if not isinstance(data, dict):
-            raise RuntimeError("요약 응답이 JSON 객체가 아님")
-        if not (data.get("summary") and data.get("body")):
-            keys = ", ".join(sorted(map(str, data.keys()))) or "없음"
-            raise RuntimeError(f"요약 응답 필드 부족(summary/body 없음, keys={keys})")
-        (ch_path.with_name(ch_path.stem + "_wiki.json")).write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        return True, (data.get("summary") or "")[:120]
-    except Exception as e:
-        msg = str(e)[:300]
-        try:
-            append_log(f"ERROR: 장별 요약 실패 - {ch_path.name} ({type(e).__name__}) {msg}")
-        except Exception:
-            pass
-        return False, msg[:200]
-
-
-def _ch_link(stem: str, ch_title: str) -> str:
-    """챕터 노트의 Obsidian 위키링크 문자열 반환."""
-    try:
-        import gemini_wiki as _gw
-        return "[[" + _gw.make_filename(_gw.nfc(f"{stem} — {ch_title}"))[:-3] + "]]"
-    except Exception:
-        return f"[[{stem} — {ch_title}]]"
-
-
-def build_single_chapter_wiki(ws_name: str, stem: str, json_path: Path, wiki_dir: Path | None = None) -> tuple[bool, str]:
-    """단일 챕터 _wiki.json → 개별 Obsidian 노트 (전체 요약 노트와 링크 연결). (ok, path or msg)."""
-    try:
-        import gemini_wiki as _gw
-    except ImportError as e:
-        return False, f"임포트 실패: {e}"
-    try:
-        d = json.loads(json_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        return False, f"JSON 읽기 실패: {e}"
-    ch_title = _re.sub(r"^\d+_", "", json_path.stem.replace("_wiki", ""))
-    body  = d.get("body", "")
-    summ  = d.get("summary", "")
-    today = __import__("datetime").date.today().isoformat()
-    _, model = llm.wiki_provider_model()
-
-    # 이전/다음 챕터 탐색 (chapters_dir 내 ??_*.txt 순서 기준)
-    ch_dir = json_path.parent
-    all_stems = [_re.sub(r"^\d+_", "", f.stem)
-                 for f in sorted(ch_dir.glob("??_*.txt"))
-                 if not f.stem.endswith(("_ko", "_wiki"))]
-    cur_idx = all_stems.index(ch_title) if ch_title in all_stems else -1
-    prev_link = _ch_link(stem, all_stems[cur_idx - 1]) if cur_idx > 0 else ""
-    next_link = _ch_link(stem, all_stems[cur_idx + 1]) if 0 <= cur_idx < len(all_stems) - 1 else ""
-    nav = " · ".join(x for x in [prev_link, next_link] if x)
-
-    book_link = "[[" + _gw.make_filename(_gw.nfc(stem))[:-3] + "]]"
-    note_title = f"{stem} — {ch_title}"
-
-    lines = [
-        "---", f"title: {note_title}", f"book: {stem}",
-        f"chapter: {ch_title}", f"model: {model}",
-        f"generated: {today}", "---", "",
-        f"# {ch_title}",
-        f"> ← {book_link}" + (f"  |  {nav}" if nav else ""), "",
-        f"**요약:** {summ}", "", body, "",
-        "---",
-        f"*전체 목차: {book_link}*" + (f"  |  {nav}" if nav else ""),
-    ]
-    fname = _gw.make_filename(_gw.nfc(note_title))
-    _wdir = wiki_dir or WIKI_DIR
-    # 챕터 노트는 책 이름 하위폴더에 저장
-    book_folder = _wdir / _re.sub(r'[/\\:*?"<>|]', '_', stem).strip()
-    book_folder.mkdir(parents=True, exist_ok=True)
-    out_path = book_folder / fname
-    out_path.write_text("\n".join(lines), encoding="utf-8")
-    return True, str(out_path)
-
-
-def build_wiki_from_chapter_summaries(ws_name: str, stem: str, wiki_dir: Path | None = None) -> tuple[bool, str]:
-    """챕터 _wiki.json들 → 옵시디언 위키 노트 생성. (ok, path or msg)."""
-    try:
-        import chapter_wiki as _cw
-        import gemini_wiki as _gw
-    except ImportError as e:
-        return False, f"임포트 실패: {e}"
-    ch_dir = chapters_dir(ws_name, stem)
-    if not ch_dir.exists():
-        return False, "챕터 폴더 없음 — 1단계를 먼저 실행하세요"
-    json_files = sorted(ch_dir.glob("*_wiki.json"))
-    # 기존 wiki 파일 자동 정리 (잘못된 이름/이전 생성물 제거 후 재생성)
-    _wdir_pre = wiki_dir or WIKI_DIR
-    _safe_stem = _re.sub(r'[/\\:*?"<>|]', '_', stem).strip()
-    _book_folder_pre = _wdir_pre / _safe_stem
-    if _book_folder_pre.exists():
-        import shutil as _shutil
-        _shutil.rmtree(str(_book_folder_pre), ignore_errors=True)
-    _hub_pre = _wdir_pre / (_gw.make_filename(_gw.nfc(stem)) if hasattr(_gw, "make_filename") else f"{_safe_stem}.md")
-    if _hub_pre.exists():
-        _hub_pre.unlink()
-    if not json_files:
-        return False, "요약 파일 없음 — 3단계를 먼저 실행하세요"
-    sections = []
-    for i, jf in enumerate(json_files, 1):
-        try:
-            d = json.loads(jf.read_text(encoding="utf-8"))
-            title = _re.sub(r"^\d+_", "", jf.stem.replace("_wiki", ""))
-            sections.append({"idx": i, "title": title,
-                             "summary": d.get("summary", ""),
-                             "body": d.get("body", "")})
-        except Exception:
-            continue
-    if not sections:
-        return False, "유효한 요약 없음"
-    ov = _cw.generate_overview(stem, sections)
-    cat  = ov.get("category", "기타")
-    intro = ov.get("intro", "")
-    summ  = ov.get("summary", "")
-    today = __import__("datetime").date.today().isoformat()
-    prov, model = llm.wiki_provider_model()
-    _wdir = wiki_dir or WIKI_DIR
-    # 챕터 노트는 책 이름 하위폴더에 저장
-    _book_folder = _wdir / _re.sub(r'[/\\:*?"<>|]', '_', stem).strip()
-
-    # 챕터별 개별 노트 존재 여부 확인 (하위폴더 우선, 루트 폴백)
-    all_ch_titles = [s["title"] for s in sections]
-    def _has_ch_note(title):
-        fname = _gw.make_filename(_gw.nfc(f"{stem} — {title}"))
-        return (_book_folder / fname).exists() or (_wdir / fname).exists()
-
-    tags_str = json.dumps([cat], ensure_ascii=False) if cat and cat != "기타" else "[]"
-    lines = [
-        "---", f"title: {stem}", f"category: {cat}",
-        f"tags: {tags_str}",
-        f"source: {stem}.txt",
-        f"model: {model}", f"generated: {today}", "---", "",
-        f"# {stem}", "", intro, "", f"**요약:** {summ}", "",
-    ]
-
-    # 챕터 목차 (개별 노트 있으면 ✅, 없으면 📄)
-    toc_lines = ["## 📋 챕터 목차", ""]
-    for s in sections:
-        exists = _has_ch_note(s["title"])
-        marker = "✅" if exists else "📄"
-        ch_note_link = _ch_link(stem, s["title"])
-        toc_lines.append(f"- {marker} {ch_note_link} — {s['summary'][:60]}{'…' if len(s['summary'])>60 else ''}")
-    lines += toc_lines + [""]
-
-    # 챕터 섹션: 개별 노트 있으면 링크만, 없으면 요약+본문 인라인
-    for s in sections:
-        exists = _has_ch_note(s["title"])
-        ch_note_link = _ch_link(stem, s["title"])
-        if exists:
-            # 개별 노트 이미 있음 → 링크와 한 줄 요약만 (중복 방지)
-            lines += [
-                f"## {s['idx']:02d}. {s['title']}",
-                f"> 📄 {ch_note_link}",
-                "",
-                s["summary"], "",
-            ]
-        else:
-            # 개별 노트 없음 → 요약+본문 인라인 포함
-            lines += [
-                f"## {s['idx']:02d}. {s['title']}",
-                f"> {ch_note_link}",
-                "",
-                s["summary"], "",
-                s["body"], "",
-            ]
-
-    # 기존 개별 챕터 노트들의 책 링크가 올바른지 확인 후 업데이트 (하위폴더 우선)
-    book_link = "[[" + _gw.make_filename(_gw.nfc(stem))[:-3] + "]]"
-    for i, s in enumerate(sections):
-        fname = _gw.make_filename(_gw.nfc(f"{stem} — {s['title']}"))
-        note_path = (_book_folder / fname) if (_book_folder / fname).exists() else (_wdir / fname)
-        if not note_path.exists():
-            continue
-        content = note_path.read_text(encoding="utf-8")
-        # 책 링크가 없으면 상단에 추가
-        if book_link not in content:
-            prev_link = _ch_link(stem, all_ch_titles[i-1]) if i > 0 else ""
-            next_link = _ch_link(stem, all_ch_titles[i+1]) if i < len(all_ch_titles)-1 else ""
-            nav = " · ".join(x for x in [prev_link, next_link] if x)
-            new_head = f"> ← {book_link}" + (f"  |  {nav}" if nav else "")
-            # 첫 번째 # 제목 다음 줄에 삽입
-            updated = _re.sub(
-                r"(^# .+\n)", rf"\1{new_head}\n", content, count=1, flags=_re.MULTILINE
-            )
-            note_path.write_text(updated, encoding="utf-8")
-
-    # 전체 요약 노트는 보관함(Vault) 루트에 저장 (폴더 브라우징 시 책 목록 한눈에)
-    _wdir.mkdir(parents=True, exist_ok=True)
-    out_path = _wdir / _gw.make_filename(_gw.nfc(stem))
-    out_path.write_text("\n".join(lines), encoding="utf-8")
-    _gw.mark_done(_gw.nfc(stem + ".txt"))
-    append_log(f"단계별 Wiki 생성 완료: {out_path.name}")
-    return True, str(out_path)
-
-
-# ─── TXT 단독 처리 (번역·위키 생략) ─────────────────────────
-
-def _do_ocr_only(uf, ws_name: str, fast: bool = False) -> dict:
-    """PDF → TXT 변환만 수행. fast=True이면 pdftotext 직접 추출."""
-    dest = UPLOAD_TMP / uf.name
-    _src = getattr(uf, "_p", None)
-    if not (_src and Path(_src).resolve() == dest.resolve()):
-        uf.seek(0)
-        with open(dest, "wb") as f:
-            f.write(uf.read())
-    done_sub = DONE_DIR / ws_name
-    done_sub.mkdir(parents=True, exist_ok=True)
-    if dest.suffix.lower() != ".pdf":
-        txt_dir(DONE_DIR, ws_name).mkdir(parents=True, exist_ok=True)
-        final = txt_dir(DONE_DIR, ws_name) / dest.name
-        shutil.move(str(dest), str(final))
-        append_log(f"TXT 직접 업로드: {final.name}")
-        queue_add("tab2_ready", [_nfc(Path(final).stem)])   # → 장별분할 큐
-        return {"ok": True, "name": uf.name, "txt_path": str(final), "md_path": "", "error": ""}
-    txt_path, md_src, err = pdf_to_txt(dest, fast=fast)
-    if not txt_path:
-        try: shutil.move(str(dest), str(FAILED_DIR / uf.name))
-        except Exception: pass
-        append_log(f"ERROR: TXT 변환 실패 — {uf.name}: {err}")
-        return {"ok": False, "name": uf.name, "txt_path": "", "md_path": "", "error": err}
-    pdf_save_dir2 = done_sub / PDF_SUB
-    pdf_save_dir2.mkdir(parents=True, exist_ok=True)
-    final_pdf = pdf_save_dir2 / uf.name
-    shutil.move(str(dest), str(final_pdf))
-    txt_dir(DONE_DIR, ws_name).mkdir(parents=True, exist_ok=True)
-    final_txt = txt_dir(DONE_DIR, ws_name) / txt_path.name   # 항상 1_txt/에 저장
-    shutil.move(str(txt_path), str(final_txt))
-    if md_src and md_src.exists():
-        md_dir(DONE_DIR, ws_name).mkdir(parents=True, exist_ok=True)
-        final_md = md_dir(DONE_DIR, ws_name) / md_src.name
-        shutil.move(str(md_src), str(final_md))
-    else:
-        final_md = None
-    append_log(f"TXT 변환 완료: {uf.name} → {Path(final_txt).name}")
-    queue_add("tab2_ready", [_nfc(Path(final_txt).stem)])   # → 장별분할 큐 등록
-    return {"ok": True, "name": uf.name, "txt_path": str(final_txt),
-            "md_path": str(final_md) if final_md else "", "error": ""}
 
 
 # ── UI ────────────────────────────────────────────────────
@@ -2368,7 +750,7 @@ _brand_col.markdown(
 )
 with _font_col:
     _font_scale_controls()
-st.caption("PDF → TXT변환 → 장별 분할 → 영문번역 → 요약MD생성 → Obsidian Wiki")
+st.caption(t("PDF → TXT변환 → 장별 분할 → 영문번역 → 요약생성 → Obsidian Wiki"))
 
 _loading_step("파일 목록 확인 중…", "처리된 파일과 API 설정을 읽고 있습니다")
 
@@ -2379,22 +761,22 @@ _avail_ai_providers = _avail_api_providers + _avail_cli_providers
 _wiki_key_ok = bool(_avail_ai_providers)
 wg_ok = wiki_generator_running()
 _status_spacer, col_s1, col_s2, col_s3, col_s4 = st.columns([2.8, 1.1, 1.1, 1.1, 1.1])
-col_s1.metric("API 키", f"{len(_avail_api_providers)}개" if _avail_api_providers else "❌ 없음")
-col_s2.metric("CLI 구독", f"{len(_avail_cli_providers)}개" if _avail_cli_providers else "없음")
-col_s3.metric("위키 생성기", "🔄 생성 중" if wg_ok else "대기")
-col_s4.metric("Wiki 완성", sum(1 for _ in WIKI_DIR.rglob("*.md")))
+col_s1.metric(t("API 키"), tf("%d개", len(_avail_api_providers)) if _avail_api_providers else t("❌ 없음"))
+col_s2.metric(t("CLI 구독"), tf("%d개", len(_avail_cli_providers)) if _avail_cli_providers else t("없음"))
+col_s3.metric(t("위키 생성기"), t("🔄 생성 중") if wg_ok else t("대기"))
+col_s4.metric(t("Wiki 완성"), sum(1 for _ in WIKI_DIR.rglob("*.md")))
 if not _avail_ai_providers:
-    st.error("⚠️ 사용 가능한 AI가 없습니다 — ⚙️ 설정 탭에서 API 키를 입력하거나 CLI 구독 도구를 활성화하세요.")
+    st.error(t("⚠️ 사용 가능한 AI가 없습니다 — ⚙️ 설정 탭에서 API 키를 입력하거나 CLI 구독 도구를 활성화하세요."))
 
 # ── 초기 메뉴 ─────────────────────────────────────────────
 TASKS = [
-    ("1_txt", "📄 1·TXT변환", "PDF/TXT를 처리 대기열에 올리고 텍스트로 저장"),
-    ("2_split", "📂 2·장별분할", "책 TXT를 챕터 단위 파일로 분리"),
-    ("3_translate", "🌐 3·영문번역", "챕터 TXT 또는 논문 출처를 한국어로 번역"),
-    ("4_summary", "📝 4·요약MD생성", "챕터별 위키 요약 JSON을 생성"),
-    ("5_wiki", "📖 5·Wiki반영", "요약을 Obsidian Wiki 노트로 저장"),
+    ("1_txt", "📄 TXT변환 앱", "PDF/TXT를 텍스트로 변환 · 업로드 대기 → 1_txt (원본은 pdf/ 보관)"),
+    ("2_split", "📂 장분할 앱", "책 TXT를 챕터 단위로 분리 · 1_txt → chapters"),
+    ("3_translate", "🌐 영문번역 앱", "챕터를 한국어로 번역 · chapters → 번역본(_ko.txt)"),
+    ("4_summary", "📝 문서요약 앱", "챕터별 요약 노트 생성 · chapters → 요약(_wiki.md)"),
+    ("5_wiki", "📖 위키반영 앱", "요약을 Obsidian 노트로 저장 · 요약(_wiki.md) → 보관함(Vault)"),
     ("settings", "⚙️ 설정", "API 키와 위키 생성 모델 설정"),
-    ("all_run", "🚀 전체 실행", "TXT변환 → 장별분할 → 번역 → 요약 → Wiki를 한 번에 실행"),
+    ("all_run", "🚀 전체 실행", "TXT변환 → 장분할 → 번역 → 요약 → Wiki를 한 번에 실행"),
 ]
 
 _active_view = st.session_state.get("active_view")
@@ -2434,13 +816,17 @@ if not _active_view:
 }
 </style>
 """, unsafe_allow_html=True)
-    st.markdown("#### 작업 메뉴")
+    st.markdown(t("#### 작업 메뉴"))
+    st.info(t(
+        "처음 사용 전 확인: 이 앱은 사용자가 제공한 PDF/TXT를 정리, 번역, 요약, 위키 노트로 재구성하는 개인 작업 도구입니다. "
+        "원문 저작권과 이용허락은 사용자 책임으로 확인해야 하며, 외부 AI/CLI로 전송되는 텍스트에는 민감정보나 배포 권한이 불분명한 내용을 넣지 마세요."
+    ))
     for _tid, _title, _desc in TASKS:
         _clicked = st.query_params.get("view") == _tid
         st.markdown(
             f'<a class="menu-card" href="?view={_tid}" target="_self">'
-            f'<span class="menu-title">{_title}</span>'
-            f'<span class="menu-desc">{_desc}</span>'
+            f'<span class="menu-title">{t(_title)}</span>'
+            f'<span class="menu-desc">{t(_desc)}</span>'
             f'</a>',
             unsafe_allow_html=True,
         )
@@ -2448,35 +834,40 @@ if not _active_view:
             st.session_state["active_view"] = _tid
             st.query_params.clear()
             if _tid == "all_run":
-                st.session_state["ocr_mode"] = "🚀 전체 실행 (TXT변환→장별분할→번역(영어문서인 경우)→Wiki)"
+                st.session_state["ocr_mode"] = t("🚀 전체 실행 (TXT변환→장별분할→번역(영어문서인 경우)→Wiki)")
             st.rerun()
     _loading_ph.empty()
     st.session_state["_app_loaded"] = True
     st.stop()
 
 _STAGE_TASKS = [
-    ("1_txt", "1-TXT변환"),
-    ("2_split", "2-장별분할"),
-    ("3_translate", "3-영문번역"),
-    ("4_summary", "4-요약MD생성"),
-    ("5_wiki", "5-Wiki반영"),
+    ("menu", "🧭 메뉴"),
+    ("1_txt", "📄 TXT변환"),
+    ("2_split", "📂 장분할"),
+    ("3_translate", "🌐 영문번역"),
+    ("4_summary", "📝 문서요약"),
+    ("5_wiki", "📖 위키반영"),
+    ("settings", "⚙️ 설정"),
 ]
 _nav_cols = st.columns(len(_STAGE_TASKS))
 for _col, (_tid, _label) in zip(_nav_cols, _STAGE_TASKS):
     _active_cls = " active" if _active_view == _tid else ""
     with _col:
         st.markdown(
-            f'<a class="stage-nav-link{_active_cls}" href="?view={_tid}" target="_self">{_label}</a>',
+            f'<a class="stage-nav-link{_active_cls}" href="?view={_tid}" target="_self">{t(_label)}</a>',
             unsafe_allow_html=True,
         )
 if st.query_params.get("view") in {tid for tid, _ in _STAGE_TASKS}:
     _view = st.query_params.get("view")
     if _view != _active_view:
-        st.session_state["active_view"] = _view
+        if _view == "menu":
+            st.session_state.pop("active_view", None)
+        else:
+            st.session_state["active_view"] = _view
         st.query_params.clear()
         st.rerun()
 
-with st.expander("📁 저장 위치", expanded=False):
+with st.expander(t("📁 저장 위치"), expanded=False):
     _loc_rows = [
         ("원본", RAW_DIR),
         ("처리완료", DONE_DIR / DEFAULT_WS),
@@ -2492,7 +883,7 @@ with st.expander("📁 저장 위치", expanded=False):
         _lc1, _lc2 = st.columns([0.85, 2.2])
         _lc1.markdown(f"**{_lname}**")
         _lc2.caption(str(_lpath))
-        if _lc1.button("열기", key=f"open_loc_{_lname}", use_container_width=True, disabled=not _lpath.exists()):
+        if _lc1.button(t("열기"), key=f"open_loc_{_lname}", use_container_width=True, disabled=not _lpath.exists()):
             open_path(_lpath)
 
 
@@ -2528,19 +919,158 @@ def _view_target_from_item(it: dict) -> Path | None:
     return None
 
 
+def _goto_view(view_id: str) -> None:
+    st.session_state["active_view"] = view_id
+    st.query_params.clear()
+    st.rerun()
+
+
+def _set_stage_completion(title: str, message: str, next_stage: str | None = None,
+                          open_target: Path | None = None) -> None:
+    st.session_state["_stage_completion"] = {
+        "title": title,
+        "message": message,
+        "next_stage": next_stage,
+        "open_target": str(open_target) if open_target else "",
+    }
+
+
+def _clear_stage_completion() -> None:
+    st.session_state.pop("_stage_completion", None)
+
+
+def _render_stage_completion_notice() -> None:
+    payload = st.session_state.get("_stage_completion")
+    if not payload:
+        return
+
+    def _render_body():
+        st.success(payload["title"])
+        st.write(payload["message"])
+        c1, c2, c3 = st.columns(3)
+        if payload.get("next_stage"):
+            if c1.button(t("다음 단계"), key="stage_done_next", use_container_width=True, type="primary"):
+                next_stage = payload["next_stage"]
+                _clear_stage_completion()
+                _goto_view(next_stage)
+        if payload.get("open_target"):
+            _target = Path(payload["open_target"])
+            if c2.button(t("결과 폴더 열기"), key="stage_done_open", use_container_width=True):
+                open_path(_target, reveal=_target.is_file())
+        if c3.button(t("닫기"), key="stage_done_close", use_container_width=True):
+            _clear_stage_completion()
+            st.rerun()
+
+    if hasattr(st, "dialog"):
+        @st.dialog(t("완료"))
+        def _stage_completion_dialog():
+            _render_body()
+        _stage_completion_dialog()
+    else:
+        with st.container(border=True):
+            _render_body()
+
+
+def _stage_folder(stage_id: str) -> Path:
+    if stage_id == "1_txt":
+        return txt_dir(DONE_DIR, DEFAULT_WS)
+    if stage_id in {"2_split", "3_translate", "4_summary"}:
+        return DONE_DIR / DEFAULT_WS / "chapters"
+    if stage_id == "5_wiki":
+        return WIKI_DIR
+    return DONE_DIR / DEFAULT_WS
+
+
+def _count_files(path: Path, patterns: list[str], exclude_suffixes: tuple = ()) -> int:
+    """폴더에서 패턴에 맞는 파일 수. exclude_suffixes는 stem 끝 필터 (_ko 등)."""
+    if not path.exists():
+        return 0
+    n = 0
+    for pat in patterns:
+        for f in path.glob(pat):
+            if f.is_file() and not (exclude_suffixes and f.stem.endswith(exclude_suffixes)):
+                n += 1
+    return n
+
+
+def _chapter_counts() -> tuple[int, int, int]:
+    """chapters/ 전체의 (원문 챕터, 번역본 _ko, 요약 _wiki.md/.json) 개수."""
+    root = DONE_DIR / DEFAULT_WS / "chapters"
+    src_n = ko_n = 0
+    summary_stems: set[str] = set()
+    if root.exists():
+        for f in root.rglob("??_*.txt"):
+            if f.stem.endswith("_ko"):
+                ko_n += 1
+            elif not f.stem.endswith("_wiki"):
+                src_n += 1
+        for f in root.rglob("*_wiki.md"):
+            summary_stems.add(str(f.with_suffix("")))
+        for f in root.rglob("*_wiki.json"):
+            summary_stems.add(str(f.with_suffix("")))
+    return src_n, ko_n, len(summary_stems)
+
+
+def _stage_flow_panel(app_title: str, app_desc: str,
+                      cards: list[tuple[str, Path, str]], key_prefix: str) -> None:
+    """앱 헤더 + 처리전 → 처리후 폴더 흐름 패널. cards=[(라벨, 경로, 개수문구)]"""
+    st.markdown(f"### {t(app_title)}")
+    st.caption(t(app_desc))
+    weights: list[float] = []
+    for i in range(len(cards)):
+        if i:
+            weights.append(0.3)
+        weights.append(2.0)
+    cols = st.columns(weights, vertical_alignment="center")
+    ci = 0
+    for i, (label, path, count_txt) in enumerate(cards):
+        if i:
+            cols[ci].markdown(
+                "<div style='text-align:center;font-size:1.5rem;color:#9ca3af'>→</div>",
+                unsafe_allow_html=True)
+            ci += 1
+        with cols[ci].container(border=True):
+            st.markdown(f"**{t(label)}**")
+            st.markdown(f"<span style='font-size:1.15rem;font-weight:700'>{count_txt}</span>",
+                        unsafe_allow_html=True)
+            st.caption(str(path))
+            if st.button(t("📂 폴더 열기"), key=f"{key_prefix}_open_{i}",
+                         use_container_width=True, disabled=not path.exists()):
+                open_path(path)
+        ci += 1
+    st.divider()
+
+
+def _current_wiki_dir() -> Path:
+    target = (st.session_state.get("wiki5_active_dir") or "").strip()
+    if target:
+        return Path(target)
+    try:
+        data = json.loads(cfg.CONFIG_FILE.read_text(encoding="utf-8")) if cfg.CONFIG_FILE.exists() else {}
+        target = str(data.get("dirs", {}).get("wiki", "")).strip()
+        if target:
+            return Path(target).expanduser()
+    except Exception:
+        pass
+    return WIKI_DIR
+
+
+_render_stage_completion_notice()
+
+
 def _checklist(items: list[dict], prefix: str, height: int = 320, viewable: bool = False) -> list:
     """체크박스 파일 목록. items=[{"key":str,"label":str,"meta":str,"obj":any}]
     Returns: 선택된 obj 목록."""
     h1, h2, h3 = st.columns([1.3, 1, 4])
-    if h1.button("✅ 전체 선택", key=f"{prefix}_sa", use_container_width=True):
+    if h1.button(t("✅ 전체 선택"), key=f"{prefix}_sa", use_container_width=True):
         for it in items:
             st.session_state[f"{prefix}_{it['key']}"] = True
         st.rerun()
-    if h2.button("⬜ 해제", key=f"{prefix}_da", use_container_width=True):
+    if h2.button(t("⬜ 해제"), key=f"{prefix}_da", use_container_width=True):
         for it in items:
             st.session_state[f"{prefix}_{it['key']}"] = False
         st.rerun()
-    h3.caption(f"총 {len(items)}개")
+    h3.caption(tf("총 %d개", len(items)))
     selected = []
     with st.container(height=height, border=True):
         for idx, it in enumerate(items):
@@ -2555,7 +1085,7 @@ def _checklist(items: list[dict], prefix: str, height: int = 320, viewable: bool
             if viewable:
                 target = _view_target_from_item(it)
                 safe_key = _re.sub(r"[^a-zA-Z0-9가-힣_-]+", "_", str(it["key"]))[:80]
-                if cols[2].button("보기", key=f"{prefix}_view_{idx}_{safe_key}", use_container_width=True,
+                if cols[2].button(t("보기"), key=f"{prefix}_view_{idx}_{safe_key}", use_container_width=True,
                                   disabled=target is None):
                     open_path(target, reveal=target.is_file())
             if chk:
@@ -2572,7 +1102,7 @@ def _translate_engine_radio(label: str, key: str) -> str:
     _pref = llm.get_pref("translate_engine", "")
     _default = _wiki_engine if _wiki_engine in _ids else (_pref if _pref in _ids else (_ids[0] if _ids else ""))
     _idx = _ids.index(_default) if _default in _ids else 0
-    _sel = st.radio(label, _labels, index=_idx, horizontal=True, key=key)
+    _sel = st.radio(t(label), _labels, index=_idx, horizontal=True, key=key)
     _engine = _ids[_labels.index(_sel)]
     if _engine != _pref:
         llm.set_pref("translate_engine", _engine)
@@ -2587,13 +1117,13 @@ def _wiki_model_radio(key: str) -> tuple[str, str]:
               if llm.has_key(p)
               for m in info["models"]]
     if not _avail:
-        st.warning("사용 가능한 AI 없음 — ⚙️ 설정 탭에서 API 키를 입력하세요.")
+        st.warning(t("사용 가능한 AI 없음 — ⚙️ 설정 탭에서 API 키를 입력하세요."))
         return llm.wiki_provider_model()
     _wp, _wm = llm.wiki_provider_model()
     _labels = [f"{llm.PROVIDERS[p]['label']} · {m}" for p, m in _avail]
     _cur = f"{llm.PROVIDERS.get(_wp, {}).get('label', _wp)} · {_wm}"
     _idx = _labels.index(_cur) if _cur in _labels else 0
-    _sel = st.radio("🤖 AI 모델", _labels, index=_idx, horizontal=True, key=key)
+    _sel = st.radio(t("🤖 AI 모델"), _labels, index=_idx, horizontal=True, key=key)
     _p, _m = _avail[_labels.index(_sel)]
     if (_p, _m) != (_wp, _wm):
         llm.set_wiki_model(_p, _m)
@@ -2604,30 +1134,43 @@ _loading_step("화면 구성 중…", "탭과 UI를 초기화하고 있습니다
 
 # ── 1: TXT변환 / 전체 실행 ───────────────────────────────
 if _active_view in {"1_txt", "all_run"}:
-    st.caption("텍스트로 저장 (OCR 변환된 문서만 가능) — PDF의 텍스트 레이어를 추출해 TXT로 저장합니다.")
+    _pdf_dir1 = DONE_DIR / DEFAULT_WS / PDF_SUB
+    _stage_flow_panel(
+        "📄 TXT변환 앱",
+        "PDF의 텍스트 레이어를 추출해 TXT로 저장합니다 (OCR 변환된 문서만 가능). 원본 PDF는 pdf/ 폴더에 보관됩니다.",
+        [
+            ("① 처리전 · 업로드 대기", UPLOAD_TMP,
+             tf("%d개 대기", _count_files(UPLOAD_TMP, ['*.pdf', '*.txt', '*.md']))),
+            ("② 처리후 · 변환 TXT", txt_dir(DONE_DIR, DEFAULT_WS),
+             tf("%d권 변환됨", _count_files(txt_dir(DONE_DIR, DEFAULT_WS), ['*.txt']))),
+            ("📄 원본 PDF 보관", _pdf_dir1,
+             tf("%d개 보관", _count_files(_pdf_dir1, ['*.pdf']))),
+        ],
+        "flow1",
+    )
 
     _ws1 = DEFAULT_WS
     _fast1 = True
 
     # 처리 모드
     _mode1 = st.radio(
-        "처리 모드",
-        ["📄 TXT저장만", "🚀 전체 실행 (TXT변환→장별분할→번역(영어문서인 경우)→Wiki)"],
+        t("처리 모드"),
+        [t("📄 TXT저장만"), t("🚀 전체 실행 (TXT변환→장별분할→번역(영어문서인 경우)→Wiki)")],
         horizontal=True, key="ocr_mode",
     )
 
     # 번역 엔진 (전체 파이프라인 모드일 때만)
     _tr_eng1 = ""
-    if "전체" in _mode1:
+    if _mode1 != t("📄 TXT저장만"):
         if [(eid, lbl) for eid, lbl, av, _ in translate_engine_options() if av]:
             _tr_eng1 = _translate_engine_radio("번역 엔진", "ocr_tr_engine_radio")
             _wiki_model_radio("ocr1_wiki_ai")
         else:
-            st.warning("번역 엔진 없음 — ⚙️ 설정 탭에서 API 키를 입력하세요.")
+            st.warning(t("번역 엔진 없음 — ⚙️ 설정 탭에서 API 키를 입력하세요."))
 
     # 파일 업로드
     _uploads1 = st.file_uploader(
-        "PDF 또는 TXT 업로드 (여러 파일 가능)",
+        t("PDF 또는 TXT 업로드 (여러 파일 가능)"),
         type=["pdf", "txt", "md"], accept_multiple_files=True, key="ocr_uploader",
     )
     if _uploads1:
@@ -2645,31 +1188,61 @@ if _active_view in {"1_txt", "all_run"}:
                 st.error(f"❌ 저장 실패: {_uf_new.name} — {_e1}")
         st.session_state["_ocr_queued"] = _already_queued1
         if _added1:
-            st.success(f"📥 처리 대기 목록에 추가됨: {', '.join(_added1)}")
+            st.success(tf("📥 처리 대기 목록에 추가됨: %s", ", ".join(_added1)))
             st.rerun()  # 대기 목록 갱신 (세션스테이트로 중복 저장 방지됨)
 
-    with st.expander("🔎 논문 출처로 가져오기", expanded=False):
+    with st.expander(t("🔎 논문 출처로 가져오기"), expanded=False):
         _paper_src1 = st.text_input(
-            "논문 출처",
+            t("논문 출처"),
             key="ocr1_paper_source",
-            placeholder="URL, DOI(10.xxxx/...), doi:..., arXiv 번호 또는 arxiv.org 링크",
+            placeholder=t("URL, DOI(10.xxxx/...), doi:..., arXiv 번호 또는 arxiv.org 링크"),
         )
-        if st.button("다운로드 확인 후 TXT 저장", key="ocr1_source_prepare",
+        if st.button(t("다운로드 확인 후 TXT 저장"), key="ocr1_source_prepare",
                      use_container_width=True, type="primary",
                      disabled=not _paper_src1.strip()):
-            with st.status("논문 출처 확인 중…", expanded=True):
+            _ok_prep1 = False
+            with st.status(t("논문 출처 확인 중…"), expanded=True):
                 _ok_dl1, _src_file1, _reason1 = download_paper_source(_paper_src1)
                 if not _ok_dl1 or not _src_file1:
-                    st.error(f"({_reason1}) 때문에 가져올 수 없습니다.")
+                    st.error(tf("(%s) 때문에 가져올 수 없습니다.", _reason1))
                 else:
-                    st.write(f"✅ 다운로드 가능: `{_src_file1.name}`")
-                    _ok_prep1, _final_txt1, _msg_prep1 = prepare_downloaded_paper_source(_src_file1)
+                    st.write(tf("✅ 다운로드 가능: `%s`", _src_file1.name))
+                    _ok_prep1, _final_txt1, _final_pdf1, _msg_prep1 = prepare_downloaded_paper_source(_src_file1)
                     if _ok_prep1:
-                        st.success(f"✅ TXT 저장 완료: {_msg_prep1}")
+                        st.success(tf("✅ TXT 저장 완료: %s", _msg_prep1))
+                        if _final_pdf1:
+                            st.write(tf("📄 원본 PDF 보관: `%s`", _final_pdf1))
                     else:
-                        st.error(f"({_msg_prep1}) 때문에 TXT로 저장할 수 없습니다.")
+                        st.error(tf("(%s) 때문에 TXT로 저장할 수 없습니다.", _msg_prep1))
             if _ok_dl1 and _src_file1 and _ok_prep1:
+                # rerun 후에도 TXT/PDF 위치를 열어볼 수 있게 세션에 보존
+                st.session_state["paper1_result"] = {
+                    "name": _src_file1.name,
+                    "txt": str(_final_txt1) if _final_txt1 else "",
+                    "pdf": str(_final_pdf1) if _final_pdf1 else "",
+                }
                 st.rerun()
+
+    _pr1 = st.session_state.get("paper1_result")
+    if _pr1:
+        with st.container(border=True):
+            _prh1, _prh2 = st.columns([5, 1])
+            _prh1.markdown(tf("**🔎 최근 가져온 논문:** %s", _pr1["name"]))
+            if _prh2.button(t("✕ 닫기"), key="paper1_result_close", use_container_width=True):
+                st.session_state.pop("paper1_result", None)
+                st.rerun()
+            _txt_p1 = Path(_pr1["txt"]) if _pr1.get("txt") else None
+            _pdf_p1 = Path(_pr1["pdf"]) if _pr1.get("pdf") else None
+            _pra1, _prb1 = st.columns([4.2, 1])
+            _pra1.caption(tf("📝 변환 TXT: %s", _txt_p1 if _txt_p1 else "—"))
+            if _prb1.button(t("📂 위치 열기"), key="paper1_open_txt", use_container_width=True,
+                            disabled=not (_txt_p1 and _txt_p1.exists())):
+                open_path(_txt_p1, reveal=True)
+            _pra2, _prb2 = st.columns([4.2, 1])
+            _pra2.caption(tf("📄 원본 PDF: %s", _pdf_p1 if _pdf_p1 else t("— (TXT 출처라 PDF 없음)")))
+            if _prb2.button(t("📂 위치 열기"), key="paper1_open_pdf", use_container_width=True,
+                            disabled=not (_pdf_p1 and _pdf_p1.exists())):
+                open_path(_pdf_p1, reveal=True)
 
     st.divider()
 
@@ -2679,7 +1252,7 @@ if _active_view in {"1_txt", "all_run"}:
         if UPLOAD_TMP.exists() else [],
         key=lambda f: f.stat().st_mtime, reverse=True,
     )
-    st.markdown(f"#### 처리 대기 ({len(_pending_all1)}개)")
+    st.markdown(tf("#### 처리 대기 (%d개)", len(_pending_all1)))
     if _pending_all1:
         _items1 = [
             {"key": f.name,
@@ -2690,17 +1263,20 @@ if _active_view in {"1_txt", "all_run"}:
         ]
         _sel1 = _checklist(_items1, "ocr1", height=250, viewable=True)
         _b1c1, _b1c2 = st.columns(2)
-        _run_sel1 = _b1c1.button(f"▶ 선택 처리 ({len(_sel1)}개)", key="ocr1_run_sel",
+        _run_sel1 = _b1c1.button(tf("▶ 선택 처리 (%d개)", len(_sel1)), key="ocr1_run_sel",
                                    use_container_width=True, type="primary", disabled=len(_sel1)==0)
-        _run_all1 = _b1c2.button(f"▶ 전체 처리 ({len(_pending_all1)}개)", key="ocr1_run_all",
+        _run_all1 = _b1c2.button(tf("▶ 전체 처리 (%d개)", len(_pending_all1)), key="ocr1_run_all",
                                    use_container_width=True)
         _to_run1 = [_PathAsUpload(f) for f in _pending_all1] if _run_all1 else (_sel1 if _run_sel1 else [])
         if _to_run1:
             _prog1 = st.progress(0.0)
+            _done_txt_paths1: list[Path] = []
             for _i1, _uf1 in enumerate(_to_run1, 1):
-                if "TXT저장" in _mode1:
+                if _mode1 == t("📄 TXT저장만"):
                     with st.status(f"TXT변환 [{_i1}/{len(_to_run1)}]: {_uf1.name}", expanded=False):
                         _r1 = _do_ocr_only(_uf1, _ws1, fast=_fast1)
+                    if _r1["ok"] and _r1.get("txt_path"):
+                        _done_txt_paths1.append(Path(_r1["txt_path"]))
                     (st.success if _r1["ok"] else st.error)(
                         f"{'✅' if _r1['ok'] else '❌'} {_uf1.name}" +
                         (f" → `{Path(_r1['txt_path']).name}`" if _r1["ok"] else f": {_r1['error']}")
@@ -2712,10 +1288,17 @@ if _active_view in {"1_txt", "all_run"}:
                         False, False, _ph1, do_wiki=False,
                     )
                 _prog1.progress(_i1 / len(_to_run1))
+            if _done_txt_paths1:
+                _set_stage_completion(
+                    t("1-TXT변환 완료"),
+                    tf("%d개 파일 처리를 마쳤습니다. 다음 단계에서 장별 분할을 진행하세요.", len(_done_txt_paths1)),
+                    next_stage="2_split",
+                    open_target=_stage_folder("1_txt"),
+                )
             st.session_state.pop("_ocr_queued", None)  # 처리 완료 후 큐 초기화
             st.rerun()
     else:
-        st.info("대기 중인 파일 없음 — 위에서 PDF를 업로드하세요.")
+        st.info(t("대기 중인 파일 없음 — 위에서 PDF를 업로드하세요."))
 
     st.divider()
 
@@ -2727,7 +1310,7 @@ if _active_view in {"1_txt", "all_run"}:
         if _t_sub1.exists():
             _done_txts1 = sorted(_t_sub1.glob("*.txt"),
                                  key=lambda p: p.stat().st_mtime, reverse=True)
-    st.markdown(f"#### 완료 기록 ({len(_done_txts1)}권)")
+    st.markdown(tf("#### 완료 기록 (%d권)", len(_done_txts1)))
     if _done_txts1:
         with st.container(height=220, border=True):
             for _dt1 in _done_txts1[:80]:
@@ -2738,13 +1321,13 @@ if _active_view in {"1_txt", "all_run"}:
                 if _dc3.button("📂", key=f"open_dt1_{_dt1}", help="폴더에서 보기"):
                     open_path(_dt1, reveal=True)
     elif _fws1:
-        st.caption("해당 폴더에 완료된 TXT 없음")
+        st.caption(t("해당 폴더에 완료된 TXT 없음"))
 
     # 실패 기록
     _fail1 = sorted([p for p in FAILED_DIR.rglob("*") if p.is_file()],
                     key=lambda p: p.stat().st_mtime, reverse=True) if FAILED_DIR.exists() else []
     if _fail1:
-        with st.expander(f"⚠️ 실패 {len(_fail1)}건"):
+        with st.expander(tf("⚠️ 실패 %d건", len(_fail1))):
             for _ff1 in _fail1[:30]:
                 _fc1, _fc2, _fc3 = st.columns([5, 1, 1])
                 _fc1.caption(_ff1.name)
@@ -2755,22 +1338,37 @@ if _active_view in {"1_txt", "all_run"}:
                     except Exception: pass
                     st.rerun()
 
-    st.info("💡 다음 단계: **📂 2·장별분할** 탭으로 이동하세요")
+    st.info(t("💡 다음 단계: **📂 장분할 앱**으로 이동하세요"))
 
 
 # ── 2: 장별 분할 ────────────────────────────────────────
 if _active_view == "2_split":
-    st.caption("TXT를 장(Chapter) 단위로 분리해 챕터별 파일로 저장합니다.")
+    _ch_root2f = DONE_DIR / DEFAULT_WS / "chapters"
+    _n_books2f = len([d for d in _ch_root2f.iterdir() if d.is_dir()]) if _ch_root2f.exists() else 0
+    _stage_flow_panel(
+        "📂 장분할 앱",
+        "책 TXT를 장(Chapter) 단위 파일로 분리해 책별 폴더에 저장합니다.",
+        [
+            ("① 처리전 · 변환 TXT", txt_dir(DONE_DIR, DEFAULT_WS),
+             tf("%d권", _count_files(txt_dir(DONE_DIR, DEFAULT_WS), ['*.txt', '*.md']))),
+            ("② 처리후 · 챕터 폴더", _ch_root2f, tf("%d권 분할됨", _n_books2f)),
+        ],
+        "flow2",
+    )
 
     # TXT 직접 업로드
-    _up2 = st.file_uploader("TXT 직접 업로드 (done/ 폴더로 저장)",
+    _up2 = st.file_uploader(t("TXT 직접 업로드 (done/ 폴더로 저장)"),
                               type=["txt", "md"], accept_multiple_files=True, key="split_uploader")
     if _up2:
+        _added_split_stems2: list[str] = []
         for _u2 in _up2:
             txt_dir(DONE_DIR, DEFAULT_WS).mkdir(parents=True, exist_ok=True)
             _dst2 = txt_dir(DONE_DIR, DEFAULT_WS) / _u2.name
             _dst2.write_bytes(_u2.read())
-        st.success(f"{len(_up2)}개 TXT 저장 완료"); st.rerun()
+            _added_split_stems2.append(_nfc(Path(_u2.name).stem))
+        if _added_split_stems2:
+            queue_add("tab2_ready", _added_split_stems2)
+        st.success(tf("%d개 TXT 저장 완료", len(_up2))); st.rerun()
 
     # ── 분할 대기 (큐 기반 + 1_txt/ 전체 폴백) ──────────────
     _q2_stems = queue_list("tab2_ready")
@@ -2780,13 +1378,15 @@ if _active_view == "2_split":
     _txt_root2 = DONE_DIR / DEFAULT_WS / TXT_SUB
 
     # 큐에 없어도 1_txt/에 있는 TXT 모두 포함
-    _all_txt2_stems = {f.stem for f in _txt_root2.glob("*.txt")} if _txt_root2.exists() else set()
+    _all_txt2_stems = ({f.stem for f in _txt_root2.glob("*.txt")} | {f.stem for f in _txt_root2.glob("*.md")}) if _txt_root2.exists() else set()
     _q2_stems_set = set(_q2_stems)
     _extra2 = sorted(_all_txt2_stems - _q2_stems_set)  # 큐에 없는 TXT
     _all2_stems = list(_q2_stems) + _extra2
 
     for _stem2 in _all2_stems:
         _txt2 = _txt_root2 / (_stem2 + ".txt")
+        if not _txt2.exists():
+            _txt2 = _txt_root2 / (_stem2 + ".md")
         if not _txt2.exists():
             continue
         _ch2 = chapters_dir(DEFAULT_WS, _stem2)
@@ -2805,25 +1405,31 @@ if _active_view == "2_split":
             else:
                 _split_pend2.append(_item2)
 
-    st.markdown(f"#### 분할 대기 ({len(_split_pend2)}권)")
+    st.markdown(tf("#### 분할 대기 (%d권)", len(_split_pend2)))
     if _split_pend2:
         _sel2 = _checklist(_split_pend2, "split2", height=280, viewable=True)
         _b2c1, _b2c2, _b2c3 = st.columns([2, 2, 1])
-        _rs2 = _b2c1.button(f"▶ 선택 분할 ({len(_sel2)}권)", key="split2_run_sel",
+        _rs2 = _b2c1.button(tf("▶ 선택 분할 (%d권)", len(_sel2)), key="split2_run_sel",
                               use_container_width=True, type="primary", disabled=len(_sel2)==0)
-        _ra2 = _b2c2.button(f"▶ 전체 분할 ({len(_split_pend2)}권)", key="split2_run_all",
+        _ra2 = _b2c2.button(tf("▶ 전체 분할 (%d권)", len(_split_pend2)), key="split2_run_all",
                               use_container_width=True)
-        if _b2c3.button("🗑 큐 비우기", key="split2_clear", use_container_width=True):
+        if _b2c3.button(t("🗑 큐 비우기"), key="split2_clear", use_container_width=True):
             queue_clear("tab2_ready"); st.rerun()
         _to2 = [it["obj"] for it in _split_pend2] if _ra2 else (_sel2 if _rs2 else [])
         if _to2:
             _sp2 = st.progress(0.0)
+            _completed2 = 0
             for _si2, _s2 in enumerate(_to2, 1):
                 with st.status(f"분할 [{_si2}/{len(_to2)}]: {_s2['stem']}", expanded=False):
                     _sn2, _serr2 = split_book_to_chapters(_s2["ws"], _s2["stem"])
                 _small_single2 = bool(_serr2 and _serr2.startswith("짧은 문서로 감지"))
                 if _serr2 and not _small_single2:
                     st.warning(f"⚠️ {_s2['stem']}: {_serr2}")
+                    if "장 구조 감지 안 됨" in _serr2:
+                        # 아래 '장 구조 미감지' 목록에서 단일장 저장 선택지 제공
+                        _ns_list2 = st.session_state.setdefault("split2_nosplit", [])
+                        if _s2["stem"] not in _ns_list2:
+                            _ns_list2.append(_s2["stem"])
                 else:
                     st.success(f"✅ {_s2['stem']} → {_sn2}개 챕터")
                     if _small_single2:
@@ -2834,26 +1440,39 @@ if _active_view == "2_split":
                                  for f in sorted(_ch_dir2.glob("??_*.txt"))
                                  if not f.stem.endswith(("_ko", "_wiki"))]
                     if _new_chs2:
+                        _completed2 += 1
                         if _needs_translation(_s2["stem"]):
                             queue_add("tab3_ready", _new_chs2)
-                            st.caption("🌐 영문 책 → 3·영문번역 대기 등록")
+                            st.caption("🌐 영문 책 → 영문번역 대기 등록")
                         else:
                             queue_add("tab4_ready", _new_chs2)
-                            st.caption("🇰🇷 한국어 책 → 번역 건너뜀, 4·요약MD생성 대기 등록")
+                            st.caption("🇰🇷 한국어 책 → 번역 건너뜀, 📝 문서요약 대기 등록")
+                    else:
+                        st.warning(f"⚠️ {_s2['stem']}: 챕터 파일이 생성되지 않았습니다.")
                 _sp2.progress(_si2 / len(_to2))
+            if _completed2:
+                _set_stage_completion(
+                    t("2-장별분할 완료"),
+                    tf("%d권 분할을 마쳤습니다. 다음 단계로 이동하세요.", _completed2),
+                    next_stage="3_translate",
+                    open_target=_stage_folder("2_split"),
+                )
             st.rerun()
     else:
-        st.info("분할 대기 없음 — 1·TXT변환 탭에서 TXT를 먼저 생성하거나 아래에서 수동 추가하세요")
+        if _split_short2:
+            st.info(t("짧은 문서가 감지되었습니다. 아래 '짧은 문서 확인'에서 분리 또는 단일장 유지를 선택하세요."))
+        else:
+            st.info(t("분할 대기 없음 — 📄 TXT변환 앱에서 TXT를 먼저 생성하거나 아래에서 수동 추가하세요"))
 
     if _split_short2:
         st.divider()
-        st.markdown(f"#### 짧은 문서 확인 ({len(_split_short2)}권)")
-        st.caption("짧은 문서는 먼저 확인한 뒤, 실제 분리하거나 단일장으로 유지할 수 있습니다.")
+        st.markdown(tf("#### 짧은 문서 확인 (%d권)", len(_split_short2)))
+        st.caption(t("짧은 문서는 먼저 확인한 뒤, 실제 분리하거나 단일장으로 유지할 수 있습니다."))
         for _sh2 in _split_short2:
             _sc1, _sc2, _sc3, _sc4 = st.columns([4, 1, 1, 1])
             _sc1.markdown(f"**{_sh2['label']}**")
             _sc2.caption(_sh2["meta"])
-            if _sc3.button("분리하기", key=f"short_split_yes_{_sh2['key']}", use_container_width=True):
+            if _sc3.button(t("분리하기"), key=f"short_split_yes_{_sh2['key']}", use_container_width=True):
                 _sn2, _serr2 = split_book_to_chapters(_sh2["obj"]["ws"], _sh2["obj"]["stem"], allow_short=True)
                 if _serr2:
                     st.warning(f"⚠️ {_sh2['key']}: {_serr2}")
@@ -2870,7 +1489,7 @@ if _active_view == "2_split":
                         else:
                             queue_add("tab4_ready", _new_chs2)
                     st.rerun()
-            if _sc4.button("단일장 유지", key=f"short_split_keep_{_sh2['key']}", use_container_width=True):
+            if _sc4.button(t("단일장 유지"), key=f"short_split_keep_{_sh2['key']}", use_container_width=True):
                 _one_path2, _ = _write_single_chapter_from_text(_sh2["obj"]["ws"], _sh2["obj"]["stem"], _sh2["text"])
                 st.success(f"✅ 단일장으로 저장: {_one_path2.name}")
                 queue_remove("tab2_ready", [_sh2["obj"]["stem"]])
@@ -2884,40 +1503,70 @@ if _active_view == "2_split":
                         queue_add("tab4_ready", _new_chs2)
                 st.rerun()
 
+    # 장 구조 미감지 — 단일장 저장 선택지 (2026-07-03)
+    _nosplit2 = st.session_state.get("split2_nosplit", [])
+    if _nosplit2:
+        st.divider()
+        st.markdown(tf("#### 장 구조 미감지 (%d권)", len(_nosplit2)))
+        st.caption(t("장 헤딩을 찾지 못한 문서입니다. 통째로 번역·요약하려면 단일장으로 저장하세요."))
+        for _ns2 in list(_nosplit2):
+            _nc1, _nc2, _nc3 = st.columns([4, 1.6, 0.7])
+            _nc1.markdown(f"**{_ns2}**")
+            if _nc2.button(t("📄 단일장으로 저장"), key=f"nosplit_save_{_ns2}", use_container_width=True):
+                _sn2b, _smsg2b = split_book_to_chapters(DEFAULT_WS, _ns2, allow_short=True)
+                if _sn2b > 0:
+                    queue_remove("tab2_ready", [_ns2])
+                    _ch_dir2b = chapters_dir(DEFAULT_WS, _ns2)
+                    _new_chs2b = [str(f.relative_to(DONE_DIR))
+                                  for f in sorted(_ch_dir2b.glob("??_*.txt"))
+                                  if not f.stem.endswith(("_ko", "_wiki"))]
+                    if _new_chs2b:
+                        if _needs_translation(_ns2):
+                            queue_add("tab3_ready", _new_chs2b)
+                        else:
+                            queue_add("tab4_ready", _new_chs2b)
+                    st.session_state["split2_nosplit"] = [x for x in _nosplit2 if x != _ns2]
+                    st.rerun()
+                else:
+                    st.error(f"❌ {_ns2}: {_smsg2b}")
+            if _nc3.button("✕", key=f"nosplit_dismiss_{_ns2}", help="목록에서 제거"):
+                st.session_state["split2_nosplit"] = [x for x in _nosplit2 if x != _ns2]
+                st.rerun()
+
     # 수동 추가 expander
-    with st.expander("➕ 수동으로 추가 (기존 책에서 선택)"):
+    with st.expander(t("➕ 수동으로 추가 (기존 책에서 선택)")):
         _mc2a, _mc2b = st.columns([3, 2])
-        _search2 = _mc2a.text_input("책 이름 검색", key="split2_search", placeholder="검색어 입력…")
-        _sort2 = _mc2b.radio("정렬", ["최근 추가순", "이름순"], horizontal=True, key="split2_sort")
-        _all_txts2 = list(_txt_root2.glob("*.txt")) if _txt_root2.exists() else []
+        _search2 = _mc2a.text_input(t("책 이름 검색"), key="split2_search", placeholder=t("검색어 입력…"))
+        _sort2 = _mc2b.radio(t("정렬"), [t("최근 추가순"), t("이름순")], horizontal=True, key="split2_sort")
+        _all_txts2 = (list(_txt_root2.glob("*.txt")) + list(_txt_root2.glob("*.md"))) if _txt_root2.exists() else []
         _all_txts2 = sorted(_all_txts2, key=lambda f: f.stat().st_mtime, reverse=True) \
-                     if "최근" in _sort2 else sorted(_all_txts2, key=lambda f: f.name)
+                     if _sort2 == t("최근 추가순") else sorted(_all_txts2, key=lambda f: f.name)
         _filtered2 = [f for f in _all_txts2 if _search2.lower() in f.stem.lower()] \
                      if _search2 else _all_txts2
         _manual_items2 = [{"key": f.stem, "label": f.stem,
                            "meta": f"{f.stat().st_size//1024}KB", "obj": f.stem}
                           for f in _filtered2]
         _msel2 = _checklist(_manual_items2, "split2m", height=220)
-        if st.button(f"➕ 선택 항목 큐에 추가 ({len(_msel2)}권)", key="split2m_add",
+        if st.button(tf("➕ 선택 항목 큐에 추가 (%d권)", len(_msel2)), key="split2m_add",
                      disabled=len(_msel2)==0):
             queue_add("tab2_ready", _msel2); st.rerun()
 
     st.divider()
-    st.markdown(f"#### 분할 완료 ({len(_split_done2)}권)")
+    st.markdown(tf("#### 분할 완료 (%d권)", len(_split_done2)))
     if _split_done2:
         with st.container(height=200, border=True):
             for _sd2 in _split_done2:
                 _sdc1, _sdc2, _sdc3, _sdc4 = st.columns([5, 1.2, 1.2, 1])
                 _sdc1.markdown(f"**{_sd2['stem']}** &nbsp;<small style='color:#9ca3af'>{_sd2['n']}챕터</small>",
                                unsafe_allow_html=True)
-                if _sdc2.button("📂 열기", key=f"open_ch2_{_sd2['stem']}", use_container_width=True):
+                if _sdc2.button(t("📂 열기"), key=f"open_ch2_{_sd2['stem']}", use_container_width=True):
                     open_path(_sd2["ch_dir"])
                 if _sdc3.button("↔", key=f"merge_ch2_{_sd2['stem']}", help="다시 합치기"):
                     _okm2, _mp2, _mm2 = _merge_chapter_folder(DEFAULT_WS, _sd2["stem"], prefer_ko=False)
                     (st.success if _okm2 else st.error)(
                         f"{'✅' if _okm2 else '❌'} {_sd2['stem']}: {Path(_mp2).name if _okm2 else _mm2}")
                     st.rerun()
-                if _sdc4.button("🌐 합친 번역본", key=f"merge_ch2_ko_{_sd2['stem']}", use_container_width=True):
+                if _sdc4.button(t("🌐 합친 번역본"), key=f"merge_ch2_ko_{_sd2['stem']}", use_container_width=True):
                     _okm2, _mp2, _mm2 = _merge_chapter_folder(DEFAULT_WS, _sd2["stem"], prefer_ko=True)
                     (st.success if _okm2 else st.error)(
                         f"{'✅' if _okm2 else '❌'} {_sd2['stem']}: {Path(_mp2).name if _okm2 else _mm2}")
@@ -2928,24 +1577,34 @@ if _active_view == "2_split":
                         except Exception: pass
                     st.rerun()
     else:
-        st.caption("완료된 분할 없음")
+        st.caption(t("완료된 분할 없음"))
 
-    st.info("💡 다음 단계: **🌐 3·영문번역** 탭으로 이동하세요")
+    st.info(t("💡 다음 단계: **🌐 영문번역 앱**으로 이동하세요"))
 
 
 # ── 3: 번역 ─────────────────────────────────────────────
 if _active_view == "3_translate":
-    st.caption("챕터 TXT 또는 논문 출처를 한국어로 번역합니다. 설정한 AI 엔진을 기본으로 사용합니다.")
+    _src_n3f, _ko_n3f, _ = _chapter_counts()
+    _ch_root3f = DONE_DIR / DEFAULT_WS / "chapters"
+    _stage_flow_panel(
+        "🌐 영문번역 앱",
+        "챕터 TXT를 한국어로 번역해 같은 폴더에 `_ko.txt`로 저장합니다.",
+        [
+            ("① 처리전 · 원문 챕터", _ch_root3f, tf("%d개", _src_n3f)),
+            ("② 처리후 · 번역본 (_ko.txt)", _ch_root3f, tf("%d개 번역됨", _ko_n3f)),
+        ],
+        "flow3",
+    )
 
     _tr_opts3 = translate_engine_options()
     _tr_avail3 = [(eid, lbl) for eid, lbl, av, _ in _tr_opts3 if av]
     if not _tr_avail3:
-        st.warning("번역 엔진 없음 — ⚙️ 설정 탭에서 API 키를 입력하세요.")
+        st.warning(t("번역 엔진 없음 — ⚙️ 설정 탭에서 API 키를 입력하세요."))
     else:
         _tr_eng3 = _translate_engine_radio("번역 엔진", "tr3_engine")
 
         # TXT 직접 업로드 후 즉시 번역
-        _up3 = st.file_uploader("TXT 직접 업로드 (즉시 번역)",
+        _up3 = st.file_uploader(t("TXT 직접 업로드 (즉시 번역)"),
                                   type=["txt"], accept_multiple_files=True, key="tr3_uploader")
         if _up3:
             for _u3 in _up3:
@@ -2982,23 +1641,27 @@ if _active_view == "3_translate":
             if _ko3.exists():
                 _tr_done3 += 1
             else:
+                _meta3 = f"{_cf3.stat().st_size//1024}KB"
+                if _cf3.with_name(_cf3.stem + "_ko.progress.json").exists():
+                    _meta3 += t(" · ♻️ 중단됨 — 이어하기 가능")
                 _tr_pend3.append({
                     "key": _rel3,
                     "label": f"{_cf3.parent.name} / {_cf3.name}",
-                    "meta": f"{_cf3.stat().st_size//1024}KB",
+                    "meta": _meta3,
                     "obj": _cf3,
                 })
 
         st.divider()
-        st.markdown(f"#### 번역 대기 ({len(_tr_pend3)}개) / 완료 {_tr_done3}개")
+        st.markdown(tf("#### 번역 대기 (%d개) / 완료 %d개", len(_tr_pend3), _tr_done3))
+        st.caption(t("⏸️ 번역 중 다른 버튼을 누르거나 화면을 이동하면 중단됩니다 — 진행분은 `_ko.partial.md`로 저장되고, 같은 챕터를 다시 실행하면 이어서 번역합니다."))
         if _tr_pend3:
             _sel3 = _checklist(_tr_pend3, "tr3", height=280, viewable=True)
             _b3c1, _b3c2, _b3c3 = st.columns([2, 2, 1])
-            _rs3 = _b3c1.button(f"▶ 선택 번역 ({len(_sel3)}개)", key="tr3_run_sel",
+            _rs3 = _b3c1.button(tf("▶ 선택 번역 (%d개)", len(_sel3)), key="tr3_run_sel",
                                   use_container_width=True, type="primary", disabled=len(_sel3)==0)
-            _ra3 = _b3c2.button(f"▶ 전체 번역 ({len(_tr_pend3)}개)", key="tr3_run_all",
+            _ra3 = _b3c2.button(tf("▶ 전체 번역 (%d개)", len(_tr_pend3)), key="tr3_run_all",
                                   use_container_width=True)
-            if _b3c3.button("🗑 큐 비우기", key="tr3_clear", use_container_width=True):
+            if _b3c3.button(t("🗑 큐 비우기"), key="tr3_clear", use_container_width=True):
                 queue_clear("tab3_ready"); st.rerun()
             _to3: list = ([it["obj"] for it in _tr_pend3] if _ra3 else (_sel3 if _rs3 else []))
             if _to3:
@@ -3025,43 +1688,61 @@ if _active_view == "3_translate":
                         queue_remove("tab3_ready", [_rel3_done])
                         queue_add("tab4_ready", [_rel3_done])
                     _tp3.progress(_ti3 / len(_to3))
-                st.success(f"번역 처리 완료: {len(_to3)}개"); st.rerun()
+                st.success(f"번역 처리 완료: {len(_to3)}개")
+                _set_stage_completion(
+                    t("3-영문번역 완료"),
+                    tf("%d개 챕터 번역을 마쳤습니다. 다음 단계에서 요약 MD를 생성하세요.", len(_to3)),
+                    next_stage="4_summary",
+                    open_target=_stage_folder("3_translate"),
+                )
+                st.rerun()
         else:
-            st.info("번역 대기 없음 — 2·장별분할 탭에서 챕터를 먼저 분리하세요")
+            st.info(t("번역 대기 없음 — 📂 장분할 앱에서 챕터를 먼저 분리하세요"))
 
         # 수동 추가 expander
-        with st.expander("➕ 수동으로 추가 (기존 챕터에서 선택)"):
+        with st.expander(t("➕ 수동으로 추가 (기존 챕터에서 선택)")):
             _mc3a, _mc3b = st.columns([3, 2])
-            _search3 = _mc3a.text_input("책/챕터 이름 검색", key="tr3_search", placeholder="검색어 입력…")
-            _sort3 = _mc3b.radio("정렬", ["최근 추가순", "이름순"], horizontal=True, key="tr3_sort")
+            _search3 = _mc3a.text_input(t("책/챕터 이름 검색"), key="tr3_search", placeholder=t("검색어 입력…"))
+            _sort3 = _mc3b.radio(t("정렬"), [t("최근 추가순"), t("이름순")], horizontal=True, key="tr3_sort")
             _ch_root3m = DONE_DIR / DEFAULT_WS / "chapters"
             _all_cfs3 = list(_ch_root3m.rglob("??_*.txt")) if _ch_root3m.exists() else []
             _all_cfs3 = [f for f in _all_cfs3 if not f.stem.endswith(("_ko","_wiki"))]
             _all_cfs3 = sorted(_all_cfs3, key=lambda f: f.stat().st_mtime, reverse=True) \
-                        if "최근" in _sort3 else sorted(_all_cfs3, key=lambda f: str(f))
+                        if _sort3 == t("최근 추가순") else sorted(_all_cfs3, key=lambda f: str(f))
             _filt3 = [f for f in _all_cfs3 if _search3.lower() in str(f).lower()] if _search3 else _all_cfs3
             _mitems3 = [{"key": str(f.relative_to(DONE_DIR)), "label": f"{f.parent.name}/{f.name}",
                          "meta": f"{f.stat().st_size//1024}KB", "obj": str(f.relative_to(DONE_DIR))}
                         for f in _filt3]
             _msel3 = _checklist(_mitems3, "tr3m", height=200)
-            if st.button(f"➕ 선택 항목 큐에 추가 ({len(_msel3)}개)", key="tr3m_add", disabled=len(_msel3)==0):
+            if st.button(tf("➕ 선택 항목 큐에 추가 (%d개)", len(_msel3)), key="tr3m_add", disabled=len(_msel3)==0):
                 queue_add("tab3_ready", _msel3); st.rerun()
 
-    st.info("💡 다음 단계: **📝 4·요약MD생성** 탭으로 이동하세요")
+    st.info(t("💡 다음 단계: **📝 문서요약 앱**으로 이동하세요"))
 
 
-# ── 4: 요약MD ───────────────────────────────────────────
+# ── 4: 요약생성 ─────────────────────────────────────────
 if _active_view == "4_summary":
-    st.caption("챕터 TXT(번역본 우선)로 Obsidian 노트용 요약 JSON을 생성합니다.")
+    _src_n4f, _ko_n4f, _json_n4f = _chapter_counts()
+    _ch_root4f = DONE_DIR / DEFAULT_WS / "chapters"
+    _stage_flow_panel(
+        "📝 문서요약 앱",
+        "챕터 TXT(번역본 우선)로 요약을 생성해 같은 폴더에 `_wiki.md`로 저장합니다. 위키반영 전에 열어서 손으로 고칠 수 있습니다.",
+        [
+            ("① 처리전 · 챕터 (번역본 우선)", _ch_root4f,
+             tf("원문 %d · 번역 %d", _src_n4f, _ko_n4f)),
+            ("② 처리후 · 요약 (_wiki.md)", _ch_root4f, tf("%d개 요약됨", _json_n4f)),
+        ],
+        "flow4",
+    )
 
     _prov_ok4 = any(llm.has_key(p) for p in llm.PROVIDERS)
     if not _prov_ok4:
-        st.warning("요약 API 없음 — ⚙️ 설정 탭에서 키를 입력하세요.")
+        st.warning(t("요약 API 없음 — ⚙️ 설정 탭에서 키를 입력하세요."))
     else:
         _wp4, _wm4 = _wiki_model_radio("summ4_ai")
 
         # TXT 직접 업로드
-        _up4 = st.file_uploader("TXT 직접 업로드 (즉시 요약)",
+        _up4 = st.file_uploader(t("TXT 직접 업로드 (즉시 요약)"),
                                   type=["txt"], accept_multiple_files=True, key="summ4_uploader")
         if _up4:
             for _u4 in _up4:
@@ -3087,8 +1768,7 @@ if _active_view == "4_summary":
                 _q4_remove_missing.append(_rel4)
                 continue
             _bstem4 = _nfc(_cf4.parent.name)
-            _json4 = _cf4.with_name(_cf4.stem + "_wiki.json")
-            if _json4.exists():
+            if summary_file_for(_cf4) is not None:
                 _sum_done4 += 1
                 _q4_remove_done.append(_rel4)
             else:
@@ -3105,8 +1785,7 @@ if _active_view == "4_summary":
             if not _cf4f.exists():
                 _q4_remove_missing.append(_rel4f)
                 continue
-            _json4f = _cf4f.with_name(_cf4f.stem + "_wiki.json")
-            if _json4f.exists():
+            if summary_file_for(_cf4f) is not None:
                 _sum_done4 += 1
                 _q4_remove_done.append(_rel4f)
                 continue
@@ -3124,15 +1803,15 @@ if _active_view == "4_summary":
             queue_remove("tab4_failed", _q4_remove_done)
 
         st.divider()
-        st.markdown(f"#### 요약 대기 ({len(_sum_pend4)}개) / 완료 {_sum_done4}개")
+        st.markdown(tf("#### 요약 대기 (%d개) / 완료 %d개", len(_sum_pend4), _sum_done4))
         if _sum_pend4:
             _sel4 = _checklist(_sum_pend4, "summ4", height=280, viewable=True)
             _b4c1, _b4c2, _b4c3 = st.columns([2, 2, 1])
-            _rs4 = _b4c1.button(f"▶ 선택 요약 ({len(_sel4)}개)", key="summ4_run_sel",
+            _rs4 = _b4c1.button(tf("▶ 선택 요약 (%d개)", len(_sel4)), key="summ4_run_sel",
                                   use_container_width=True, type="primary", disabled=len(_sel4)==0)
-            _ra4 = _b4c2.button(f"▶ 전체 요약 ({len(_sum_pend4)}개)", key="summ4_run_all",
+            _ra4 = _b4c2.button(tf("▶ 전체 요약 (%d개)", len(_sum_pend4)), key="summ4_run_all",
                                   use_container_width=True)
-            if _b4c3.button("🗑 큐 비우기", key="summ4_clear", use_container_width=True):
+            if _b4c3.button(t("🗑 큐 비우기"), key="summ4_clear", use_container_width=True):
                 queue_clear("tab4_ready"); st.rerun()
             _to4: list = ([it["obj"] for it in _sum_pend4] if _ra4 else (_sel4 if _rs4 else []))
             if _to4:
@@ -3156,70 +1835,89 @@ if _active_view == "4_summary":
                 # 책 단위로 모든 챕터 요약 완료된 것만 tab5 큐에 등록
                 for _st5 in _stems4_done:
                     queue_add("tab5_ready", [_st5])
-                st.success(f"요약 처리 완료: {len(_to4)}개"); st.rerun()
+                st.success(f"요약 처리 완료: {len(_to4)}개")
+                _set_stage_completion(
+                    t("4-문서요약 완료"),
+                    tf("%d개 챕터 요약을 마쳤습니다. 다음 단계에서 Wiki 반영을 진행하세요.", len(_to4)),
+                    next_stage="5_wiki",
+                    open_target=_stage_folder("4_summary"),
+                )
+                st.rerun()
         else:
-            st.info("요약 대기 없음 — 3·영문번역 탭 처리 후 자동 등록되거나 아래에서 수동 추가하세요")
+            st.info(t("요약 대기 없음 — 🌐 영문번역 앱 처리 후 자동 등록되거나 아래에서 수동 추가하세요"))
 
         if _sum_failed4:
-            st.markdown(f"#### 요약 실패 ({len(_sum_failed4)}개)")
+            st.markdown(tf("#### 요약 실패 (%d개)", len(_sum_failed4)))
             _fail_sel4 = _checklist(_sum_failed4, "summ4_failed", height=180)
             _f4c1, _f4c2 = st.columns([2, 1])
-            if _f4c1.button(f"↻ 선택 재시도 대기 ({len(_fail_sel4)}개)", key="summ4_retry_failed",
+            if _f4c1.button(tf("↻ 선택 재시도 대기 (%d개)", len(_fail_sel4)), key="summ4_retry_failed",
                               use_container_width=True, disabled=len(_fail_sel4)==0):
                 queue_remove("tab4_failed", _fail_sel4)
                 queue_add("tab4_ready", _fail_sel4)
                 st.rerun()
-            if _f4c2.button("🗑 실패 목록 비우기", key="summ4_clear_failed", use_container_width=True):
+            if _f4c2.button(t("🗑 실패 목록 비우기"), key="summ4_clear_failed", use_container_width=True):
                 queue_clear("tab4_failed")
                 st.rerun()
 
         # 수동 추가 expander
-        with st.expander("➕ 수동으로 추가 (기존 챕터에서 선택)"):
+        with st.expander(t("➕ 수동으로 추가 (기존 챕터에서 선택)")):
             _mc4a, _mc4b = st.columns([3, 2])
-            _search4 = _mc4a.text_input("책/챕터 이름 검색", key="summ4_search", placeholder="검색어 입력…")
-            _sort4 = _mc4b.radio("정렬", ["최근 추가순", "이름순"], horizontal=True, key="summ4_sort")
+            _search4 = _mc4a.text_input(t("책/챕터 이름 검색"), key="summ4_search", placeholder=t("검색어 입력…"))
+            _sort4 = _mc4b.radio(t("정렬"), [t("최근 추가순"), t("이름순")], horizontal=True, key="summ4_sort")
             _ch_root4m = DONE_DIR / DEFAULT_WS / "chapters"
             _all_cfs4 = list(_ch_root4m.rglob("??_*.txt")) if _ch_root4m.exists() else []
             _all_cfs4 = [f for f in _all_cfs4 if not f.stem.endswith(("_ko","_wiki"))]
             _all_cfs4 = sorted(_all_cfs4, key=lambda f: f.stat().st_mtime, reverse=True) \
-                        if "최근" in _sort4 else sorted(_all_cfs4, key=lambda f: str(f))
+                        if _sort4 == t("최근 추가순") else sorted(_all_cfs4, key=lambda f: str(f))
             _filt4 = [f for f in _all_cfs4 if _search4.lower() in str(f).lower()] if _search4 else _all_cfs4
             _mitems4 = [{"key": str(f.relative_to(DONE_DIR)), "label": f"{f.parent.name}/{f.name}",
                          "meta": f"{f.stat().st_size//1024}KB", "obj": str(f.relative_to(DONE_DIR))}
                         for f in _filt4]
             _msel4 = _checklist(_mitems4, "summ4m", height=200)
-            if st.button(f"➕ 선택 항목 큐에 추가 ({len(_msel4)}개)", key="summ4m_add", disabled=len(_msel4)==0):
+            if st.button(tf("➕ 선택 항목 큐에 추가 (%d개)", len(_msel4)), key="summ4m_add", disabled=len(_msel4)==0):
                 queue_add("tab4_ready", _msel4); st.rerun()
 
-    st.info("💡 다음 단계: **📖 5·Wiki반영** 탭으로 이동하세요")
+    st.info(t("💡 다음 단계: **📖 위키반영 앱**으로 이동하세요"))
 
 
 # ── 5: Wiki반영 ─────────────────────────────────────────
 if _active_view == "5_wiki":
-    st.caption("챕터 요약(_wiki.json)들을 합쳐 Obsidian 노트로 생성합니다.")
+    _, _, _json_n5f = _chapter_counts()
+    _ch_root5f = DONE_DIR / DEFAULT_WS / "chapters"
+    _vault5f = _current_wiki_dir()
+    _n_notes5f = sum(1 for _ in _vault5f.rglob("*.md")) if _vault5f.exists() else 0
+    _stage_flow_panel(
+        "📖 위키반영 앱",
+        "챕터 요약(_wiki.md)들을 합쳐 Obsidian 보관함(Vault)에 위키 노트로 저장합니다.",
+        [
+            ("① 처리전 · 요약 (_wiki.md)", _ch_root5f, tf("%d개", _json_n5f)),
+            ("② 처리후 · Obsidian 보관함", _vault5f, tf("%d노트", _n_notes5f)),
+        ],
+        "flow5",
+    )
 
     # ── 위키 저장 보관함(Vault) 선택 ──────────────────────────────────
     _vaults5 = list_obsidian_vaults()
     # 세션에 저장된 보관함(Vault) 경로가 있으면 우선 사용, 없으면 기본값
-    _cur_wiki5 = st.session_state.get("wiki5_active_dir", str(WIKI_DIR))
-    _cur_wiki5_path = Path(_cur_wiki5)
-    with st.expander(f"📁 위키 저장 보관함(Vault): `{_cur_wiki5_path.name}`  (`{_cur_wiki5}`)", expanded=False):
+    _cur_wiki5_path = _current_wiki_dir()
+    _cur_wiki5 = str(_cur_wiki5_path)
+    with st.expander(tf("📁 위키 저장 보관함(Vault): `%s`  (`%s`)", _cur_wiki5_path.name, _cur_wiki5), expanded=False):
         if _vaults5:
             _vault_opts5 = _vaults5 + ([] if _cur_wiki5 in _vaults5 else [_cur_wiki5])
             _vault_idx5 = _vault_opts5.index(_cur_wiki5) if _cur_wiki5 in _vault_opts5 else 0
-            _vault_sel5 = st.selectbox("Obsidian 보관함(Vault) 선택", _vault_opts5, index=_vault_idx5,
+            _vault_sel5 = st.selectbox(t("Obsidian 보관함(Vault) 선택"), _vault_opts5, index=_vault_idx5,
                                        key="wiki5_vault_sel",
                                        format_func=lambda p: f"{Path(p).name}  ({p})")
             if _vault_sel5 != _cur_wiki5:
-                if st.button("✅ 이 보관함(Vault)로 변경 (즉시 적용)", key="wiki5_vault_save"):
+                if st.button(t("✅ 이 보관함(Vault)로 변경 (즉시 적용)"), key="wiki5_vault_save"):
                     set_wiki_dir(_vault_sel5)
                     st.session_state["wiki5_active_dir"] = _vault_sel5
                     st.success(f"✅ 보관함(Vault) 변경됨: {_vault_sel5}")
                     st.rerun()
         else:
-            st.info("Obsidian 보관함(Vault) 목록을 가져올 수 없습니다. Obsidian이 설치·실행됐는지 확인하세요.")
-        _custom5 = st.text_input("또는 직접 경로 입력", key="wiki5_vault_custom", placeholder="/path/to/vault")
-        if _custom5 and st.button("✅ 직접 입력 경로로 변경 (즉시 적용)", key="wiki5_vault_custom_save"):
+            st.info(t("Obsidian 보관함(Vault) 목록을 가져올 수 없습니다. Obsidian이 설치·실행됐는지 확인하세요."))
+        _custom5 = st.text_input(t("또는 직접 경로 입력"), key="wiki5_vault_custom", placeholder="/path/to/vault")
+        if _custom5 and st.button(t("✅ 직접 입력 경로로 변경 (즉시 적용)"), key="wiki5_vault_custom_save"):
             set_wiki_dir(_custom5)
             st.session_state["wiki5_active_dir"] = _custom5
             st.success(f"✅ 보관함(Vault) 변경됨: {_custom5}")
@@ -3227,12 +1925,12 @@ if _active_view == "5_wiki":
 
     _wiki_prov_ok5 = any(llm.has_key(p) for p in llm.PROVIDERS)
     if not _wiki_prov_ok5:
-        st.warning("Wiki 생성 API 없음 — ⚙️ 설정 탭에서 키를 입력하세요.")
+        st.warning(t("Wiki 생성 API 없음 — ⚙️ 설정 탭에서 키를 입력하세요."))
     else:
         _wiki_model_radio("wiki5_ai")
 
     _fws5 = DEFAULT_WS
-    _wiki_stems5 = {_nfc(p.stem) for p in WIKI_DIR.rglob("*.md")} if WIKI_DIR.exists() else set()
+    _wiki_stems5 = {_nfc(p.stem) for p in _cur_wiki5_path.rglob("*.md")} if _cur_wiki5_path.exists() else set()
 
     # ── 챕터 요약 → Wiki (큐 기반) ───────────────────────────
     _q5_stems = queue_list("tab5_ready")   # Tab4가 등록한 책 stem
@@ -3240,10 +1938,10 @@ if _active_view == "5_wiki":
     _wiki_done5_list: list[dict] = []
     for _stem5 in _q5_stems:
         _ch5 = chapters_dir(DEFAULT_WS, _stem5)
-        _jsons5 = list(_ch5.glob("*_wiki.json")) if _ch5.exists() else []
+        _jsons5 = list_summary_files(_ch5)
         _total5 = len([f for f in _ch5.glob("??_*.txt")
                        if not f.stem.endswith(("_ko", "_wiki"))]) if _ch5.exists() else 0
-        _ratio5 = f"{len(_jsons5)}/{_total5}챕터"
+        _ratio5 = tf("%d/%d챕터 요약됨", len(_jsons5), _total5)
         # 챕터 이름 목록 (NN_제목.txt → 제목)
         _ch_names5 = [_re.sub(r'^\d+_', '', f.stem) for f in sorted(_ch5.glob("??_*.txt"))
                       if not f.stem.endswith(("_ko","_wiki"))] if _ch5.exists() else []
@@ -3253,20 +1951,20 @@ if _active_view == "5_wiki":
             _wiki_pend5.append({
                 "key": _stem5,
                 "label": _stem5,
-                "meta": f"{_ratio5} 요약됨",
+                "meta": _ratio5,
                 "obj": {"ws": DEFAULT_WS, "stem": _stem5},
                 "ch_names": _ch_names5,
             })
 
     # 챕터 요약 → Wiki
-    st.markdown(f"#### 챕터 요약 → Wiki ({len(_wiki_pend5)}권 대기)")
+    st.markdown(tf("#### 챕터 요약 → Wiki (%d권 대기)", len(_wiki_pend5)))
     if _wiki_pend5:
         # 책 단위 체크리스트 + 챕터 이름 펼치기
         _sel5: list = []
         with st.container(height=320, border=True):
             _w5h1, _w5h2, _w5h3, _w5h4 = st.columns([0.05, 0.5, 0.32, 0.13])
-            _w5h2.markdown("**책 제목**", unsafe_allow_html=True)
-            _w5h3.markdown("<small style='color:#9ca3af'>챕터</small>", unsafe_allow_html=True)
+            _w5h2.markdown(t("**책 제목**"), unsafe_allow_html=True)
+            _w5h3.markdown(f"<small style='color:#9ca3af'>{t('챕터')}</small>", unsafe_allow_html=True)
             for _it5 in _wiki_pend5:
                 _k5 = f"wiki5_{_it5['key']}"
                 _c5a, _c5b, _c5c, _c5d = st.columns([0.05, 0.5, 0.32, 0.13])
@@ -3279,17 +1977,17 @@ if _active_view == "5_wiki":
                     _ch_preview5 += f" … +{len(_it5['ch_names'])-4}개"
                 _c5c.caption(_it5["meta"])
                 _view_dir5 = chapters_dir(DEFAULT_WS, _it5["obj"]["stem"])
-                if _c5d.button("보기", key=f"wiki5_view_{_it5['key']}", use_container_width=True,
+                if _c5d.button(t("보기"), key=f"wiki5_view_{_it5['key']}", use_container_width=True,
                                 disabled=not _view_dir5.exists()):
                     open_path(_view_dir5)
                 if _it5["ch_names"]:
                     with st.expander(f"  ↳ {_ch_preview5}", expanded=False):
                         _ch5_dir = chapters_dir(DEFAULT_WS, _it5["obj"]["stem"])
                         for _cn5 in _it5["ch_names"]:
-                            # NN_제목.txt → NN_제목_wiki.json 탐색
+                            # NN_제목.txt → NN_제목_wiki.md(구형 json 폴백) 탐색
                             _cn5_txt = next((_ch5_dir.glob(f"??_{_cn5}.txt")), None) if _ch5_dir.exists() else None
-                            _cn5_json = _cn5_txt.with_name(_cn5_txt.stem + "_wiki.json") if _cn5_txt else None
-                            _has_json5 = bool(_cn5_json and _cn5_json.exists())
+                            _cn5_json = summary_file_for(_cn5_txt) if _cn5_txt else None
+                            _has_json5 = _cn5_json is not None
                             _cj1, _cj2 = st.columns([4, 1])
                             if _has_json5:
                                 _cj1.markdown(f"✅ **{_cn5}**")
@@ -3298,23 +1996,21 @@ if _active_view == "5_wiki":
                                     _bok5, _bmsg5 = build_single_chapter_wiki(DEFAULT_WS, _it5["obj"]["stem"], _cn5_json, wiki_dir=_cur_wiki5_path)
                                     (st.success if _bok5 else st.error)(
                                         f"{'✅ ' + Path(_bmsg5).name if _bok5 else '❌ ' + _bmsg5}")
-                                try:
-                                    _pv5 = json.loads(_cn5_json.read_text(encoding="utf-8"))
+                                _pv5 = load_summary_file(_cn5_json)
+                                if _pv5:
                                     with st.expander(f"  📖 {_cn5[:35]}", expanded=False):
                                         if _pv5.get("summary"):
                                             st.info(_pv5["summary"])
                                         if _pv5.get("body"):
                                             st.markdown(_pv5["body"])
-                                except Exception:
-                                    pass
                             else:
                                 _cj1.caption(f"⏳ {_cn5}")
         _b5c1, _b5c2, _b5c3 = st.columns([2, 2, 1])
-        _rs5 = _b5c1.button(f"▶ 선택 Wiki생성 ({len(_sel5)}권)", key="wiki5_run_sel",
+        _rs5 = _b5c1.button(tf("▶ 선택 Wiki생성 (%d권)", len(_sel5)), key="wiki5_run_sel",
                               use_container_width=True, type="primary", disabled=len(_sel5)==0)
-        _ra5 = _b5c2.button(f"▶ 전체 Wiki생성 ({len(_wiki_pend5)}권)", key="wiki5_run_all",
+        _ra5 = _b5c2.button(tf("▶ 전체 Wiki생성 (%d권)", len(_wiki_pend5)), key="wiki5_run_all",
                               use_container_width=True)
-        if _b5c3.button("🗑 큐 비우기", key="wiki5_clear", use_container_width=True):
+        if _b5c3.button(t("🗑 큐 비우기"), key="wiki5_clear", use_container_width=True):
             queue_clear("tab5_ready"); st.rerun()
         _to5 = ([it["obj"] for it in _wiki_pend5] if _ra5 else (_sel5 if _rs5 else []))
         if _to5:
@@ -3323,7 +2019,7 @@ if _active_view == "5_wiki":
                 with st.status(f"Wiki [{_wi5}/{len(_to5)}]: {_wo5['stem']}", expanded=True):
                     # 1단계: 챕터별 개별 노트 생성
                     _ch_dir5 = chapters_dir(_wo5["ws"], _wo5["stem"])
-                    _ch_jsons5 = sorted(_ch_dir5.glob("*_wiki.json")) if _ch_dir5.exists() else []
+                    _ch_jsons5 = list_summary_files(_ch_dir5)
                     _ch_ok5, _ch_fail5 = 0, 0
                     for _cjf5 in _ch_jsons5:
                         _bok5, _bmsg5 = build_single_chapter_wiki(
@@ -3343,26 +2039,32 @@ if _active_view == "5_wiki":
                 if _ok5:
                     queue_remove("tab5_ready", [_wo5["stem"]])
                 _wp5.progress(_wi5 / len(_to5))
+            _set_stage_completion(
+                t("5-Wiki 반영 완료"),
+                tf("%d권 Wiki 반영을 마쳤습니다.", len(_to5)),
+                next_stage=None,
+                open_target=_stage_folder("5_wiki"),
+            )
             st.rerun()
     else:
-        st.info("Wiki 대기 없음 — 4·요약MD생성 탭에서 요약 완료 후 자동 등록되거나 아래에서 수동 추가하세요")
+        st.info(t("Wiki 대기 없음 — 📝 문서요약 앱에서 요약 완료 후 자동 등록되거나 아래에서 수동 추가하세요"))
 
     # 수동 추가 expander (책 단위)
-    with st.expander("➕ 수동으로 추가 (요약 완료된 책에서 선택)"):
+    with st.expander(t("➕ 수동으로 추가 (요약 완료된 책에서 선택)")):
         _mc5a, _mc5b = st.columns([3, 2])
-        _search5 = _mc5a.text_input("책 이름 검색", key="wiki5_search", placeholder="검색어 입력…")
-        _sort5 = _mc5b.radio("정렬", ["최근 추가순", "이름순"], horizontal=True, key="wiki5_sort")
+        _search5 = _mc5a.text_input(t("책 이름 검색"), key="wiki5_search", placeholder=t("검색어 입력…"))
+        _sort5 = _mc5b.radio(t("정렬"), [t("최근 추가순"), t("이름순")], horizontal=True, key="wiki5_sort")
         _ch_root5m = DONE_DIR / DEFAULT_WS / "chapters"
         _all_books5 = list(_ch_root5m.iterdir()) if _ch_root5m.exists() else []
-        _books_with_json5 = [d for d in _all_books5 if d.is_dir() and list(d.glob("*_wiki.json"))]
+        _books_with_json5 = [d for d in _all_books5 if d.is_dir() and list_summary_files(d)]
         _books_with_json5 = sorted(_books_with_json5, key=lambda d: d.stat().st_mtime, reverse=True) \
-                            if "최근" in _sort5 else sorted(_books_with_json5, key=lambda d: d.name)
+                            if _sort5 == t("최근 추가순") else sorted(_books_with_json5, key=lambda d: d.name)
         _filt5 = [d for d in _books_with_json5 if _search5.lower() in d.name.lower()] if _search5 else _books_with_json5
         _mitems5 = [{"key": d.name, "label": d.name,
-                     "meta": f"{len(list(d.glob('*_wiki.json')))}챕터 요약", "obj": d.name}
+                     "meta": tf("%d챕터 요약", len(list_summary_files(d))), "obj": d.name}
                     for d in _filt5]
         _msel5 = _checklist(_mitems5, "wiki5m", height=200)
-        if st.button(f"➕ 선택 항목 큐에 추가 ({len(_msel5)}권)", key="wiki5m_add", disabled=len(_msel5)==0):
+        if st.button(tf("➕ 선택 항목 큐에 추가 (%d권)", len(_msel5)), key="wiki5m_add", disabled=len(_msel5)==0):
             queue_add("tab5_ready", _msel5); st.rerun()
 
     # 단일 TXT 기반 (챕터 분할 없는 책 — 큐 외 별도 경로)
@@ -3387,10 +2089,10 @@ if _active_view == "5_wiki":
     # 단일 TXT → Wiki (Gemini 직접)
     if _single_pend5:
         st.divider()
-        st.markdown(f"#### 단일 TXT → Wiki ({len(_single_pend5)}권 · 챕터 분할 없음)")
-        st.caption("전체 TXT를 Gemini에 넣어 백그라운드로 단일 위키 노트 생성")
+        st.markdown(tf("#### 단일 TXT → Wiki (%d권 · 챕터 분할 없음)", len(_single_pend5)))
+        st.caption(t("전체 TXT를 Gemini에 넣어 백그라운드로 단일 위키 노트 생성"))
         _sel5s = _checklist(_single_pend5, "wiki5s", height=200)
-        if st.button(f"▶ 선택 단일 Wiki ({len(_sel5s)}권)", key="wiki5s_run",
+        if st.button(tf("▶ 선택 단일 Wiki (%d권)", len(_sel5s)), key="wiki5s_run",
                      use_container_width=True, type="primary", disabled=len(_sel5s)==0):
             for _wo5s in _sel5s:
                 _ok5s = trigger_gemini_wiki(_wo5s["txt"])
@@ -3400,15 +2102,15 @@ if _active_view == "5_wiki":
 
     # Wiki 완료 목록
     st.divider()
-    _wiki_files5 = sorted(WIKI_DIR.rglob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True) \
-                   if WIKI_DIR.exists() else []
-    st.markdown(f"#### Wiki 완료 ({len(_wiki_files5)}노트)")
+    _wiki_files5 = sorted(_cur_wiki5_path.rglob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True) \
+                   if _cur_wiki5_path.exists() else []
+    st.markdown(tf("#### Wiki 완료 (%d노트)", len(_wiki_files5)))
     if _wiki_files5:
         _wv_col1, _wv_col2 = st.columns(2)
-        if _wv_col1.button("📓 Obsidian 보관함(Vault) 열기", key="w5_vault", use_container_width=True):
+        if _wv_col1.button(t("📓 Obsidian 보관함(Vault) 열기"), key="w5_vault", use_container_width=True):
             open_wiki_vault()
         if _wv_col2.button("📂 폴더 열기", key="w5_folder", use_container_width=True):
-            open_path(WIKI_DIR)
+            open_path(_cur_wiki5_path)
         with st.container(height=300, border=True):
             for _wf5 in _wiki_files5[:100]:
                 _wc1, _wc2, _wc3 = st.columns([5, 2, 1])
@@ -3422,10 +2124,31 @@ if _active_view == "5_wiki":
 
 # ── 설정 (API 키) ─────────────────────────────────────
 if _active_view == "settings":
-    st.caption(
+    _lang_cur = get_lang()
+    _lang_sel = st.radio("🌐 언어 / Language", ["한국어", "English"],
+                         index=0 if _lang_cur == "ko" else 1,
+                         horizontal=True, key="ui_lang_radio")
+    _lang_new = "ko" if _lang_sel == "한국어" else "en"
+    if _lang_new != _lang_cur:
+        set_lang(_lang_new)
+        st.rerun()
+    st.divider()
+    st.caption(t(
         "API 키는 이 화면에서 직접 저장한 값만 사용합니다. "
         "저장 키는 `~/.config/mybookshelf/keys.json`에만 보관되며 저장소에 올라가지 않습니다."
-    )
+    ))
+    with st.expander(t("저작권 및 사용 주의"), expanded=False):
+        st.write(
+            "이 앱은 문서 정리와 개인 연구 보조를 위한 도구입니다. 저작권 보호 문서의 복제, 번역, 요약, 배포 가능 여부는 "
+            "사용자가 직접 확인해야 합니다."
+        )
+        st.write(
+            "AI API 또는 CLI 구독 도구를 활성화하면 문서 일부 또는 전체가 외부 서비스로 전송될 수 있습니다. "
+            "개인정보, 비공개 원고, 계약상 반출 금지 자료는 넣지 않는 것을 권장합니다."
+        )
+        st.write(
+            "생성 결과의 정확성, 인용 적합성, 신학적 해석, 법적 판단은 자동 보증되지 않습니다. 출판, 제출, 배포 전에는 원문과 직접 대조해 검토하세요."
+        )
 
     # 🧠 위키 생성 모델 (공급자/모델)
     _wp, _wm = llm.wiki_provider_model()
@@ -3435,12 +2158,12 @@ if _active_view == "settings":
         _labels = [f"{llm.PROVIDERS[p]['label']} · {m}" for p, m in _avail]
         _curlbl = f"{llm.PROVIDERS.get(_wp, {}).get('label', _wp)} · {_wm}"
         _idx = _labels.index(_curlbl) if _curlbl in _labels else 0
-        _sel = st.selectbox("위키 노트를 생성할 모델", _labels, index=_idx, key="wiki_model_sel")
+        _sel = st.selectbox(t("위키 노트를 생성할 모델"), _labels, index=_idx, key="wiki_model_sel")
         _p, _m = _avail[_labels.index(_sel)]
         if (_p, _m) != (_wp, _wm) and st.button("✅ 이 모델로 위키 생성", use_container_width=True):
             llm.set_wiki_model(_p, _m); st.success(f"위키 모델 = {_p} · {_m}"); st.rerun()
     else:
-        st.info("사용 가능한 API 키나 활성화된 CLI가 없습니다. 아래에서 API 키를 입력하거나 CLI 사용을 켜세요.")
+        st.info(t("사용 가능한 API 키나 활성화된 CLI가 없습니다. 아래에서 API 키를 입력하거나 CLI 사용을 켜세요."))
     st.caption("번역과 별개로, 위키 노트 생성에 쓸 모델입니다. 구조화 출력은 공급자별로 자동 처리됩니다.")
     st.divider()
 
@@ -3450,22 +2173,22 @@ if _active_view == "settings":
         if _prov in _cli_provs:
             continue
         _cur = llm.masked(_prov)
-        _api_label = ("✅ 저장됨 " + _cur) if _cur else "미설정"
+        _api_label = ("✅ " + t("저장됨") + " " + _cur) if _cur else t("미설정")
         with st.expander(f"{_info['label']}  —  {_api_label}",
                          expanded=not bool(_cur)):
             with st.form(f"keyform_{_prov}", clear_on_submit=True):
                 _newk = st.text_input(f"{_info['label']} API 키", type="password",
                                       placeholder=_info["hint"], key=f"keyin_{_prov}")
                 _c1, _c2 = st.columns(2)
-                _save = _c1.form_submit_button("💾 저장", use_container_width=True)
-                _del = _c2.form_submit_button("🗑 삭제", use_container_width=True)
+                _save = _c1.form_submit_button(t("💾 저장"), use_container_width=True)
+                _del = _c2.form_submit_button(t("🗑 삭제"), use_container_width=True)
                 if _save:
                     if _newk.strip():
                         llm.save_key(_prov, _newk.strip())
-                        st.success("저장됨")
+                        st.success(t("저장됨"))
                         st.rerun()
                     else:
-                        st.warning("키를 입력하세요.")
+                        st.warning(t("키를 입력하세요."))
                 if _del:
                     llm.save_key(_prov, "")
                     st.info("저장 키 삭제됨")
@@ -3523,7 +2246,7 @@ if _active_view == "settings":
 
     st.divider()
     st.caption(
-        f"현재: `{WIKI_DIR}` — 생성된 위키 노트가 여기 저장되고, "
+        f"현재: `{_current_wiki_dir()}` — 생성된 위키 노트가 여기 저장되고, "
         "Wiki 목록 탭의 [옵시디언에서 위키 보관함(Vault) 열기]도 이 폴더를 엽니다."
     )
     _default_wiki = str(cfg.BASE_DIR / "wiki")
@@ -3531,7 +2254,7 @@ if _active_view == "settings":
     for _c in [_default_wiki] + list_obsidian_vaults():
         if _c and _c not in _wiki_cands:
             _wiki_cands.append(_c)
-    _cur_wiki = str(WIKI_DIR)
+    _cur_wiki = str(_current_wiki_dir())
     _wd_sel = st.selectbox(
         "폴더 선택 — 기본값 + 옵시디언에 등록된 보관함(Vault)들",
         _wiki_cands,
