@@ -1,19 +1,46 @@
 @echo off
+setlocal EnableExtensions
 chcp 65001 >nul
+
 if exist "%~dp0..\..\core\requirements.txt" (
     cd /d "%~dp0..\.."
 ) else (
     cd /d "%~dp0"
 )
-REM My Bookshelf 설치 스크립트(윈도우) — 더블클릭으로 실행하세요.
-REM 하는 일: 파이썬 확인 -> 전용 가상환경(.venv) 생성 -> 필요 패키지 설치.
-REM 인터넷 연결 필요. 처음 설치는 몇 분 걸릴 수 있습니다.
 
-echo [My Bookshelf] 설치를 시작합니다.
+set "INSTALLER_MODE=0"
+set "SKIP_OBSIDIAN=0"
+set "NO_PAUSE=0"
+set "REQ_FILE="
+set "PYCMD="
+
+:parse_args
+if "%~1"=="" goto args_done
+if /i "%~1"=="--installer" (
+    set "INSTALLER_MODE=1"
+    set "SKIP_OBSIDIAN=1"
+    set "NO_PAUSE=1"
+) else if /i "%~1"=="--skip-obsidian" (
+    set "SKIP_OBSIDIAN=1"
+) else if /i "%~1"=="--no-pause" (
+    set "NO_PAUSE=1"
+)
+shift
+goto parse_args
+
+:args_done
+if exist "core\requirements.txt" (
+    set "REQ_FILE=core\requirements.txt"
+) else if exist "requirements.txt" (
+    set "REQ_FILE=requirements.txt"
+) else (
+    echo [ERROR] requirements.txt was not found.
+    goto :fail
+)
+
+echo [My Bookshelf] Installing runtime...
 echo.
 
-REM ── 1. 파이썬 3.10+ 찾기 ──────────────────────────────────
-set "PYCMD="
 py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)" >nul 2>nul
 if not errorlevel 1 set "PYCMD=py -3"
 if not defined PYCMD (
@@ -21,70 +48,84 @@ if not defined PYCMD (
     if not errorlevel 1 set "PYCMD=python"
 )
 if not defined PYCMD (
-    echo [실패] 파이썬 3.10 이상이 필요합니다.
-    echo        https://www.python.org/downloads/ 에서 최신 파이썬을 설치한 뒤
-    echo        이 스크립트를 다시 실행해 주세요.
-    echo        ※ 설치 첫 화면에서 "Add python.exe to PATH" 를 꼭 체크하세요.
-    start https://www.python.org/downloads/
-    echo 아무 키나 누르면 창이 닫힙니다.
-    pause >nul
-    exit /b 1
+    echo [ERROR] Python 3.10 or newer is required.
+    echo         Install Python from https://www.python.org/downloads/
+    if "%INSTALLER_MODE%"=="0" start https://www.python.org/downloads/
+    goto :fail
 )
-for /f "delims=" %%v in ('%PYCMD% --version') do echo [확인] 파이썬: %%v
+for /f "delims=" %%v in ('%PYCMD% --version') do echo [OK] %%v
 
-REM ── 2. 가상환경 + 패키지 설치 ─────────────────────────────
-if not exist .venv (
-    echo [진행] 가상환경^(.venv^) 생성 중...
-    %PYCMD% -m venv .venv
-    if errorlevel 1 ( echo [실패] 가상환경 생성 실패 — 아무 키나 누르면 닫힙니다. & pause >nul & exit /b 1 )
+if exist ".venv" if not exist ".venv\Scripts\python.exe" (
+    echo [WARN] Broken virtual environment found. Recreating it...
+    rmdir /s /q ".venv"
 )
-echo [진행] 패키지 설치 중 — 창을 닫지 마세요.
-.venv\Scripts\python -m pip install --upgrade pip
-.venv\Scripts\python -m pip install -r core\requirements.txt
+
+if not exist ".venv\Scripts\python.exe" (
+    echo [STEP] Creating virtual environment...
+    %PYCMD% -m venv ".venv"
+    if errorlevel 1 (
+        echo [ERROR] Failed to create .venv
+        goto :fail
+    )
+)
+
+echo [STEP] Upgrading pip...
+call ".venv\Scripts\python.exe" -m pip install --upgrade pip
 if errorlevel 1 (
-    echo [실패] 패키지 설치 실패 — 인터넷 연결을 확인하고 다시 실행해 주세요.
-    echo 아무 키나 누르면 창이 닫힙니다.
-    pause >nul
-    exit /b 1
+    echo [ERROR] Failed to upgrade pip.
+    goto :fail
 )
 
-REM ── Streamlit 첫 실행 영문 환영문(이메일 입력) 건너뛰기 ──
-if not exist "%USERPROFILE%\.streamlit" mkdir "%USERPROFILE%\.streamlit"
+echo [STEP] Installing packages from %REQ_FILE% ...
+call ".venv\Scripts\python.exe" -m pip install -r "%REQ_FILE%"
+if errorlevel 1 (
+    echo [ERROR] Failed to install required packages.
+    echo         Check your internet connection and Python installation.
+    goto :fail
+)
+
+if not exist "%USERPROFILE%\.streamlit" mkdir "%USERPROFILE%\.streamlit" >nul 2>nul
 if not exist "%USERPROFILE%\.streamlit\credentials.toml" (
-    echo [general]> "%USERPROFILE%\.streamlit\credentials.toml"
-    echo email = "">> "%USERPROFILE%\.streamlit\credentials.toml"
+    > "%USERPROFILE%\.streamlit\credentials.toml" echo [general]
+    >> "%USERPROFILE%\.streamlit\credentials.toml" echo email = ""
 )
 
-REM ── 3. 옵시디언(위키 노트 열람용) 확인 ─────────────────────
+if "%SKIP_OBSIDIAN%"=="1" goto :success
+
 echo.
-if exist "%LOCALAPPDATA%\Programs\Obsidian\Obsidian.exe" goto :obs_have
-if exist "%LOCALAPPDATA%\Obsidian\Obsidian.exe" goto :obs_have
-choice /c YN /m "[질문] 위키 노트 열람용 옵시디언이 없습니다. 지금 설치할까요"
+if exist "%LOCALAPPDATA%\Programs\Obsidian\Obsidian.exe" goto :obsidian_ready
+if exist "%LOCALAPPDATA%\Obsidian\Obsidian.exe" goto :obsidian_ready
+choice /c YN /m "[Question] Obsidian is not installed. Install it now?"
 if errorlevel 2 (
-    echo [안내] 나중에 install-obsidian.bat 를 실행하면 설치할 수 있습니다.
-    goto :done
+    echo [INFO] You can install it later with install-obsidian.bat
+    goto :success
 )
 where winget >nul 2>nul
 if errorlevel 1 (
-    echo [안내] 옵시디언 다운로드 페이지를 엽니다 — 설치 파일을 받아 실행하세요.
+    echo [INFO] Opening the Obsidian download page...
     start https://obsidian.md/download
-    goto :done
+    goto :success
 )
-echo [진행] winget으로 옵시디언 설치 중...
+echo [STEP] Installing Obsidian with winget...
 winget install -e --id Obsidian.Obsidian --accept-source-agreements --accept-package-agreements
 if errorlevel 1 (
-    echo [안내] 자동 설치 실패 — 다운로드 페이지를 엽니다.
+    echo [INFO] Automatic Obsidian install failed. Opening the download page...
     start https://obsidian.md/download
 )
-goto :done
+goto :success
 
-:obs_have
-echo [확인] 옵시디언이 이미 설치되어 있습니다.
+:obsidian_ready
+echo [OK] Obsidian is already installed.
 
-:done
+:success
 echo.
-echo [완료] 설치 끝! 이제 start-app.vbs 를 더블클릭하면 창 없이 앱이 열립니다.
-echo        (고급) 내부 파이썬 파일은 core\ 폴더 안에 있습니다.
-echo        (끌 때는 stop-app.bat, 오류 메시지를 봐야 할 때는 start.bat)
-echo 아무 키나 누르면 창이 닫힙니다.
-pause >nul
+echo [DONE] Installation finished.
+echo        Start the app with MyBookshelf.exe or start-app.vbs
+if "%NO_PAUSE%"=="0" pause
+exit /b 0
+
+:fail
+echo.
+echo [FAILED] Installation did not complete.
+if "%NO_PAUSE%"=="0" pause
+exit /b 1
