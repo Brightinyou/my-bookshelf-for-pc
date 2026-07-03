@@ -4,38 +4,60 @@ Windows PC용 My Bookshelf입니다.
 
 PDF 또는 TXT를 넣으면 `TXT 변환 -> 장별 분할 -> 번역 -> 문서 요약 -> Obsidian Wiki 반영` 흐름으로 작업할 수 있습니다.
 
-## 설치
+## 설치 (처음 사용자용 상세 안내)
 
 배포 파일은 `Setup.exe` 하나입니다.
-**다운로드**: [최신 릴리스](https://github.com/Brightinyou/my-bookshelf-for-pc/releases/latest)에서 `Setup.exe`를 받으세요.
+**다운로드**: [최신 릴리스](https://github.com/Brightinyou/my-bookshelf-for-pc/releases/latest) 페이지에서 `Setup.exe`를 받으세요.
 
-1. **파이썬 3.10 이상을 먼저 설치**합니다 (<https://www.python.org/downloads/>, "Add to PATH" 체크).
-2. `Setup.exe`를 실행합니다. 설치 언어(한국어/English)를 고를 수 있고, 선택한 언어가 앱 화면 언어의 기본값이 됩니다.
-3. Windows SmartScreen 경고가 뜨면 `추가 정보 -> 실행`을 선택합니다.
-4. 설치 중 패키지 다운로드가 진행됩니다(인터넷 필요, 수 분 소요). 끝나면 시작 메뉴 또는 바탕화면의 `My Bookshelf`로 실행합니다.
+### 0단계 — 사전 준비물 확인
 
-PDF 텍스트 추출용 Poppler(pdftotext)는 설치 파일에 포함되어 있어 따로 설치할 필요가 없습니다.
-제거는 시작 메뉴의 `Uninstall` 또는 Windows 설정 > 앱에서 합니다.
-앱 화면 언어는 `⚙️ 설정 > 🌐 언어 / Language`에서 언제든 바꿀 수 있습니다.
+| 준비물 | 설명 |
+|--------|------|
+| Windows 10 / 11 (64비트) | 대부분의 최신 PC에 해당 |
+| 인터넷 연결 | 설치 중 패키지 다운로드와 AI 호출에 필요 |
+| **Python 3.10 이상** | 아래 1단계 참고 — **없으면 Setup이 시작되지 않고 안내만 뜹니다** |
+| (선택) Obsidian | 생성된 위키 노트를 열람할 때 사용 |
 
-개발 폴더에서 직접 실행할 때:
+PDF 텍스트 추출 도구(Poppler)는 `Setup.exe`에 포함되어 있어 **따로 설치할 필요가 없습니다.**
+
+### 1단계 — 파이썬 설치 (처음 한 번만)
+
+이미 파이썬 3.10 이상이 설치돼 있다면 건너뜁니다.
+
+1. <https://www.python.org/downloads/> 에 접속해 노란색 **"Download Python 3.x.x"** 버튼을 누릅니다.
+2. 받은 파일을 실행하면 설치 화면이 뜹니다. **첫 화면 맨 아래의 "Add python.exe to PATH"를 반드시 체크**한 뒤 "Install Now"를 누릅니다. (이 체크를 빼먹는 것이 가장 흔한 실패 원인입니다)
+3. 설치 확인: 시작 메뉴에서 `cmd`를 실행하고 `python --version`을 입력합니다. `Python 3.1x.x`처럼 나오면 성공입니다.
+
+### 2단계 — My Bookshelf 설치
+
+1. 릴리스 페이지에서 받은 `Setup.exe`를 실행합니다.
+2. Windows SmartScreen 경고가 뜨면 `추가 정보 → 실행`을 선택합니다. (서명되지 않은 개인 배포 프로그램이라 뜨는 정상적인 경고입니다)
+3. **설치 언어(한국어/English)를 선택**합니다. 여기서 고른 언어가 앱 화면 언어의 기본값이 됩니다.
+4. 설치가 진행되는 동안 파이썬 패키지 다운로드로 **수 분이 걸립니다.** 창을 닫지 말고 기다려 주세요.
+5. 설치가 끝나면 앱이 자동 실행됩니다. 이후에는 바탕화면 또는 시작 메뉴의 **My Bookshelf** 아이콘으로 실행합니다.
+
+### 3단계 — 첫 실행 설정
+
+1. 앱의 `⚙️ 설정`에서 사용할 **AI API 키를 입력**하거나 CLI 구독 도구(Claude/Codex)를 활성화합니다.
+2. Obsidian Wiki 보관함(Vault) 경로를 확인합니다.
+3. 화면 언어는 `⚙️ 설정 → 🌐 언어 / Language`에서 언제든 바꿀 수 있습니다.
+
+### 문제가 생기면
+
+- **"Python 3.10 or newer is required" 안내가 뜸** → 1단계 파이썬 설치 후 Setup.exe를 다시 실행하세요.
+- **설치가 실패함** → 설치 폴더(`%localappdata%\My Bookshelf`)의 `install.log`를 열어 마지막 줄을 확인하세요. 대부분 인터넷 연결 또는 파이썬 PATH 문제입니다.
+- **업데이트했는데 이전 버전이 보임** → 설치 폴더의 `stop-app.bat`을 실행해 기존 서버를 끈 뒤 아이콘으로 다시 실행하세요.
+- **제거** → 시작 메뉴의 `Uninstall` 또는 Windows 설정 > 앱.
+
+### 개발 폴더에서 직접 실행 (개발자용)
 
 ```bat
-setup.bat
-start-app.vbs
+setup.bat        :: 의존성 설치 (처음 한 번)
+start.bat        :: 실행 (레포 코드로 실행됨)
+stop-app.bat     :: 종료
 ```
 
-문제 확인이 필요할 때는 콘솔이 보이는 실행 파일을 사용합니다.
-
-```bat
-start.bat
-```
-
-종료:
-
-```bat
-stop-app.bat
-```
+바탕화면 아이콘(MyBookshelf.exe)은 항상 **설치본**을, 레포 폴더의 `start.bat`은 **레포 코드**를 실행합니다. 둘을 오갈 때는 `stop-app.bat`을 먼저 실행하세요.
 
 ## 기본 사용 순서
 
