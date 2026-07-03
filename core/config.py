@@ -83,10 +83,10 @@ GEMINI_DONE_FILE = _file("gemini_done",  LOG_DIR / "gemini_done.txt")
 
 # 업로드/재시도 대기 폴더. 대량 배치 시 내장 디스크를 채울 수 있어(2026-06-11
 # 설교 300편 디스크풀 사고) config.json dirs.upload_tmp로 외장 등 다른 볼륨 지정 가능.
-# 기본값: 맥=/tmp(기존 호환), 윈도우=%TEMP%.
+# 기본값: Windows %TEMP%.
 UPLOAD_TMP = _dir(
     "upload_tmp",
-    (Path("/tmp") if sys.platform == "darwin" else Path(tempfile.gettempdir())) / "pipeline_uploads",
+    Path(tempfile.gettempdir()) / "pipeline_uploads",
 )
 
 
@@ -116,7 +116,11 @@ def find_binary(name: str, extra: tuple = ()) -> str | None:
 
 
 _PARENT = _HERE.parent   # core/ → 상위 폴더 (.venv가 여기 있을 수도 있음)
-PDFTOTEXT = find_binary("pdftotext")
+# 번들 poppler (2026-07-03): 인스톨러가 {app}\poppler로 설치, 개발 레포는 vendor\poppler
+PDFTOTEXT = find_binary("pdftotext", extra=(
+    str(_PARENT / "poppler" / "Library" / "bin" / "pdftotext.exe"),
+    str(_PARENT / "vendor" / "poppler" / "Library" / "bin" / "pdftotext.exe"),
+))
 PYTHON    = sys.executable   # 보조 스크립트는 앱과 같은 인터프리터로 실행
 
 

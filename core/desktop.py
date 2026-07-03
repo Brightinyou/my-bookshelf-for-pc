@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""My Bookshelf 데스크톱 런처 (네이티브 창).
-
-Streamlit 서버를 백그라운드(헤드리스)로 띄우고, 주소창 없는 네이티브 창에
-표시한다. 창을 닫으면 서버도 함께 종료된다.
-
-- macOS: WebKit (pyobjc) 사용 — OS 내장
-- Windows: Edge WebView2 (Chromium) 사용 — OS 내장(Win11 기본)
-
-브라우저 탭이 아니라 독립 앱처럼 보이게 하는 것이 목적. PyInstaller·공증과
-무관하며, 기존 스크립트 설치 방식 위에서 그대로 동작한다.
-"""
+"""My Bookshelf Windows desktop launcher."""
 from __future__ import annotations
 
 import os
@@ -24,30 +14,28 @@ APP_TITLE = "My Bookshelf"
 DEFAULT_PORT = 8501
 HERE = Path(__file__).resolve().parent
 APP_SCRIPT = HERE / "pipeline_app.py"
-import sys as _sys
 
 
 def _find_app_icon() -> str:
-    name = "MyBookshelf.icns" if _sys.platform == "darwin" else "MyBookshelf.ico"
-    for base in (HERE, HERE.parent, HERE.parent / "platform" / "mac"):
-        p = base / name
+    for base in (HERE, HERE.parent, HERE.parent / "platform" / "windows"):
+        p = base / "MyBookshelf.ico"
         if p.exists():
             return str(p)
-    return str(HERE.parent / name)
+    return str(HERE.parent / "MyBookshelf.ico")
 
 
 APP_ICON = _find_app_icon()
 
 
 def _port_in_use(port: int) -> bool:
-    """해당 포트에서 이미 서버가 떠 있는지 확인."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.3)
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
 def _find_free_port(start: int = DEFAULT_PORT) -> int:
-    """start부터 비어 있는 포트를 찾는다."""
+    if _port_in_use(start):
+        return start
     for p in range(start, start + 50):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             if s.connect_ex(("127.0.0.1", p)) != 0:
@@ -56,7 +44,6 @@ def _find_free_port(start: int = DEFAULT_PORT) -> int:
 
 
 def _server_ready(port: int) -> bool:
-    """Streamlit 서버가 응답하는지 HTTP로 확인."""
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1) as r:
             return r.status == 200
@@ -65,38 +52,43 @@ def _server_ready(port: int) -> bool:
 
 
 def _start_streamlit(port: int) -> subprocess.Popen | None:
-    """Streamlit 서버를 헤드리스로 백그라운드 실행. 이미 떠 있으면 None."""
     if _port_in_use(port) and _server_ready(port):
-        return None  # 기존 서버 재사용
+        return None
     cmd = [
-        sys.executable, "-m", "streamlit", "run", str(APP_SCRIPT),
-        "--server.port", str(port),
-        "--server.headless", "true",          # 브라우저 자동 오픈 방지
-        "--browser.gatherUsageStats", "false",
-        "--global.developmentMode", "false",
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        str(APP_SCRIPT),
+        "--server.port",
+        str(port),
+        "--server.headless",
+        "true",
+        "--browser.gatherUsageStats",
+        "false",
+        "--global.developmentMode",
+        "false",
     ]
-    # 콘솔 창 숨김 (Windows)
-    kwargs: dict = {"cwd": str(HERE.parent)}
-    if sys.platform == "win32":
-        kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
-    return subprocess.Popen(cmd, **kwargs)
+    return subprocess.Popen(
+        cmd,
+        cwd=str(HERE.parent),
+        creationflags=0x08000000 if sys.platform == "win32" else 0,
+    )
 
 
 def main() -> int:
     try:
-        import webview  # pywebview
+        import webview
     except ImportError:
         sys.stderr.write(
-            "❌ pywebview가 설치되지 않았습니다.\n"
-            "   setup.command를 다시 실행하거나\n"
-            "   '.venv/bin/pip install pywebview'를 실행하세요.\n"
+            "pywebview is not installed.\n"
+            "Run setup.bat again or install pywebview in the venv.\n"
         )
         return 1
 
     port = _find_free_port(DEFAULT_PORT)
     proc = _start_streamlit(port)
 
-    # 서버가 응답할 때까지 대기 (최대 60초)
     url = f"http://127.0.0.1:{port}/"
     deadline = time.time() + 60
     while time.time() < deadline:
@@ -104,42 +96,40 @@ def main() -> int:
             break
         time.sleep(0.4)
     else:
-        sys.stderr.write("❌ 서버가 시간 안에 시작되지 않았습니다.\n")
+        sys.stderr.write("Streamlit did not start in time.\n")
         if proc:
             proc.terminate()
         return 1
 
-    # 네이티브 창 생성 (주소창 없음)
     webview.create_window(
-        APP_TITLE, url,
-        width=1280, height=1040,
+        APP_TITLE,
+        url,
+        width=1280,
+        height=1040,
         min_size=(980, 820),
         text_select=True,
     )
-    _icon = APP_ICON if os.path.exists(APP_ICON) else None
+    icon = APP_ICON if os.path.exists(APP_ICON) else None
 
-    def _apply_win32_icon():
-        """pywebview가 창을 만든 직후 Win32 API로 타이틀바·태스크바 아이콘 교체."""
-        if sys.platform != "win32" or not _icon:
+    def _apply_win32_icon() -> None:
+        if sys.platform != "win32" or not icon:
             return
         try:
             import ctypes
+
             hwnd = ctypes.windll.user32.FindWindowW(None, APP_TITLE)
             if not hwnd:
                 return
-            hicon = ctypes.windll.user32.LoadImageW(
-                None, _icon, 1, 0, 0, 0x10 | 0x40  # IMAGE_ICON, LR_LOADFROMFILE|LR_DEFAULTSIZE
-            )
+            hicon = ctypes.windll.user32.LoadImageW(None, icon, 1, 0, 0, 0x10 | 0x40)
             if hicon:
-                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, hicon)  # WM_SETICON SMALL
-                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, hicon)  # WM_SETICON BIG
+                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, hicon)
+                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, hicon)
         except Exception:
             pass
 
     try:
-        webview.start(icon=_icon, func=_apply_win32_icon)  # 창이 닫힐 때까지 블록
+        webview.start(icon=icon, func=_apply_win32_icon)
     finally:
-        # 창 닫히면 서버도 종료 (우리가 띄운 경우에만)
         if proc and proc.poll() is None:
             proc.terminate()
             try:

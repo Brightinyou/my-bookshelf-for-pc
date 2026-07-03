@@ -325,6 +325,16 @@ def _heading_candidates(txt: str):
                 en_section = bool(re.match(r"[A-Z][A-Za-z0-9 /,:&'\\-]{2,90}$", cand_title))
                 if generic_numbered_allowed and not bad_inline and not re.match(r"^\d", cand_title) and ((ko_title and ko_section) or (not ko_title and en_section)):
                     num, title = int(m.group(1)), cand_title
+        if num is None:
+            # "1 Introduction" 스타일 — 점 없는 영문 번호 헤딩 (저널 논문, 2026-07-03)
+            # 오탐은 numbered_heading_split의 연속 번호(1→2→3)·간격 검증이 걸러낸다.
+            m = re.match(r"^(\d{1,2})\s+([A-Z].{2,90})$", s)
+            if m:
+                cand_title = m.group(2).strip()
+                bad_inline = re.search(r"[.!?。]$|[;\"“”]|https?://|\b(?:19|20)\d{2}\b|\d+[)]", cand_title)
+                en_only = bool(re.match(r"[A-Z][A-Za-z0-9 /,:&'\\-]{2,90}$", cand_title))
+                if generic_numbered_allowed and not bad_inline and en_only and len(cand_title.split()) <= 12:
+                    num, title = int(m.group(1)), cand_title
         if num is None or not (1 <= num <= MAX_CHAPTERS):
             continue
         title = _clean_heading_title(title)

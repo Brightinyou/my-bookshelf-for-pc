@@ -1,7 +1,7 @@
 ﻿"""llm_providers.py — 멀티 공급자 LLM 통일 호출 + 키 관리 (2026-06-15)
 
 OpenAI(GPT) / Google(Gemini) / Anthropic(Claude API) + Claude CLI(구독) + Codex CLI(구독).
-키는 앱 설정 파일에 저장한 값을 우선 사용하고, 없으면 이 컴퓨터의 환경변수에서 감지한다.
+키는 앱 설정 파일에 저장한 값만 사용한다.
 저장 키는 이 컴퓨터 로컬에만 저장하며 저장소/외부로 전송하지 않는다.
 """
 from __future__ import annotations
@@ -17,12 +17,7 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".config" / "mybookshelf"
 KEYS_FILE = CONFIG_DIR / "keys.json"
 
-ENV_KEY_NAMES: dict[str, tuple[str, ...]] = {
-    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"),
-    "openai": ("OPENAI_API_KEY",),
-    "anthropic": ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY"),
-}
-API_PROVIDERS = tuple(ENV_KEY_NAMES)
+API_PROVIDERS = ("gemini", "openai", "anthropic")
 CLI_PROVIDERS = ("claude_cli", "codex_cli")
 
 # 공급자 레지스트리 — provider 키: {label, models[], hint}
@@ -89,30 +84,19 @@ def saved_key(provider: str) -> str:
     return (all_keys.get(provider) or "").strip()
 
 
-def detected_key(provider: str) -> str:
-    """Return a key detected from local environment variables."""
-    for name in ENV_KEY_NAMES.get(provider, ()):
-        val = (os.environ.get(name) or "").strip()
-        if val:
-            return val
-    return ""
-
-
 def get_key(provider: str) -> str:
-    """Return the configured key, preferring app settings over detected env keys."""
-    return saved_key(provider) or detected_key(provider)
+    """Return only the key explicitly saved in the app settings screen."""
+    return saved_key(provider)
 
 
 def key_source(provider: str) -> str:
     if saved_key(provider):
         return "saved"
-    if detected_key(provider):
-        return "detected"
     return ""
 
 
 def save_key(provider: str, key: str) -> None:
-    """Save keys to keys.json. Empty values clear the saved key; env fallback still works."""
+    """Save keys to keys.json. Empty values clear the saved key."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     data = _load_all()
     key = (key or "").strip()
@@ -132,11 +116,11 @@ def has_key(provider: str) -> bool:
         return claude_cli_available()
     if provider == "codex_cli":
         return codex_cli_available()
-    return bool(get_key(provider))
+    return bool(saved_key(provider))
 
 
 def masked(provider: str) -> str:
-    k = get_key(provider)
+    k = saved_key(provider)
     if not k:
         return ""
     return f"{k[:4]}…{k[-4:]}" if len(k) > 10 else "•" * len(k)

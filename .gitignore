@@ -1,17 +1,21 @@
-# 가상환경·캐시
 .venv/
 __pycache__/
 *.pyc
 .DS_Store
 
-# 개발자용 파일 — 배포 repo에는 올리지 않음
+dist/
+build/
 dev/
 .github/
 AGENTS.md
 DEVLOG.md
 
-# 키·로컬 설정 — 절대 커밋 금지
 *.key
 keys.json
 config.json
-dist/
+
+# 빌드 산출물·번들 재료 (레포 제외, 2026-07-03)
+/Setup.exe
+/Uninstall.exe
+vendor/
+app_lang.txt

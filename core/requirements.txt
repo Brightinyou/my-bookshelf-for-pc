@@ -1,11 +1,10 @@
 streamlit>=1.40
 pandas>=2.0
-psutil>=5.9; sys_platform != "darwin"
+psutil>=5.9
 google-genai>=1.0
 openai>=1.0
 anthropic>=0.40
 certifi>=2024.8.30
 # 네이티브 창 래핑 (브라우저 탭 대신 독립 앱 창)
 pywebview>=5.0
-pyobjc-framework-WebKit>=10.0; sys_platform == "darwin"
-pythonnet>=3.0; sys_platform == "win32"
+pythonnet>=3.0
