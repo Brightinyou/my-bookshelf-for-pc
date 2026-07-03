@@ -44,6 +44,30 @@ PDF 텍스트 추출 도구(Poppler)는 `Setup.exe`에 포함되어 있어 **따
 2. Obsidian Wiki 보관함(Vault) 경로를 확인합니다.
 3. 화면 언어는 `⚙️ 설정 → 🌐 언어 / Language`에서 언제든 바꿀 수 있습니다.
 
+### 구독은 있는데 CLI가 없다면 (API 키 없이 쓰기)
+
+Claude(Pro/Max)나 ChatGPT(Plus/Pro)를 구독 중이라면 API 키 없이 CLI 도구로 번역·요약을 쓸 수 있습니다. CLI를 설치하고 로그인한 뒤, 앱의 `⚙️ 설정`에서 해당 CLI를 **활성**으로 켜면 엔진 목록에 나타납니다.
+
+**Claude CLI (Claude 구독자)**
+
+1. PowerShell을 열고 다음 한 줄을 실행합니다 (Node.js 불필요):
+   ```powershell
+   irm https://claude.ai/install.ps1 | iex
+   ```
+   위 방법이 안 되면 Node.js 설치 후 `npm install -g @anthropic-ai/claude-code`
+2. 새 터미널에서 `claude`를 실행하면 브라우저가 열립니다 — 구독 계정으로 로그인합니다.
+3. 확인: `claude --version`이 버전을 출력하면 성공.
+
+**Codex CLI (ChatGPT 구독자)**
+
+1. Node.js LTS를 먼저 설치합니다 (<https://nodejs.org>, 기본 옵션으로 설치).
+2. 터미널에서: `npm install -g @openai/codex`
+3. `codex login`을 실행해 브라우저에서 ChatGPT 계정으로 로그인합니다.
+4. 확인: `codex --version`이 버전을 출력하면 성공.
+
+설치·로그인 후 앱을 재시작(또는 `stop-app.bat` 후 재실행)하면 설정 탭에서 인식됩니다.
+로그인은 브라우저 인증 방식이라 자동화할 수 없습니다 — 본인 계정으로 한 번만 하면 됩니다.
+
 ### 문제가 생기면
 
 - **"Python 3.10 or newer is required" 안내가 뜸** → 자동 설치를 취소했거나 실패한 경우입니다. 1단계 수동 설치 후 Setup.exe를 다시 실행하세요.
