@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import time
+import traceback
 import urllib.request
 from pathlib import Path
 
@@ -14,6 +15,8 @@ APP_TITLE = "My Bookshelf"
 DEFAULT_PORT = 8501
 HERE = Path(__file__).resolve().parent
 APP_SCRIPT = HERE / "pipeline_app.py"
+APP_ROOT = HERE.parent
+LAUNCH_LOG = APP_ROOT / "launch-error.log"
 
 
 def _find_app_icon() -> str:
@@ -25,6 +28,35 @@ def _find_app_icon() -> str:
 
 
 APP_ICON = _find_app_icon()
+
+
+def _write_launch_log(message: str, details: str = "") -> None:
+    try:
+        body = message.strip()
+        if details.strip():
+            body = f"{body}\n\n{details.strip()}\n"
+        LAUNCH_LOG.write_text(body + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _show_error(message: str) -> None:
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(0, message, APP_TITLE, 0x10)
+            return
+        except Exception:
+            pass
+    sys.stderr.write(message + "\n")
+
+
+def _fail(message: str, details: str = "") -> int:
+    log_hint = f"\n\nCheck this file for details:\n{LAUNCH_LOG}"
+    _write_launch_log(message, details)
+    _show_error(message + log_hint)
+    return 1
 
 
 def _port_in_use(port: int) -> bool:
@@ -78,13 +110,18 @@ def _start_streamlit(port: int) -> subprocess.Popen | None:
 
 def main() -> int:
     try:
+        if LAUNCH_LOG.exists():
+            LAUNCH_LOG.unlink()
+    except Exception:
+        pass
+
+    try:
         import webview
     except ImportError:
-        sys.stderr.write(
-            "pywebview is not installed.\n"
-            "Run setup.bat again or install pywebview in the venv.\n"
+        return _fail(
+            "pywebview is not installed.",
+            "Run setup.bat again or reinstall My Bookshelf.",
         )
-        return 1
 
     port = _find_free_port(DEFAULT_PORT)
     proc = _start_streamlit(port)
@@ -96,10 +133,12 @@ def main() -> int:
             break
         time.sleep(0.4)
     else:
-        sys.stderr.write("Streamlit did not start in time.\n")
         if proc:
             proc.terminate()
-        return 1
+        return _fail(
+            "The app server did not start in time.",
+            "Run setup.bat again or check whether security software blocked Python.",
+        )
 
     webview.create_window(
         APP_TITLE,
@@ -129,6 +168,12 @@ def main() -> int:
 
     try:
         webview.start(icon=icon, func=_apply_win32_icon)
+        return 0
+    except Exception:
+        return _fail(
+            "The desktop window could not be created.",
+            traceback.format_exc(),
+        )
     finally:
         if proc and proc.poll() is None:
             proc.terminate()
@@ -136,8 +181,14 @@ def main() -> int:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except Exception:
+        raise SystemExit(
+            _fail("Unexpected startup error.", traceback.format_exc())
+        )
