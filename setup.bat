@@ -13,6 +13,7 @@ set "SKIP_OBSIDIAN=0"
 set "NO_PAUSE=0"
 set "REQ_FILE="
 set "PYCMD="
+set "PYTHON_HINT="
 
 :parse_args
 if "%~1"=="" goto args_done
@@ -41,19 +42,17 @@ if exist "core\requirements.txt" (
 echo [My Bookshelf] Installing runtime...
 echo.
 
-py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)" >nul 2>nul
-if not errorlevel 1 set "PYCMD=py -3"
-if not defined PYCMD (
-    python -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)" >nul 2>nul
-    if not errorlevel 1 set "PYCMD=python"
-)
+call :detect_python
 if not defined PYCMD (
     echo [ERROR] Python 3.10 or newer is required.
-    echo         Install Python from https://www.python.org/downloads/
+    echo         Setup.exe can install Python 3.14.6 automatically.
+    echo         Or install Python from https://www.python.org/downloads/
     if "%INSTALLER_MODE%"=="0" start https://www.python.org/downloads/
     goto :fail
 )
-for /f "delims=" %%v in ('%PYCMD% --version') do echo [OK] %%v
+
+for /f "delims=" %%v in ('%PYCMD% --version 2^>nul') do echo [OK] %%v
+if defined PYTHON_HINT echo [OK] Using %PYTHON_HINT%
 
 if exist ".venv" if not exist ".venv\Scripts\python.exe" (
     echo [WARN] Broken virtual environment found. Recreating it...
@@ -62,7 +61,7 @@ if exist ".venv" if not exist ".venv\Scripts\python.exe" (
 
 if not exist ".venv\Scripts\python.exe" (
     echo [STEP] Creating virtual environment...
-    %PYCMD% -m venv ".venv"
+    call %PYCMD% -m venv ".venv"
     if errorlevel 1 (
         echo [ERROR] Failed to create .venv
         goto :fail
@@ -129,3 +128,44 @@ echo.
 echo [FAILED] Installation did not complete.
 if "%NO_PAUSE%"=="0" pause
 exit /b 1
+
+:detect_python
+call :try_python_cmd "py -3.14"
+call :try_python_cmd "py -3"
+call :try_python_cmd "python"
+call :try_python_path "%LOCALAPPDATA%\Programs\Python\Python314\python.exe"
+call :try_python_path "%LOCALAPPDATA%\Programs\Python\Python314-64\python.exe"
+call :try_python_path "%ProgramFiles%\Python314\python.exe"
+call :try_python_path "%ProgramFiles(x86)%\Python314\python.exe"
+call :try_python_path "C:\Python314\python.exe"
+call :scan_python_glob "%LOCALAPPDATA%\Programs\Python\Python3*\python.exe"
+call :scan_python_glob "%ProgramFiles%\Python3*\python.exe"
+call :scan_python_glob "%ProgramFiles(x86)%\Python3*\python.exe"
+call :scan_python_glob "C:\Python3*\python.exe"
+goto :eof
+
+:try_python_cmd
+if defined PYCMD goto :eof
+set "_CAND=%~1"
+%_CAND% -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)" >nul 2>nul
+if errorlevel 1 goto :eof
+set "PYCMD=%~1"
+set "PYTHON_HINT=%~1"
+goto :eof
+
+:try_python_path
+if defined PYCMD goto :eof
+if not exist "%~1" goto :eof
+"%~1" -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)" >nul 2>nul
+if errorlevel 1 goto :eof
+set "PYCMD="%~1""
+set "PYTHON_HINT=%~1"
+goto :eof
+
+:scan_python_glob
+if defined PYCMD goto :eof
+for /f "delims=" %%P in ('dir /b /s "%~1" 2^>nul') do (
+    call :try_python_path "%%~fP"
+    if defined PYCMD goto :eof
+)
+goto :eof
