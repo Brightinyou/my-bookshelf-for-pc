@@ -66,13 +66,11 @@ def _port_in_use(port: int) -> bool:
 
 
 def _find_free_port(start: int = DEFAULT_PORT) -> int:
-    if _port_in_use(start):
-        return start
     for p in range(start, start + 50):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             if s.connect_ex(("127.0.0.1", p)) != 0:
                 return p
-    return start
+    raise RuntimeError("No free local port available for My Bookshelf.")
 
 
 def _server_ready(port: int) -> bool:
@@ -123,7 +121,10 @@ def main() -> int:
             "Run setup.bat again or reinstall My Bookshelf.",
         )
 
-    port = _find_free_port(DEFAULT_PORT)
+    try:
+        port = _find_free_port(DEFAULT_PORT)
+    except RuntimeError as exc:
+        return _fail(str(exc), "Close other running My Bookshelf windows and try again.")
     proc = _start_streamlit(port)
 
     url = f"http://127.0.0.1:{port}/"
