@@ -1160,23 +1160,36 @@ def _current_wiki_dir() -> Path:
 _render_stage_completion_notice()
 
 
+def _checklist_keys(items: list[dict], prefix: str) -> list[str]:
+    """항목별 위젯 키. 같은 key(예: 동일 stem의 .txt/.md 공존)가 있으면
+    뒤쪽에 __N을 붙여 StreamlitDuplicateElementKey 크래시를 막는다. (2026-07-06)"""
+    keys, seen = [], {}
+    for it in items:
+        k = f"{prefix}_{it['key']}"
+        n = seen.get(k, 0)
+        seen[k] = n + 1
+        keys.append(k if n == 0 else f"{k}__{n}")
+    return keys
+
+
 def _checklist(items: list[dict], prefix: str, height: int = 320, viewable: bool = False) -> list:
     """체크박스 파일 목록. items=[{"key":str,"label":str,"meta":str,"obj":any}]
     Returns: 선택된 obj 목록."""
+    _keys = _checklist_keys(items, prefix)
     h1, h2, h3 = st.columns([1.3, 1, 4])
     if h1.button(t("✅ 전체 선택"), key=f"{prefix}_sa", use_container_width=True):
-        for it in items:
-            st.session_state[f"{prefix}_{it['key']}"] = True
+        for _k in _keys:
+            st.session_state[_k] = True
         st.rerun()
     if h2.button(t("⬜ 해제"), key=f"{prefix}_da", use_container_width=True):
-        for it in items:
-            st.session_state[f"{prefix}_{it['key']}"] = False
+        for _k in _keys:
+            st.session_state[_k] = False
         st.rerun()
     h3.caption(tf("총 %d개", len(items)))
     selected = []
     with st.container(height=height, border=True):
         for idx, it in enumerate(items):
-            k = f"{prefix}_{it['key']}"
+            k = _keys[idx]
             cols = st.columns([0.05, 0.82, 0.13]) if viewable else st.columns([0.05, 0.95])
             c1, c2 = cols[0], cols[1]
             chk = c1.checkbox(" ", key=k, label_visibility="collapsed")
@@ -1702,7 +1715,7 @@ if _active_view == "2_split":
                      if _sort2 == t("최근 추가순") else sorted(_all_txts2, key=lambda f: f.name)
         _filtered2 = [f for f in _all_txts2 if _search2.lower() in f.stem.lower()] \
                      if _search2 else _all_txts2
-        _manual_items2 = [{"key": f.stem, "label": f.stem,
+        _manual_items2 = [{"key": f.name, "label": f.name,
                            "meta": f"{f.stat().st_size//1024}KB", "obj": f.stem}
                           for f in _filtered2]
         _msel2 = _checklist(_manual_items2, "split2m", height=220)
