@@ -3,12 +3,12 @@
 
 import json
 import os
+import hashlib
 from difflib import SequenceMatcher
 import shutil
 import ssl
 import subprocess
 import sys
-import tempfile
 import time
 import unicodedata
 import urllib.error
@@ -981,6 +981,108 @@ def _stage_folder(stage_id: str) -> Path:
     return DONE_DIR / DEFAULT_WS
 
 
+def _chapter_rel_paths(ws_name: str, stem: str) -> list[str]:
+    ch_dir = chapters_dir(ws_name, stem)
+    if not ch_dir.exists():
+        return []
+    return [
+        str(f.relative_to(DONE_DIR))
+        for f in sorted(ch_dir.glob("??_*.txt"))
+        if not f.stem.endswith(("_ko", "_wiki"))
+    ]
+
+
+def _dismiss_split_nosplit(stem: str) -> None:
+    pending = st.session_state.get("split2_nosplit", [])
+    if isinstance(pending, list) and stem in pending:
+        st.session_state["split2_nosplit"] = [item for item in pending if item != stem]
+
+
+def _queue_book_chapters_for_next_stage(ws_name: str, stem: str) -> list[str]:
+    chapter_rels = _chapter_rel_paths(ws_name, stem)
+    if not chapter_rels:
+        return []
+    if _needs_translation(stem):
+        queue_add("tab3_ready", chapter_rels)
+    else:
+        queue_add("tab4_ready", chapter_rels)
+    return chapter_rels
+
+
+def _save_book_as_single_chapter(ws_name: str, stem: str) -> tuple[bool, str, list[str]]:
+    existing_rels = _chapter_rel_paths(ws_name, stem)
+    if existing_rels:
+        queue_remove("tab2_ready", [stem])
+        _dismiss_split_nosplit(stem)
+        _queue_book_chapters_for_next_stage(ws_name, stem)
+        return True, t("기존 장 파일을 다시 사용했습니다."), existing_rels
+
+    txt_path = find_txt(DONE_DIR, ws_name, stem)
+    md_path = find_md(DONE_DIR, ws_name, stem)
+    source_path = txt_path or md_path
+    if source_path is None:
+        return False, t("TXT/MD 파일이 없습니다."), []
+
+    source_text = source_path.read_text(encoding="utf-8", errors="ignore")
+    if not source_text.strip():
+        return False, t("TXT/MD 내용이 비어 있습니다."), []
+
+    ch_path, _ = _write_single_chapter_from_text(ws_name, stem, source_text)
+    queue_remove("tab2_ready", [stem])
+    _dismiss_split_nosplit(stem)
+    chapter_rels = _queue_book_chapters_for_next_stage(ws_name, stem)
+    if not chapter_rels:
+        return False, t("단일장 파일 생성에 실패했습니다."), []
+    return True, ch_path.name, chapter_rels
+
+
+def _upload_token(upload_name: str, upload_bytes: bytes) -> str:
+    digest = hashlib.sha1(upload_bytes).hexdigest()[:12]
+    return f"{Path(upload_name).name}:{len(upload_bytes)}:{digest}"
+
+
+def _copy_direct_upload_to_processing(stage_name: str, upload_name: str, upload_bytes: bytes) -> tuple[Path, str]:
+    token = _upload_token(upload_name, upload_bytes)
+    digest = token.rsplit(":", 1)[-1]
+    staging_dir = UPLOAD_TMP / "_direct_uploads" / stage_name
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    raw_name = Path(upload_name).name
+    staging_path = staging_dir / raw_name
+    if staging_path.exists():
+        try:
+            if staging_path.read_bytes() != upload_bytes:
+                staging_path = staging_dir / f"{Path(upload_name).stem}__{digest}{Path(upload_name).suffix or '.txt'}"
+        except Exception:
+            staging_path = staging_dir / f"{Path(upload_name).stem}__{digest}{Path(upload_name).suffix or '.txt'}"
+    staging_path.write_bytes(upload_bytes)
+    return staging_path, token
+
+
+def _prepare_uploaded_single_chapter(ws_name: str, upload_name: str, upload_bytes: bytes, stage_name: str) -> tuple[bool, Path | None, str, str]:
+    _copy_direct_upload_to_processing(stage_name, upload_name, upload_bytes)
+    stem = _nfc(Path(upload_name).stem)
+    suffix = ".txt"
+    src_dir = txt_dir(DONE_DIR, ws_name)
+    src_dir.mkdir(parents=True, exist_ok=True)
+    src_path = src_dir / f"{stem}{suffix}"
+    src_path.write_bytes(upload_bytes)
+    source_text = src_path.read_text(encoding="utf-8", errors="ignore")
+    if not source_text.strip():
+        return False, None, stem, t("TXT 내용이 비어 있습니다.")
+
+    existing_rels = _chapter_rel_paths(ws_name, stem)
+    if len(existing_rels) > 1:
+        return False, None, stem, t("이미 여러 장으로 분할된 책입니다. 2-장별분할 탭에서 처리하세요.")
+    if existing_rels:
+        existing_path = DONE_DIR / existing_rels[0]
+        existing_text = existing_path.read_text(encoding="utf-8", errors="ignore")
+        if existing_text == source_text:
+            return True, existing_path, stem, t("기존 단일장 파일을 이어서 사용합니다.")
+
+    ch_path, _ = _write_single_chapter_from_text(ws_name, stem, source_text)
+    return True, ch_path, stem, t("단일장 파일을 저장했습니다.")
+
+
 def _count_files(path: Path, patterns: list[str], exclude_suffixes: tuple = ()) -> int:
     """폴더에서 패턴에 맞는 파일 수. exclude_suffixes는 stem 끝 필터 (_ko 등)."""
     if not path.exists():
@@ -1416,7 +1518,64 @@ if _active_view == "2_split":
         if _b2c3.button(t("🗑 큐 비우기"), key="split2_clear", use_container_width=True):
             queue_clear("tab2_ready"); st.rerun()
         _to2 = [it["obj"] for it in _split_pend2] if _ra2 else (_sel2 if _rs2 else [])
+        _keep2c1, _keep2c2 = st.columns(2)
+        _single_sel2 = _keep2c1.button(
+            tf("선택 단일장 처리 (%d건)", len(_sel2)),
+            key="split2_keep_sel",
+            use_container_width=True,
+            disabled=len(_sel2) == 0,
+        )
+        _single_all2 = _keep2c2.button(
+            tf("전체 단일장 처리 (%d건)", len(_split_pend2)),
+            key="split2_keep_all",
+            use_container_width=True,
+        )
+        _single_mode2 = False
+        if _single_sel2:
+            _to2 = _sel2
+            _single_mode2 = True
+        elif _single_all2:
+            _to2 = [it["obj"] for it in _split_pend2]
+            _single_mode2 = True
         if _to2:
+            if _single_mode2:
+                _sp2 = st.progress(0.0)
+                _completed2 = 0
+                _queued_translate2 = 0
+                _queued_summary2 = 0
+                for _si2, _s2 in enumerate(_to2, 1):
+                    _target_stage2 = "3_translate" if _needs_translation(_s2["stem"]) else "4_summary"
+                    with st.status(f"단일장 처리 [{_si2}/{len(_to2)}]: {_s2['stem']}", expanded=False):
+                        _ok2, _detail2, _new_chs2 = _save_book_as_single_chapter(_s2["ws"], _s2["stem"])
+                    if _ok2 and _new_chs2:
+                        _completed2 += 1
+                        st.success(f"✅ {_s2['stem']} -> {_detail2}")
+                        if _target_stage2 == "3_translate":
+                            _queued_translate2 += 1
+                            st.caption("영문 문서라 3-영문번역 대기에 등록했습니다.")
+                        else:
+                            _queued_summary2 += 1
+                            st.caption("분할 없이 4-문서요약 대기에 등록했습니다.")
+                    else:
+                        st.warning(f"⚠️ {_s2['stem']}: {_detail2}")
+                    _sp2.progress(_si2 / len(_to2))
+                if _completed2:
+                    if _queued_translate2 and _queued_summary2:
+                        _next_stage2 = "3_translate"
+                        _done_msg2 = tf("%d건을 다음 단계로 보냈습니다. 영문 문서는 3-영문번역, 한글 문서는 4-문서요약에서 이어서 진행하세요.", _completed2)
+                    elif _queued_translate2:
+                        _next_stage2 = "3_translate"
+                        _done_msg2 = tf("%d건을 3-영문번역 대기로 보냈습니다.", _completed2)
+                    else:
+                        _next_stage2 = "4_summary"
+                        _done_msg2 = tf("%d건을 4-문서요약 대기로 보냈습니다.", _completed2)
+                    _set_stage_completion(
+                        t("2-장 처리 완료"),
+                        _done_msg2,
+                        next_stage=_next_stage2,
+                        open_target=_stage_folder("2_split"),
+                    )
+                st.rerun()
             _sp2 = st.progress(0.0)
             _completed2 = 0
             for _si2, _s2 in enumerate(_to2, 1):
@@ -1606,10 +1765,27 @@ if _active_view == "3_translate":
         # TXT 직접 업로드 후 즉시 번역
         _up3 = st.file_uploader(t("TXT 직접 업로드 (즉시 번역)"),
                                   type=["txt"], accept_multiple_files=True, key="tr3_uploader")
+        st.info(t("번역 결과는 오역이나 누락이 있을 수 있으니 원본과 직접 대조해 확인하세요. 저작권과 이용허락 범위를 준수하고, 생성 결과는 개인 연구·검토 용도로 우선 사용하세요."))
+        if not _up3:
+            st.session_state.pop("_tr3_uploaded_tokens", None)
         if _up3:
+            _seen3 = set(st.session_state.get("_tr3_uploaded_tokens", []))
+            _done_rel3u: list[str] = []
             for _u3 in _up3:
-                _tmp3 = Path(tempfile.gettempdir()) / _u3.name
-                _tmp3.write_bytes(_u3.read())
+                _u3_bytes = _u3.getvalue()
+                _token3 = _upload_token(_u3.name, _u3_bytes)
+                if _token3 in _seen3:
+                    continue
+                _seen3.add(_token3)
+                st.session_state["_tr3_uploaded_tokens"] = sorted(_seen3)
+                _ok3p, _ch3_path, _book3u, _prep3_msg = _prepare_uploaded_single_chapter(
+                    DEFAULT_WS, _u3.name, _u3_bytes, "translate"
+                )
+                if not _ok3p or _ch3_path is None:
+                    st.error(f"❌ {_u3.name}: {_prep3_msg}")
+                    continue
+                _rel3u = str(_ch3_path.relative_to(DONE_DIR))
+                queue_add("tab3_ready", [_rel3u])
                 with st.status(f"번역 중: {_u3.name}", expanded=True):
                     _up_prog3 = st.progress(0, text="번역 준비 중…")
                     def _upload_progress3(done, total, translated, preserved, dropped, failed, resumed, api_calls):
@@ -1622,8 +1798,12 @@ if _active_view == "3_translate":
                             ),
                         )
                     _ok3u, _msg3u = translate_one_chapter(
-                        _tmp3, _tr_eng3, progress_cb=_upload_progress3
+                        _ch3_path, _tr_eng3, progress_cb=_upload_progress3
                     )
+                    if _ok3u:
+                        _done_rel3u.append(_rel3u)
+                        queue_remove("tab3_ready", [_rel3u])
+                        queue_add("tab4_ready", [_rel3u])
                     if _ok3u:
                         _up_prog3.progress(1.0, text="번역 처리 완료")
                 (st.success if _ok3u else st.error)(f"{'✅' if _ok3u else '❌'} {_u3.name}: {_msg3u}")
@@ -1716,6 +1896,51 @@ if _active_view == "3_translate":
             _msel3 = _checklist(_mitems3, "tr3m", height=200)
             if st.button(tf("➕ 선택 항목 큐에 추가 (%d개)", len(_msel3)), key="tr3m_add", disabled=len(_msel3)==0):
                 queue_add("tab3_ready", _msel3); st.rerun()
+        with st.expander(t("➕ 1-TXT변환 결과에서 단일장으로 추가")):
+            _txt3a, _txt3b = st.columns([3, 2])
+            _search3_txt = _txt3a.text_input(t("책 이름 검색"), key="tr3_txt_search", placeholder=t("검색어 입력"))
+            _sort3_txt = _txt3b.radio(t("정렬"), [t("최근 추가순"), t("이름순")], horizontal=True, key="tr3_txt_sort")
+            _txt_root3 = txt_dir(DONE_DIR, DEFAULT_WS)
+            _txt_candidates3: dict[str, Path] = {}
+            for _src3 in (list(_txt_root3.glob("*.txt")) + list(_txt_root3.glob("*.md"))) if _txt_root3.exists() else []:
+                _stem3 = _nfc(_src3.stem)
+                if not _needs_translation(_stem3):
+                    continue
+                if _chapter_rel_paths(DEFAULT_WS, _stem3):
+                    continue
+                _prev3 = _txt_candidates3.get(_stem3)
+                if _prev3 is None or _src3.stat().st_mtime > _prev3.stat().st_mtime:
+                    _txt_candidates3[_stem3] = _src3
+            _all_txt3 = list(_txt_candidates3.values())
+            _all_txt3 = sorted(_all_txt3, key=lambda f: f.stat().st_mtime, reverse=True) \
+                        if _sort3_txt == t("최근 추가순") else sorted(_all_txt3, key=lambda f: f.name)
+            _filt_txt3 = [f for f in _all_txt3 if _search3_txt.lower() in f.stem.lower()] if _search3_txt else _all_txt3
+            _mitems3_txt = [{
+                "key": f"txt-{_nfc(f.stem)}",
+                "label": _nfc(f.stem),
+                "meta": f"{f.stat().st_size//1024}KB",
+                "obj": {"ws": DEFAULT_WS, "stem": _nfc(f.stem)},
+            } for f in _filt_txt3]
+            _msel3_txt = _checklist(_mitems3_txt, "tr3txt", height=180)
+            if st.button(
+                tf("선택 항목을 단일장으로 등록 (%d건)", len(_msel3_txt)),
+                key="tr3txt_add",
+                disabled=len(_msel3_txt) == 0,
+                use_container_width=True,
+            ):
+                _added3_txt = 0
+                _failed3_txt: list[str] = []
+                for _item3_txt in _msel3_txt:
+                    _ok3_txt, _detail3_txt, _new3_txt = _save_book_as_single_chapter(_item3_txt["ws"], _item3_txt["stem"])
+                    if _ok3_txt and _new3_txt:
+                        _added3_txt += 1
+                    else:
+                        _failed3_txt.append(f"{_item3_txt['stem']}: {_detail3_txt}")
+                if _added3_txt:
+                    st.success(tf("%d건을 번역 대기에 추가했습니다.", _added3_txt))
+                for _msg3_txt in _failed3_txt[:5]:
+                    st.warning(_msg3_txt)
+                st.rerun()
 
     st.info(t("💡 다음 단계: **📝 문서요약 앱**으로 이동하세요"))
 
@@ -1744,13 +1969,40 @@ if _active_view == "4_summary":
         # TXT 직접 업로드
         _up4 = st.file_uploader(t("TXT 직접 업로드 (즉시 요약)"),
                                   type=["txt"], accept_multiple_files=True, key="summ4_uploader")
+        if not _up4:
+            st.session_state.pop("_summ4_uploaded_tokens", None)
         if _up4:
+            _seen4 = set(st.session_state.get("_summ4_uploaded_tokens", []))
+            _done_rel4u: list[str] = []
+            _failed_rel4u: list[str] = []
+            _done_stems4u: set[str] = set()
             for _u4 in _up4:
-                _tmp4 = Path(tempfile.gettempdir()) / _u4.name
-                _tmp4.write_bytes(_u4.read())
-                _book4u = _nfc(_u4.name.split("_")[0]) if "_" in _u4.name else _nfc(_u4.name)
+                _u4_bytes = _u4.getvalue()
+                _token4 = _upload_token(_u4.name, _u4_bytes)
+                if _token4 in _seen4:
+                    continue
+                _seen4.add(_token4)
+                st.session_state["_summ4_uploaded_tokens"] = sorted(_seen4)
+                _ok4p, _ch4_path, _book4u, _prep4_msg = _prepare_uploaded_single_chapter(
+                    DEFAULT_WS, _u4.name, _u4_bytes, "summary"
+                )
+                if not _ok4p or _ch4_path is None:
+                    st.error(f"❌ {_u4.name}: {_prep4_msg}")
+                    continue
+                _rel4u = str(_ch4_path.relative_to(DONE_DIR))
+                queue_add("tab4_ready", [_rel4u])
+                queue_remove("tab4_failed", [_rel4u])
                 with st.status(f"요약 중: {_u4.name}", expanded=True):
-                    _ok4u, _msg4u = summarize_one_chapter(_tmp4, _book4u)
+                    _ok4u, _msg4u = summarize_one_chapter(_ch4_path, _book4u)
+                if _ok4u:
+                    _done_rel4u.append(_rel4u)
+                    _done_stems4u.add(_book4u)
+                    queue_remove("tab4_ready", [_rel4u])
+                    queue_remove("tab4_failed", [_rel4u])
+                    queue_add("tab5_ready", [_book4u])
+                else:
+                    _failed_rel4u.append(_rel4u)
+                    queue_add("tab4_failed", [_rel4u])
                 (st.success if _ok4u else st.error)(f"{'✅' if _ok4u else '❌'} {_u4.name}: {_msg4u}")
             st.rerun()
 

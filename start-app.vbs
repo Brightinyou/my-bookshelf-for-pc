@@ -10,7 +10,14 @@ End If
 sh.CurrentDirectory = dir_
 
 If Not fso.FileExists(dir_ & "\.venv\Scripts\pythonw.exe") Then
-    MsgBox "Setup is not done yet. Please run install again.", vbExclamation, "My Bookshelf"
+    msg = "Setup did not complete." & vbCrLf & vbCrLf & _
+          "Run setup.bat in this folder." & vbCrLf & _
+          "If setup fails again, check install.log in the same folder."
+    If Not fso.FileExists(dir_ & "\install.log") Then
+        msg = "Setup did not complete." & vbCrLf & vbCrLf & _
+              "Run setup.bat in this folder."
+    End If
+    MsgBox msg, vbExclamation, "My Bookshelf"
     WScript.Quit
 End If
 
