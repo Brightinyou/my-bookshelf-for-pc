@@ -101,7 +101,7 @@ def ensure_layout() -> bool:
     if _MARKER.exists():
         return False
 
-    done_ws = cfg.DONE_DIR / _WS
+    done_ws = cfg.LEGACY_DONE_DIR / _WS
     moved = 0
     # 1) 핵심 산출물 → 새 위치
     moved += _merge_move(done_ws / "pdf", cfg.PDF_DIR)
@@ -126,7 +126,7 @@ def ensure_layout() -> bool:
     if done_ws.exists():                      # done 루트에 남은 파일들
         for child in list(done_ws.iterdir()):
             _merge_move(child, cfg.LEGACY_KEEP / "done_기타" / child.name)
-        _merge_move(cfg.DONE_DIR, cfg.LEGACY_KEEP / "done_기타")
+        _merge_move(cfg.LEGACY_DONE_DIR, cfg.LEGACY_KEEP / "done_기타")
     try:
         _MARKER.write_text(f"v0.9.0 folder migration done (folder_lang={cfg.FOLDER_LANG})\n",
                            encoding="utf-8")

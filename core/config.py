@@ -154,10 +154,13 @@ QUEUE_FILE    = BASE_DIR / ".pipeline_queue.json"
 LEGACY_KEEP   = BASE_DIR / _FN["legacy"]            # 마이그레이션이 옮겨두는 옛 산출물
 
 # 옛 레이아웃 — 마이그레이션·fallback 용. 없으면 호출부 .exists() 가드로 무시.
-DONE_DIR      = _dir("done",   BASE_DIR / "done")
+LEGACY_DONE_DIR = _dir("done", BASE_DIR / "done")
+# v0.9.0: 옛 helper 시그니처 호환용 앵커. 새 쓰기 경로는 TXT/PDF/CHAPTERS_DIR 등
+# 단계별 폴더가 직접 담당하므로 DONE_DIR이 add_pdf_done을 다시 만들면 안 된다.
+DONE_DIR      = BASE_DIR
 RAW_DIR       = _dir("raw",    BASE_DIR / "raw")
 PROCESSED_DIR = RAW_DIR / "processed"
-OLD_DONE_DIR       = _dir("old_done",       BASE_DIR / "_legacy" / "done")
+OLD_DONE_DIR       = _dir("old_done",       LEGACY_DONE_DIR)
 OLD_TRANSLATED_DIR = _dir("old_translated", BASE_DIR / "_legacy" / "translated")
 BILINGUAL_DIR = TXT_DIR / "bilingual"               # 전체실행 모드의 대역 번역 산출물
 

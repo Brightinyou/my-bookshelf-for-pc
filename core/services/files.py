@@ -19,6 +19,7 @@ from services.common import (
 )
 
 DONE_DIR           = cfg.DONE_DIR
+LEGACY_DONE_DIR    = cfg.LEGACY_DONE_DIR
 OLD_TRANSLATED_DIR = cfg.OLD_TRANSLATED_DIR
 
 
@@ -46,7 +47,7 @@ def processed_stems(max_age: float = 60.0) -> set[str]:
         return _PROC_STEMS_CACHE["stems"]
     stems: set[str] = set()
     try:
-        for root in (cfg.TXT_DIR, cfg.PDF_DIR, cfg.CHAPTERS_DIR, DONE_DIR):
+        for root in (cfg.TXT_DIR, cfg.PDF_DIR, cfg.CHAPTERS_DIR, LEGACY_DONE_DIR):
             if not root.exists():
                 continue
             for p in root.rglob("*"):
@@ -68,8 +69,8 @@ def processed_stems(max_age: float = 60.0) -> set[str]:
 def _bilingual_candidates(stem: str, exclude_ws: str | None = None) -> list[Path]:
     """모든 워크스페이스에서 같은 stem의 bilingual.txt 후보 경로 수집. (2026-05-18 cross-ws resume)"""
     paths: list[Path] = []
-    if DONE_DIR.exists():
-        for ws_dir in DONE_DIR.iterdir():
+    if LEGACY_DONE_DIR.exists():
+        for ws_dir in LEGACY_DONE_DIR.iterdir():
             if not ws_dir.is_dir() or ws_dir.name == exclude_ws:
                 continue
             bil = translated_dir(DONE_DIR, ws_dir.name) / f"{stem}_bilingual.txt"
@@ -157,7 +158,7 @@ def find_txt(base: Path, ws_name: str, stem: str) -> Path | None:
     if p1.exists(): return p1
     p_arch = cfg.TXT_ARCHIVE_DIR / f"{stem}.txt"
     if p_arch.exists(): return p_arch
-    p_old = cfg.DONE_DIR / ws_name / TXT_SUB / f"{stem}.txt"   # 마이그레이션 전 안전망
+    p_old = cfg.LEGACY_DONE_DIR / ws_name / TXT_SUB / f"{stem}.txt"   # 마이그레이션 전 안전망
     if p_old.exists(): return p_old
     p2 = base / ws_name / f"{stem}.txt"
     return p2 if p2.exists() else None
@@ -171,8 +172,11 @@ def find_md(base: Path, ws_name: str, stem: str) -> Path | None:
 
 def find_pdf(base: Path, ws_name: str, name: str) -> Path | None:
     """워크스페이스 루트에서 PDF 찾기."""
-    p = base / ws_name / name
-    return p if p.exists() else None
+    p = cfg.PDF_DIR / name
+    if p.exists():
+        return p
+    p_old = cfg.LEGACY_DONE_DIR / ws_name / "pdf" / name
+    return p_old if p_old.exists() else None
 
 def find_split_mds(base: Path, ws_name: str, stem: str) -> list[Path]:
     """<stem>_NN_*.md 분할본."""
@@ -249,8 +253,8 @@ def _save_en_ko_split(bilingual_path: Path, blocks: list[str]):
 
 def _move_unassigned_to_ws(stem: str, new_ws: str) -> int:
     """_unassigned 아래의 stem 관련 파일을 new_ws로 이동. 이동 건수 반환. (2026-05-18)"""
-    src_ws_dir = DONE_DIR / "_unassigned"
-    dst_ws_dir = DONE_DIR / new_ws
+    src_ws_dir = LEGACY_DONE_DIR / "_unassigned"
+    dst_ws_dir = LEGACY_DONE_DIR / new_ws
     if not src_ws_dir.exists():
         return 0
     moved = 0

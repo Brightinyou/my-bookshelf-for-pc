@@ -126,25 +126,28 @@ def _write_single_chapter_from_text(ws_name: str, stem: str, text: str) -> tuple
 
 
 def list_done_books() -> list[tuple[str, str, Path]]:
-    """(ws, stem, txt_path) — done 폴더의 모든 책 TXT (1_txt/ 우선, 루트 fallback)."""
+    """(ws, stem, txt_path) — v0.9.0 TXT 폴더의 모든 책 TXT."""
     books: list[tuple[str, str, Path]] = []
-    if not DONE_DIR.exists():
-        return books
-    for ws_dir in sorted(DONE_DIR.iterdir()):
-        if not ws_dir.is_dir() or ws_dir.name.startswith("_"):
+    seen: set[str] = set()
+    for root in (cfg.TXT_DIR, cfg.TXT_ARCHIVE_DIR):
+        if not root.exists():
             continue
-        ws = ws_dir.name
-        seen: set[str] = set()
-        txt_sub = ws_dir / TXT_SUB
-        if txt_sub.exists():
-            for txt in sorted(txt_sub.glob("*.txt")):
-                s = _nfc(txt.stem)
-                if s not in seen:
-                    books.append((ws, s, txt)); seen.add(s)
-        for txt in sorted(ws_dir.glob("*.txt")):
+        for txt in sorted(root.glob("*.txt")):
             s = _nfc(txt.stem)
             if s not in seen:
-                books.append((ws, s, txt)); seen.add(s)
+                books.append((cfg.WORKSPACES[0], s, txt)); seen.add(s)
+
+    legacy_done = cfg.LEGACY_DONE_DIR
+    if legacy_done.exists():
+        for ws_dir in sorted(legacy_done.iterdir()):
+            if not ws_dir.is_dir() or ws_dir.name.startswith("_"):
+                continue
+            txt_sub = ws_dir / TXT_SUB
+            if txt_sub.exists():
+                for txt in sorted(txt_sub.glob("*.txt")):
+                    s = _nfc(txt.stem)
+                    if s not in seen:
+                        books.append((ws_dir.name, s, txt)); seen.add(s)
     return books
 
 
@@ -178,7 +181,7 @@ def split_book_to_chapters(ws_name: str, stem: str, allow_short: bool = False) -
     # 원본 PDF가 보관돼 있으면 Tier 0(북마크·시각 판독) 경로에 전달
     pdf_p = cfg.PDF_DIR / f"{stem}.pdf"
     if not pdf_p.exists():                       # 마이그레이션 전 안전망
-        pdf_p = DONE_DIR / ws_name / "pdf" / f"{stem}.pdf"
+        pdf_p = cfg.LEGACY_DONE_DIR / ws_name / "pdf" / f"{stem}.pdf"
     mode, chapters = _cw.chapter_split(md_text, txt_text,
                                        pdf_path=pdf_p if pdf_p.exists() else None)
     if (mode == "single" or not chapters) and allow_short:
