@@ -147,30 +147,42 @@ def list_done_books() -> list[tuple[str, str, Path]]:
     return books
 
 
-def split_book_to_chapters(ws_name: str, stem: str, allow_short: bool = False) -> tuple[int, str]:
-    """장 분리 실행. 챕터 TXT 파일 저장. (저장 수, 오류 메시지) 반환."""
+# 분할 방식 표시용 라벨 — visual/llm은 설정된 AI 모델을 소비한다 (2026-07-07)
+SPLIT_MODE_LABELS = {
+    "bookmark": "📑 PDF 북마크",
+    "visual":   "🤖 AI 시각판독",
+    "heading":  "패턴(MD 헤딩)",
+    "toc":      "패턴(목차 복원)",
+    "numbered": "패턴(번호 헤딩)",
+    "llm":      "🤖 AI 텍스트판정",
+    "single":   "단일 본문",
+}
+
+
+def split_book_to_chapters(ws_name: str, stem: str, allow_short: bool = False) -> tuple[int, str, str]:
+    """장 분리 실행. 챕터 TXT 파일 저장. (저장 수, 오류 메시지, 분할 방식) 반환."""
     try:
         import chapter_wiki as _cw
     except ImportError:
-        return 0, "chapter_wiki 임포트 실패"
+        return 0, "chapter_wiki 임포트 실패", ""
     txt_p = find_txt(DONE_DIR, ws_name, stem)
     md_p  = find_md(DONE_DIR, ws_name, stem)
     md_text  = md_p.read_text(encoding="utf-8", errors="ignore")  if md_p  else None
     txt_text = txt_p.read_text(encoding="utf-8", errors="ignore") if txt_p else None
     if not md_text and not txt_text:
-        return 0, "TXT/MD 파일 없음"
+        return 0, "TXT/MD 파일 없음", ""
     source_text = txt_text or md_text or ""
     if _is_small_document_for_whole_translation(source_text) and not allow_short:
-        return 0, "짧은 문서 감지"
+        return 0, "짧은 문서 감지", ""
     # 원본 PDF가 보관돼 있으면 Tier 0(북마크·시각 판독) 경로에 전달
     pdf_p = DONE_DIR / ws_name / "pdf" / f"{stem}.pdf"
     mode, chapters = _cw.chapter_split(md_text, txt_text,
                                        pdf_path=pdf_p if pdf_p.exists() else None)
     if (mode == "single" or not chapters) and allow_short:
         ch_path, _ = _write_single_chapter_from_text(ws_name, stem, source_text)
-        return 1, f"단일장으로 저장됨 → {ch_path.name}"
+        return 1, f"단일장으로 저장됨 → {ch_path.name}", "single"
     if mode == "single" or not chapters:
-        return 0, "장 구조 감지 안 됨 — 단일 본문입니다 (기존 위키 생성 탭을 쓰세요)"
+        return 0, "장 구조 감지 안 됨 — 단일 본문입니다 (기존 위키 생성 탭을 쓰세요)", "single"
     ch_dir = chapters_dir(ws_name, stem)
     ch_dir.mkdir(parents=True, exist_ok=True)
     saved = 0
@@ -178,7 +190,7 @@ def split_book_to_chapters(ws_name: str, stem: str, allow_short: bool = False) -
         safe = _re.sub(r'[/\\:*?"<>|]', ' ', title).strip()[:50].strip(" .,:-")
         (ch_dir / f"{i:02d}_{safe}.txt").write_text(body, encoding="utf-8")
         saved += 1
-    return saved, ""
+    return saved, "", mode
 
 
 def _merge_chapter_folder(ws_name: str, stem: str, prefer_ko: bool = False) -> tuple[bool, Path | None, str]:
@@ -205,6 +217,68 @@ def _merge_chapter_folder(ws_name: str, stem: str, prefer_ko: bool = False) -> t
         parts += [f"## {title}", body_path.read_text(encoding="utf-8", errors="ignore").strip(), ""]
     out_path.write_text("\n".join(parts).strip() + "\n", encoding="utf-8")
     return True, out_path, f"{len(chapters)}개 챕터 합침" + (f" · 번역본 {used_ko}개 사용" if used_ko else "")
+
+
+# ─── 책 전체요약 (_overview.md — 2026-07-07) ─────────────────
+# 장별 _wiki.md들을 합쳐 책 전체 요약·개요·분류를 생성해 사람이 읽고 고칠 수
+# 있는 파일로 저장한다. 위키반영은 이 파일이 있으면 재생성 없이 그대로 쓴다.
+
+def overview_file_for(ws_name: str, stem: str) -> Path:
+    return chapters_dir(ws_name, stem) / "_overview.md"
+
+
+def load_overview_file(path: Path) -> dict | None:
+    """_overview.md → {"category","summary","intro"}. 실패 시 None."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        m = _re.search(r"(?m)^category:\s*(.+)$", text[:400])
+        category = m.group(1).strip() if m else "기타"
+        summary, intro = parse_summary_md(text)
+        if not (summary or intro):
+            return None
+        return {"category": category, "summary": summary, "intro": intro}
+    except Exception:
+        return None
+
+
+def summarize_book_overview(ws_name: str, stem: str) -> tuple[bool, str]:
+    """장별 요약들을 합쳐 책 전체요약 생성 → _overview.md 저장. (ok, msg)."""
+    try:
+        import chapter_wiki as _cw
+    except ImportError:
+        return False, "chapter_wiki 임포트 실패"
+    ch_dir = chapters_dir(ws_name, stem)
+    sections = []
+    for i, jf in enumerate(list_summary_files(ch_dir), 1):
+        d = load_summary_file(jf)
+        if d is None:
+            continue
+        title = _re.sub(r"^\d+_", "", jf.stem.replace("_wiki", ""))
+        sections.append({"idx": i, "title": title, "summary": d.get("summary", "")})
+    if not sections:
+        return False, "장별 요약 없음 — 챕터 요약을 먼저 실행하세요"
+    try:
+        ov = _cw.generate_overview(stem, sections)
+    except Exception as e:
+        return False, str(e)[:200]
+    summary = " ".join((ov.get("summary") or "").split())
+    intro = (ov.get("intro") or "").strip()
+    if not (summary or intro):
+        return False, "전체요약 응답이 비었습니다"
+    _p, model = llm.wiki_provider_model()
+    out = overview_file_for(ws_name, stem)
+    out.write_text(
+        "---\n"
+        f"book: {stem}\n"
+        f"category: {ov.get('category', '기타')}\n"
+        f"model: {model}\n"
+        f"generated: {date.today().isoformat()}\n"
+        "---\n"
+        f"{_SUMMARY_PREFIX} {summary}\n\n"
+        f"{intro}\n",
+        encoding="utf-8",
+    )
+    return True, summary[:120]
 
 
 def summarize_one_chapter(ch_path: Path, book_stem: str) -> tuple[bool, str]:

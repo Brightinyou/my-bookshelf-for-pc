@@ -58,8 +58,9 @@ from services.translate import (
 from services.chapters import (
     _is_small_document_for_whole_translation, _merge_chapter_folder,
     _write_single_chapter_from_text, chapters_dir, list_done_books,
-    list_summary_files, load_summary_file, split_book_to_chapters,
-    summarize_one_chapter, summary_file_for,
+    list_summary_files, load_overview_file, load_summary_file,
+    overview_file_for, split_book_to_chapters, summarize_book_overview,
+    summarize_one_chapter, summary_file_for, SPLIT_MODE_LABELS,
 )
 from services.papers import (
     download_paper_source, prepare_downloaded_paper_source,
@@ -1457,6 +1458,9 @@ if _active_view == "2_split":
         ],
         "flow2",
     )
+    _sp_prov2, _sp_model2 = llm.wiki_provider_model()
+    st.caption(tf("🤖 장 구조 감지에 설정된 AI 모델이 사용될 수 있습니다 (PDF 시각 판독·비정형 헤딩) — 현재: %s",
+                  f"{llm.PROVIDERS.get(_sp_prov2, {}).get('label', _sp_prov2)} · {_sp_model2}"))
 
     # TXT 직접 업로드
     _up2 = st.file_uploader(t("TXT 직접 업로드 (done/ 폴더로 저장)"),
@@ -1578,9 +1582,10 @@ if _active_view == "2_split":
                 st.rerun()
             _sp2 = st.progress(0.0)
             _completed2 = 0
+            _any_en2 = False   # 영문 책 포함 여부 — 다음 단계 라우팅용 (2026-07-07)
             for _si2, _s2 in enumerate(_to2, 1):
                 with st.status(f"분할 [{_si2}/{len(_to2)}]: {_s2['stem']}", expanded=False):
-                    _sn2, _serr2 = split_book_to_chapters(_s2["ws"], _s2["stem"])
+                    _sn2, _serr2, _smode2 = split_book_to_chapters(_s2["ws"], _s2["stem"])
                 _small_single2 = bool(_serr2 and _serr2.startswith("짧은 문서로 감지"))
                 if _serr2 and not _small_single2:
                     st.warning(f"⚠️ {_s2['stem']}: {_serr2}")
@@ -1590,7 +1595,10 @@ if _active_view == "2_split":
                         if _s2["stem"] not in _ns_list2:
                             _ns_list2.append(_s2["stem"])
                 else:
-                    st.success(f"✅ {_s2['stem']} → {_sn2}개 챕터")
+                    _mode_lbl2 = t(SPLIT_MODE_LABELS.get(_smode2, _smode2))
+                    st.success(f"✅ {_s2['stem']} → {_sn2}" + t("개 챕터") + f" · {_mode_lbl2}")
+                    if _smode2 in ("visual", "llm"):
+                        st.caption(tf("🤖 AI 모델 사용됨: %s", f"{_sp_prov2} · {_sp_model2}"))
                     if _small_single2:
                         st.caption("📄 문서가 짧아 전체 번역용 단일 챕터로 저장됨")
                     queue_remove("tab2_ready", [_s2["stem"]])
@@ -1601,6 +1609,7 @@ if _active_view == "2_split":
                     if _new_chs2:
                         _completed2 += 1
                         if _needs_translation(_s2["stem"]):
+                            _any_en2 = True
                             queue_add("tab3_ready", _new_chs2)
                             st.caption("🌐 영문 책 → 영문번역 대기 등록")
                         else:
@@ -1610,10 +1619,12 @@ if _active_view == "2_split":
                         st.warning(f"⚠️ {_s2['stem']}: 챕터 파일이 생성되지 않았습니다.")
                 _sp2.progress(_si2 / len(_to2))
             if _completed2:
+                # 한국어 책만 분할했으면 번역을 건너뛰고 문서요약으로 안내 (2026-07-07)
                 _set_stage_completion(
                     t("2-장별분할 완료"),
-                    tf("%d권 분할을 마쳤습니다. 다음 단계로 이동하세요.", _completed2),
-                    next_stage="3_translate",
+                    tf("%d권 분할을 마쳤습니다. 다음 단계로 이동하세요.", _completed2)
+                    + ("" if _any_en2 else " " + t("(한국어 책 — 번역 생략, 문서요약으로 이동)")),
+                    next_stage="3_translate" if _any_en2 else "4_summary",
                     open_target=_stage_folder("2_split"),
                 )
             st.rerun()
@@ -1632,7 +1643,7 @@ if _active_view == "2_split":
             _sc1.markdown(f"**{_sh2['label']}**")
             _sc2.caption(_sh2["meta"])
             if _sc3.button(t("분리하기"), key=f"short_split_yes_{_sh2['key']}", use_container_width=True):
-                _sn2, _serr2 = split_book_to_chapters(_sh2["obj"]["ws"], _sh2["obj"]["stem"], allow_short=True)
+                _sn2, _serr2, _ = split_book_to_chapters(_sh2["obj"]["ws"], _sh2["obj"]["stem"], allow_short=True)
                 if _serr2:
                     st.warning(f"⚠️ {_sh2['key']}: {_serr2}")
                 else:
@@ -1672,7 +1683,7 @@ if _active_view == "2_split":
             _nc1, _nc2, _nc3 = st.columns([4, 1.6, 0.7])
             _nc1.markdown(f"**{_ns2}**")
             if _nc2.button(t("📄 단일장으로 저장"), key=f"nosplit_save_{_ns2}", use_container_width=True):
-                _sn2b, _smsg2b = split_book_to_chapters(DEFAULT_WS, _ns2, allow_short=True)
+                _sn2b, _smsg2b, _ = split_book_to_chapters(DEFAULT_WS, _ns2, allow_short=True)
                 if _sn2b > 0:
                     queue_remove("tab2_ready", [_ns2])
                     _ch_dir2b = chapters_dir(DEFAULT_WS, _ns2)
@@ -2085,8 +2096,14 @@ if _active_view == "4_summary":
                         queue_add("tab4_failed", [_rel4_fail])
                     _sp4.progress(_si4 / len(_to4))
                 # 책 단위로 모든 챕터 요약 완료된 것만 tab5 큐에 등록
+                # + 책 전체요약(_overview.md) 자동 생성 (2026-07-07)
                 for _st5 in _stems4_done:
                     queue_add("tab5_ready", [_st5])
+                    with st.status(tf("📚 책 전체요약 생성: %s", _st5), expanded=False):
+                        _ok_ov4, _msg_ov4 = summarize_book_overview(DEFAULT_WS, _st5)
+                    (st.success if _ok_ov4 else st.warning)(
+                        f"{'✅' if _ok_ov4 else '⚠️'} " +
+                        tf("전체요약 %s: %s", _st5, _msg_ov4[:80]))
                 st.success(f"요약 처리 완료: {len(_to4)}개")
                 _set_stage_completion(
                     t("4-문서요약 완료"),
@@ -2110,6 +2127,35 @@ if _active_view == "4_summary":
             if _f4c2.button(t("🗑 실패 목록 비우기"), key="summ4_clear_failed", use_container_width=True):
                 queue_clear("tab4_failed")
                 st.rerun()
+
+        # 책 전체요약 관리 (2026-07-07)
+        _ch_root4o = DONE_DIR / DEFAULT_WS / "chapters"
+        _ov_books4 = [d for d in (_ch_root4o.iterdir() if _ch_root4o.exists() else [])
+                      if d.is_dir() and list_summary_files(d)]
+        if _ov_books4:
+            with st.expander(tf("📚 책 전체요약 (_overview.md) — %d권", len(_ov_books4))):
+                st.caption(t("장별 요약을 합쳐 만든 책 전체 요약입니다. 위키반영 전에 열어서 고칠 수 있고, 수정본이 허브 노트에 그대로 반영됩니다."))
+                for _bd4 in sorted(_ov_books4, key=lambda d: d.name):
+                    _ovf4 = overview_file_for(DEFAULT_WS, _nfc(_bd4.name))
+                    _has4 = _ovf4.exists()
+                    _oc1, _oc2, _oc3, _oc4 = st.columns([4, 1.2, 1.4, 1])
+                    _oc1.markdown(f"**{_bd4.name}**")
+                    _oc2.caption(t("✅ 있음") if _has4 else t("— 없음"))
+                    if _oc3.button(t("↻ 재생성") if _has4 else t("▶ 생성"),
+                                   key=f"ov4_gen_{_bd4.name}", use_container_width=True):
+                        with st.status(tf("📚 책 전체요약 생성: %s", _bd4.name), expanded=False):
+                            _ok_ov4b, _msg_ov4b = summarize_book_overview(DEFAULT_WS, _nfc(_bd4.name))
+                        (st.success if _ok_ov4b else st.error)(
+                            f"{'✅' if _ok_ov4b else '❌'} {_msg_ov4b[:100]}")
+                        if _ok_ov4b:
+                            st.rerun()
+                    if _oc4.button(t("보기"), key=f"ov4_view_{_bd4.name}",
+                                   use_container_width=True, disabled=not _has4):
+                        open_path(_ovf4, reveal=True)
+                    if _has4:
+                        _ovd4 = load_overview_file(_ovf4)
+                        if _ovd4 and _ovd4.get("summary"):
+                            st.caption(f"› {_ovd4['summary'][:110]}")
 
         # 수동 추가 expander
         with st.expander(t("➕ 수동으로 추가 (기존 챕터에서 선택)")):
