@@ -8,3 +8,6 @@ certifi>=2024.8.30
 # 네이티브 창 래핑 (브라우저 탭 대신 독립 앱 창)
 pywebview>=5.0
 pythonnet>=3.0
+# PDF 장 지도 판독 — 북마크·페이지 추출·이미지 렌더링 (2026-07-07 Tier 0)
+pypdfium2>=4.30
+Pillow>=10.0
