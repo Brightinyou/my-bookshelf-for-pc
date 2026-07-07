@@ -297,11 +297,11 @@ _EN: dict[str, str] = {
     "— 없음": "— none",
     "↻ 재생성": "↻ Regenerate",
     "▶ 생성": "▶ Generate",
-    "📦 분할이 끝난 원본 TXT는 1_txt\\완료 폴더로 이동합니다 — 보관·열람용이며, 더 이상 필요 없으면 직접 삭제해도 됩니다.":
-        "📦 After splitting, the source TXT moves to 1_txt\\완료 — kept for reference; you may delete it manually when no longer needed.",
+    "📦 분할이 끝난 원본 TXT는 완료 보관 폴더(%s)로 이동합니다 — 보관·열람용이며, 더 이상 필요 없으면 직접 삭제해도 됩니다.":
+        "📦 After splitting, the source TXT moves to the archive folder (%s) — kept for reference; you may delete it manually when no longer needed.",
     "✅ 완료 보관 (원본 TXT)": "✅ Archive (source TXT)",
     "%d권 보관": "%d archived",
-    "📦 원본 TXT → 1_txt\\완료 이동 (보관용)": "📦 Source TXT moved to 1_txt\\완료 (archive)",
+    "📦 원본 TXT → 완료 보관 폴더로 이동 (보관용)": "📦 Source TXT moved to the archive folder",
     "요약 준비 중…": "Preparing summaries…",
     "요약 %d/%d — %s": "Summarizing %d/%d — %s",
     "전체요약 ✓": "overview ✓",

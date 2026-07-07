@@ -94,7 +94,8 @@ def list_summary_files(ch_dir: Path) -> list[Path]:
 
 
 def chapters_dir(ws_name: str, stem: str) -> Path:
-    return DONE_DIR / ws_name / "chapters" / stem
+    """v0.9.0: 단일 트리 — ws 인자는 호환용."""
+    return cfg.CHAPTERS_DIR / stem
 
 
 def _single_chapter_name(stem: str) -> str:
@@ -175,7 +176,9 @@ def split_book_to_chapters(ws_name: str, stem: str, allow_short: bool = False) -
     if _is_small_document_for_whole_translation(source_text) and not allow_short:
         return 0, "짧은 문서 감지", ""
     # 원본 PDF가 보관돼 있으면 Tier 0(북마크·시각 판독) 경로에 전달
-    pdf_p = DONE_DIR / ws_name / "pdf" / f"{stem}.pdf"
+    pdf_p = cfg.PDF_DIR / f"{stem}.pdf"
+    if not pdf_p.exists():                       # 마이그레이션 전 안전망
+        pdf_p = DONE_DIR / ws_name / "pdf" / f"{stem}.pdf"
     mode, chapters = _cw.chapter_split(md_text, txt_text,
                                        pdf_path=pdf_p if pdf_p.exists() else None)
     if (mode == "single" or not chapters) and allow_short:
