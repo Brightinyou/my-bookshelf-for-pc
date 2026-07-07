@@ -293,12 +293,14 @@ def _heading_candidates(txt: str):
     """Return sequential major heading candidates from Korean/English books and papers."""
     candidates = []
     generic_numbered_allowed = len(txt) < 180_000
+    # (offset, 원본줄) 선구축 — 단독 번호줄+제목줄 결합 감지에 look-ahead 필요 (2026-07-07)
+    _lines: list[tuple[int, str]] = []
     line_start = 0
     for raw in txt.splitlines(True):
-        line = raw.rstrip("\r\n")
-        s = re.sub(r"\s+", " ", line).strip()
-        pos = line_start
+        _lines.append((line_start, raw.rstrip("\r\n")))
         line_start += len(raw)
+    for _li, (pos, line) in enumerate(_lines):
+        s = re.sub(r"\s+", " ", line).strip()
         if not s or len(s) > 140:
             continue
         if re.search(r"(?:[.·ㆍ…]{3,}|(.)\1{4,})\s*\d+\s*$", s):
@@ -335,6 +337,22 @@ def _heading_candidates(txt: str):
                 en_only = bool(re.match(r"[A-Z][A-Za-z0-9 /,:&'\\-]{2,90}$", cand_title))
                 if generic_numbered_allowed and not bad_inline and en_only and len(cand_title.split()) <= 12:
                     num, title = int(m.group(1)), cand_title
+        if num is None and generic_numbered_allowed:
+            # 단독 번호 줄 + 다음 짧은 제목 줄 — 한국어 신서 스타일 (2026-07-07)
+            #   "01\n\n왜 인공지능윤리인가" 처럼 번호와 제목이 다른 줄인 경우.
+            # 두 자리 표기("01".."30")만 인정 — 한 자리 "1"은 각주 마커·쪽번호와
+            # 구분 불가(s43681 소속 각주 오탐). 쪽번호("36" 등) 오탐은
+            # 연속 번호(01→02→03)+간격 검증이 걸러낸다.
+            m = re.match(r"^(\d{2})$", s)
+            if m and int(m.group(1)) <= MAX_CHAPTERS:
+                for _pos2, _line2 in _lines[_li + 1:_li + 4]:
+                    t2 = re.sub(r"\s+", " ", _line2).strip()
+                    if not t2:
+                        continue
+                    if (4 <= len(t2) <= 60 and re.match(r"^[가-힣A-Za-z]", t2)
+                            and not re.search(r"[.!?。]\s*$|\d\s*$", t2)):
+                        num, title = int(m.group(1)), t2
+                    break
         if num is None or not (1 <= num <= MAX_CHAPTERS):
             continue
         title = _clean_heading_title(title)
@@ -401,8 +419,126 @@ def numbered_heading_split(txt: str):
     return chapters if len(chapters) >= 3 else None
 
 
-def chapter_split(md_text: str, txt_text: str = None):
-    """(mode, [(title, body)]). 헤딩=MD(##), 목차=TXT(줄바꿈 보존) 우선. mode=heading|toc|single."""
+# ── LLM 장 경계 판정 폴백 (2026-07-07) ─────────────────────
+# 정규식 캐스케이드가 못 잡는 비정형 장 구조("첫 번째 이야기", OCR 오탈자,
+# 임의 표기)를 LLM이 의미로 판정한다. 본문 전체가 아니라 짧은 줄 후보 목록만
+# 보내고(비용 최소), 반환된 줄 위치로 로컬에서 분할한다(환각 무해화).
+
+TOC_SPLIT_PROMPT = """아래는 책 본문에서 추출한 짧은 줄 후보 목록입니다 (형식: 번호 | 문서내위치% | 줄 내용).
+이 중에서 **각 장(chapter)의 본문이 실제로 시작되는 최상위 장 제목 줄**만 골라내세요.
+
+규칙:
+- 목차(차례) 항목은 제외 — 보통 문서 앞쪽(위치 0~5%)에 몰려 있고 쪽수가 붙음
+- 쪽번호·러닝헤더(여러 번 반복되는 책제목/장제목)·소제목·본문 조각·부록의 인용 조항 제외
+- OCR 오탈자가 있어도 장 제목이면 포함 (예: '첫번때이야기' = 첫 번째 이야기)
+- 같은 장 제목이 여러 위치에 보이면 본문이 시작되는 위치의 것을 선택
+- 문서 처음부터 끝까지(위치 0~100%) 훑어 **모든 최상위 장을 빠짐없이** 포함 — 일부 장의
+  헤딩이 OCR로 손상돼 목록에 없으면 그 장은 건너뛰되, 목록에 있는 장은 놓치지 말 것
+- 최상위 장 구조가 명확하지 않으면 빈 배열을 반환
+
+[출력] JSON only: {{"chapters": [{{"idx": <후보 번호>, "title": "<정돈된 장 제목>"}}]}} — 읽기 순서대로.
+
+[후보 {n}줄]
+{listing}"""
+
+_LLM_SPLIT_KW = re.compile(r"\d|장|이야기|마당|부|편|강|chapter|part|lecture", re.I)
+# 강한 장 신호 — 후보 초과 시 이 줄들은 절대 버리지 않는다 (2026-07-07)
+_LLM_SPLIT_KW_STRONG = re.compile(
+    r"이야기|마당|프롤로그|에필로그|서론|결론|들어가며|나가며|chapter|part\b|lecture"
+    r"|(?:^|\s)제?\s*\d{1,2}\s*[장부편](?:\s|$|[.:：)\-])", re.I)
+
+
+def llm_toc_split(txt: str):
+    """정규식 전부 실패 시 LLM으로 장 시작 줄 판정. [(title, body)] 또는 None."""
+    try:
+        prov, _m = llm.wiki_provider_model()
+        if not llm.has_key(prov):
+            return None
+    except Exception:
+        return None
+    total = len(txt)
+    if total < 20_000:            # 짧은 문서는 단일장 흐름이 맞음
+        return None
+    cands: list[tuple[int, str]] = []
+    pos = 0
+    for raw in txt.splitlines(True):
+        s = re.sub(r"\s+", " ", raw.rstrip("\r\n")).strip()
+        if 2 <= len(s) <= 60 and not re.search(r"[.?!。…,]$", s):
+            cands.append((pos, s))
+        pos += len(raw)
+    MAXC = 600
+    if len(cands) > MAXC:         # 과다 시 헤딩스러운 줄만 (숫자·장/이야기 키워드)
+        kw_only = [(p, s) for p, s in cands if _LLM_SPLIT_KW.search(s)]
+        cands = kw_only if len(kw_only) >= 10 else cands
+    if len(cands) > MAXC:
+        # 앞에서부터 자르면 문서 뒷부분 장이 통째로 누락된다 (갓생살기 사례).
+        # 강한 장 신호 줄은 전부 보존하고, 나머지로 문서 전체를 고르게 채운다.
+        strong = [c for c in cands if _LLM_SPLIT_KW_STRONG.search(c[1])]
+        weak = [c for c in cands if not _LLM_SPLIT_KW_STRONG.search(c[1])]
+        if len(strong) > MAXC:
+            step = len(strong) / MAXC
+            strong = [strong[int(i * step)] for i in range(MAXC)]
+        room = MAXC - len(strong)
+        if room > 0 and weak:
+            step = max(1, len(weak) // room)
+            strong += weak[::step][:room]
+        cands = sorted(set(strong), key=lambda x: x[0])
+    if len(cands) < 3:
+        return None
+    listing = "\n".join(f"{i} | {int(p / total * 100):>2}% | {s}"
+                        for i, (p, s) in enumerate(cands))
+    try:
+        data = _gen_json(TOC_SPLIT_PROMPT.format(n=len(cands), listing=listing), 4096)
+    except Exception:
+        return None
+    rows = data.get("chapters") if isinstance(data, dict) else None
+    if not isinstance(rows, list) or not (3 <= len(rows) <= MAX_CHAPTERS):
+        return None
+    picks: list[tuple[int, str]] = []
+    for r in rows:
+        try:
+            i = int(r.get("idx"))
+        except Exception:
+            return None
+        if not (0 <= i < len(cands)):
+            return None
+        title = str(r.get("title") or cands[i][1]).strip()[:90]
+        picks.append((cands[i][0], title))
+    picks.sort(key=lambda x: x[0])
+    dedup: list[tuple[int, str]] = []
+    for p, t in picks:            # 최소 간격 1500자 — 목차 항목·중복 위치 제거
+        if dedup and p - dedup[-1][0] < 1500:
+            continue
+        dedup.append((p, t))
+    if len(dedup) < 3:
+        return None
+    positions = [p for p, _t in dedup]
+    end = _notes_start(txt, positions[-1] + 3000)
+    bounds = positions + [end]
+    chapters: list[tuple[str, str]] = []
+    for k, (_p, t) in enumerate(dedup):
+        body = txt[bounds[k]:bounds[k + 1]].strip()
+        if len(body) < 300 and chapters:
+            chapters[-1] = (chapters[-1][0], chapters[-1][1] + "\n\n" + body)
+            continue
+        chapters.append((f"{k + 1}. {t}", body))
+    return chapters if len(chapters) >= 3 else None
+
+
+def chapter_split(md_text: str, txt_text: str = None, pdf_path=None):
+    """(mode, [(title, body)]). mode=bookmark|visual|heading|toc|numbered|llm|single.
+
+    Tier 0 (pdf_path 있을 때): 북마크 메타데이터 → 연결된 공급자의 PDF 시각
+    판독(차례 페이지). 텍스트 층이 OCR로 열화돼도 동작 — 형식 추측이 불필요한
+    가장 정확한 경로 (2026-07-07). 이후 기존 정규식 → 텍스트 LLM 폴백."""
+    if pdf_path and txt_text:
+        try:
+            from services.toc import pdf_chapter_split
+            r = pdf_chapter_split(txt_text, pdf_path)
+            if r:
+                return r
+        except Exception:
+            pass
     if md_text:
         chs = heading_chapters(_strip_noise(md_text))
         if chs:
@@ -416,6 +552,12 @@ def chapter_split(md_text: str, txt_text: str = None):
         chs = numbered_heading_split(_strip_noise(src))
         if chs and len(chs) >= 3:
             return "numbered", chs
+    # 최후 폴백: LLM 장 경계 판정 (호출 1회로 제한)
+    src = txt_text or md_text
+    if src:
+        chs = llm_toc_split(_strip_noise(src))
+        if chs and len(chs) >= 3:
+            return "llm", chs
     return "single", None
 
 

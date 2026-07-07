@@ -162,7 +162,10 @@ def split_book_to_chapters(ws_name: str, stem: str, allow_short: bool = False) -
     source_text = txt_text or md_text or ""
     if _is_small_document_for_whole_translation(source_text) and not allow_short:
         return 0, "짧은 문서 감지"
-    mode, chapters = _cw.chapter_split(md_text, txt_text)
+    # 원본 PDF가 보관돼 있으면 Tier 0(북마크·시각 판독) 경로에 전달
+    pdf_p = DONE_DIR / ws_name / "pdf" / f"{stem}.pdf"
+    mode, chapters = _cw.chapter_split(md_text, txt_text,
+                                       pdf_path=pdf_p if pdf_p.exists() else None)
     if (mode == "single" or not chapters) and allow_short:
         ch_path, _ = _write_single_chapter_from_text(ws_name, stem, source_text)
         return 1, f"단일장으로 저장됨 → {ch_path.name}"
