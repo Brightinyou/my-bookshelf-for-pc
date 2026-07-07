@@ -175,6 +175,57 @@ def _visual_toc_openai(model: str, key: str, scan_pdf: Path, prompt: str) -> str
             pass
 
 
+def _render_pages_png(pdf_path: Path, page_indices: list[int],
+                      scale: float = 1.3, max_pages: int = 40) -> list[Path]:
+    """지정 페이지를 이미지로 렌더링 — PDF를 직접 못 받는 공급자(codex_cli)용.
+    차례/장제목 판독엔 저해상 JPEG면 충분 — 전송량 절약."""
+    import pypdfium2 as pdfium
+    out: list[Path] = []
+    tmp = Path(tempfile.gettempdir()) / f"toc_png_{pdf_path.stem[:24]}"
+    tmp.mkdir(exist_ok=True)
+    src = pdfium.PdfDocument(str(pdf_path))
+    try:
+        for i in page_indices[:max_pages]:
+            if i >= len(src):
+                continue
+            bmp = src[i].render(scale=scale)
+            f = tmp / f"p{i + 1:04d}.jpg"
+            bmp.to_pil().convert("RGB").save(str(f), quality=72)
+            out.append(f)
+    finally:
+        src.close()
+    return out
+
+
+def _visual_toc_codex_cli(model: str, pngs: list[Path], prompt: str) -> str:
+    """Codex CLI(구독) — PDF 입력이 없어 페이지 PNG를 -i로 첨부해 판독."""
+    cli = llm.codex_cli_path()
+    if not cli:
+        raise RuntimeError("codex CLI 없음")
+    out_file = Path(tempfile.gettempdir()) / f"codex_toc_{Path(pngs[0]).parent.name}.txt"
+    args = [cli, "exec", "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox", "-o", str(out_file)]
+    for f in pngs:
+        args += ["-i", str(f)]
+    if model not in ("default", ""):
+        args += ["-m", model]
+    args.append("-")
+    try:
+        r = subprocess.run(
+            args, capture_output=True, text=True, timeout=600,
+            cwd=tempfile.gettempdir(), encoding="utf-8", errors="replace",
+            input=prompt + "\n\n분석 과정 설명 없이 반드시 유효한 JSON 객체 하나만 출력하라.",
+            **llm._no_window_kwargs(),
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"codex CLI exit {r.returncode}: {(r.stderr or '')[:300]}")
+        if out_file.exists():
+            return out_file.read_text(encoding="utf-8").strip()
+        return (r.stdout or "").strip()
+    finally:
+        out_file.unlink(missing_ok=True)
+
+
 def _visual_toc_claude_cli(model: str, scan_pdf: Path, prompt: str) -> str:
     """Claude CLI(구독)로 PDF 시각 판독 — Read 도구만 허용해 파일을 읽게 한다."""
     cli = llm.claude_cli_path()
@@ -205,8 +256,6 @@ def pdf_visual_toc(pdf_path: Path, txt: str | None = None) -> list[tuple[str, in
             return None
     except Exception:
         return None
-    if prov == "codex_cli":                       # 시각 입력 미지원
-        return None
     if txt is None:
         return None
     try:
@@ -217,31 +266,49 @@ def pdf_visual_toc(pdf_path: Path, txt: str | None = None) -> list[tuple[str, in
     except Exception:
         return None
     idxs = _scan_page_indices(txt, total_pages)
+    if prov == "codex_cli":
+        idxs = idxs[:40]                           # 이미지 첨부 상한
     if len(idxs) < 3:
-        return None
-    scan = _build_scan_pdf(pdf_path, idxs)
-    if scan is None:
         return None
     mapping = ", ".join(f"{k + 1}번째→원본 {i + 1}p" for k, i in enumerate(idxs))
     prompt = _VISUAL_TOC_PROMPT.format(mapping=mapping)
+    scan: Path | None = None
+    pngs: list[Path] = []
     try:
-        if prov == "gemini":
-            raw = _visual_toc_gemini(model, llm.get_key(prov), scan, prompt)
-        elif prov == "anthropic":
-            raw = _visual_toc_anthropic(model, llm.get_key(prov), scan, prompt)
-        elif prov == "openai":
-            raw = _visual_toc_openai(model, llm.get_key(prov), scan, prompt)
-        elif prov == "claude_cli":
-            raw = _visual_toc_claude_cli(model, scan, prompt)
+        if prov == "codex_cli":
+            # PDF 직접 입력이 없는 CLI — 페이지를 PNG로 렌더링해 -i로 첨부
+            pngs = _render_pages_png(pdf_path, idxs)
+            if len(pngs) < 3:
+                return None
+            prompt_img = prompt.replace(
+                "이 PDF는 한 권의 책에서 추려낸 페이지들입니다",
+                "첨부된 이미지들은 한 권의 책에서 추려낸 페이지들입니다").replace(
+                "이 PDF의 k번째 페이지가", "k번째 이미지가")
+            raw = _visual_toc_codex_cli(model, pngs, prompt_img)
         else:
-            return None
+            scan = _build_scan_pdf(pdf_path, idxs)
+            if scan is None:
+                return None
+            if prov == "gemini":
+                raw = _visual_toc_gemini(model, llm.get_key(prov), scan, prompt)
+            elif prov == "anthropic":
+                raw = _visual_toc_anthropic(model, llm.get_key(prov), scan, prompt)
+            elif prov == "openai":
+                raw = _visual_toc_openai(model, llm.get_key(prov), scan, prompt)
+            elif prov == "claude_cli":
+                raw = _visual_toc_claude_cli(model, scan, prompt)
+            else:
+                return None
         data = _parse_json_lenient(raw)
     except Exception as e:
         append_log(f"WARN: PDF 시각 차례 판독 실패 [{prov}] ({type(e).__name__}) {str(e)[:200]}")
         return None
     finally:
         try:
-            scan.unlink(missing_ok=True)
+            if scan is not None:
+                scan.unlink(missing_ok=True)
+            for f in pngs:
+                f.unlink(missing_ok=True)
         except Exception:
             pass
     rows = data.get("chapters") if isinstance(data, dict) else None
