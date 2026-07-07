@@ -1455,12 +1455,31 @@ if _active_view == "2_split":
             ("① 처리전 · 변환 TXT", txt_dir(DONE_DIR, DEFAULT_WS),
              tf("%d권", _count_files(txt_dir(DONE_DIR, DEFAULT_WS), ['*.txt', '*.md']))),
             ("② 처리후 · 챕터 폴더", _ch_root2f, tf("%d권 분할됨", _n_books2f)),
+            ("✅ 완료 보관 (원본 TXT)", txt_dir(DONE_DIR, DEFAULT_WS) / "완료",
+             tf("%d권 보관", _count_files(txt_dir(DONE_DIR, DEFAULT_WS) / "완료", ['*.txt', '*.md']))),
         ],
         "flow2",
     )
     _sp_prov2, _sp_model2 = llm.wiki_provider_model()
     st.caption(tf("🤖 장 구조 감지에 설정된 AI 모델이 사용될 수 있습니다 (PDF 시각 판독·비정형 헤딩) — 현재: %s",
                   f"{llm.PROVIDERS.get(_sp_prov2, {}).get('label', _sp_prov2)} · {_sp_model2}"))
+    st.caption(t("📦 분할이 끝난 원본 TXT는 1_txt\\완료 폴더로 이동합니다 — 보관·열람용이며, 더 이상 필요 없으면 직접 삭제해도 됩니다."))
+
+    _split_arch_dir2 = txt_dir(DONE_DIR, DEFAULT_WS) / "완료"
+
+    def _archive_split_source(stem: str) -> bool:
+        """분할이 끝난 원본 TXT/MD를 1_txt/완료/로 이동 (2026-07-07)."""
+        moved = False
+        _split_arch_dir2.mkdir(parents=True, exist_ok=True)
+        for _ext in (".txt", ".md"):
+            _srcf = txt_dir(DONE_DIR, DEFAULT_WS) / (stem + _ext)
+            if _srcf.exists():
+                try:
+                    shutil.move(str(_srcf), str(_split_arch_dir2 / _srcf.name))
+                    moved = True
+                except Exception:
+                    pass
+        return moved
 
     # TXT 직접 업로드
     _up2 = st.file_uploader(t("TXT 직접 업로드 (done/ 폴더로 저장)"),
@@ -1615,6 +1634,8 @@ if _active_view == "2_split":
                         else:
                             queue_add("tab4_ready", _new_chs2)
                             st.caption("🇰🇷 한국어 책 → 번역 건너뜀, 📝 문서요약 대기 등록")
+                        if _archive_split_source(_s2["stem"]):
+                            st.caption(t("📦 원본 TXT → 1_txt\\완료 이동 (보관용)"))
                     else:
                         st.warning(f"⚠️ {_s2['stem']}: 챕터 파일이 생성되지 않았습니다.")
                 _sp2.progress(_si2 / len(_to2))
@@ -1658,6 +1679,7 @@ if _active_view == "2_split":
                             queue_add("tab3_ready", _new_chs2)
                         else:
                             queue_add("tab4_ready", _new_chs2)
+                        _archive_split_source(_sh2["obj"]["stem"])
                     st.rerun()
             if _sc4.button(t("단일장 유지"), key=f"short_split_keep_{_sh2['key']}", use_container_width=True):
                 _one_path2, _ = _write_single_chapter_from_text(_sh2["obj"]["ws"], _sh2["obj"]["stem"], _sh2["text"])
@@ -1671,6 +1693,7 @@ if _active_view == "2_split":
                         queue_add("tab3_ready", _new_chs2)
                     else:
                         queue_add("tab4_ready", _new_chs2)
+                    _archive_split_source(_sh2["obj"]["stem"])
                 st.rerun()
 
     # 장 구조 미감지 — 단일장 저장 선택지 (2026-07-03)
@@ -1695,6 +1718,7 @@ if _active_view == "2_split":
                             queue_add("tab3_ready", _new_chs2b)
                         else:
                             queue_add("tab4_ready", _new_chs2b)
+                        _archive_split_source(_ns2)
                     st.session_state["split2_nosplit"] = [x for x in _nosplit2 if x != _ns2]
                     st.rerun()
                 else:
@@ -2078,23 +2102,32 @@ if _active_view == "4_summary":
                 queue_clear("tab4_ready"); st.rerun()
             _to4: list = ([it["obj"] for it in _sum_pend4] if _ra4 else (_sel4 if _rs4 else []))
             if _to4:
-                _sp4 = st.progress(0.0)
+                # 진행바 하나가 "요약 n/N — 현재 장"으로 갱신 (상자 나열 대신, 2026-07-07)
+                _sp4 = st.progress(0.0, text=t("요약 준비 중…"))
+                _last4 = st.empty()
+                _fails4: list[tuple[str, str]] = []
                 _stems4_done: set[str] = set()
                 for _si4, (_sf4, _bst4) in enumerate(_to4, 1):
-                    with st.status(f"요약 [{_si4}/{len(_to4)}]: {_sf4.name}", expanded=False):
-                        _ok4, _msg4 = summarize_one_chapter(_sf4, _bst4)
-                    (st.success if _ok4 else st.warning)(
-                        f"{'✅' if _ok4 else '⚠️'} {_sf4.name}: {_msg4[:80]}")
+                    _sp4.progress((_si4 - 1) / len(_to4),
+                                  text=tf("요약 %d/%d — %s", _si4, len(_to4), _sf4.stem[:40]))
+                    _ok4, _msg4 = summarize_one_chapter(_sf4, _bst4)
                     if _ok4:
+                        _last4.caption(f"✅ {_sf4.stem[:40]}: {_msg4[:70]}")
                         _rel4_done = str(_sf4.relative_to(DONE_DIR))
                         queue_remove("tab4_ready", [_rel4_done])
                         queue_remove("tab4_failed", [_rel4_done])
                         _stems4_done.add(_bst4)
                     else:
+                        _fails4.append((_sf4.name, _msg4))
+                        _last4.caption(f"⚠️ {_sf4.stem[:40]}: {_msg4[:70]}")
                         _rel4_fail = str(_sf4.relative_to(DONE_DIR))
                         queue_remove("tab4_ready", [_rel4_fail])
                         queue_add("tab4_failed", [_rel4_fail])
-                    _sp4.progress(_si4 / len(_to4))
+                    _sp4.progress(_si4 / len(_to4),
+                                  text=tf("요약 %d/%d — %s", _si4, len(_to4), _sf4.stem[:40]))
+                _last4.empty()
+                for _fn4, _fm4 in _fails4:
+                    st.warning(f"⚠️ {_fn4}: {_fm4[:100]}")
                 # 책 단위로 모든 챕터 요약 완료된 것만 tab5 큐에 등록
                 # + 책 전체요약(_overview.md) 자동 생성 (2026-07-07)
                 for _st5 in _stems4_done:
@@ -2243,13 +2276,14 @@ if _active_view == "5_wiki":
         # 챕터 이름 목록 (NN_제목.txt → 제목)
         _ch_names5 = [_re.sub(r'^\d+_', '', f.stem) for f in sorted(_ch5.glob("??_*.txt"))
                       if not f.stem.endswith(("_ko","_wiki"))] if _ch5.exists() else []
+        _has_ov5 = find_overview_file(DEFAULT_WS, _stem5) is not None
         if _stem5 in _wiki_stems5:
             _wiki_done5_list.append({"stem": _stem5, "n": len(_jsons5), "total": _total5})
         else:
             _wiki_pend5.append({
                 "key": _stem5,
                 "label": _stem5,
-                "meta": _ratio5,
+                "meta": _ratio5 + " · " + (t("전체요약 ✓") if _has_ov5 else t("전체요약 — (반영 시 자동 생성)")),
                 "obj": {"ws": DEFAULT_WS, "stem": _stem5},
                 "ch_names": _ch_names5,
             })
@@ -2329,7 +2363,8 @@ if _active_view == "5_wiki":
                             st.warning(f"챕터 노트 실패: {_cjf5.stem} — {_bmsg5}")
                     if _ch_jsons5:
                         st.write(f"챕터 노트: ✅ {_ch_ok5}개 생성" + (f", ❌ {_ch_fail5}개 실패" if _ch_fail5 else ""))
-                    # 2단계: 전체 요약 노트 생성 (챕터 노트 완료 후)
+                    # 2단계: 허브 노트 — 책 전체요약(_전체요약.md, 없으면 자동 생성) + 챕터 링크·요약
+                    st.write(t("📚 허브 노트 생성 — 책 전체요약 + 챕터 링크·요약 포함"))
                     _ok5, _msg5 = build_wiki_from_chapter_summaries(_wo5["ws"], _wo5["stem"], wiki_dir=_cur_wiki5_path)
                 (st.success if _ok5 else st.error)(
                     f"{'✅' if _ok5 else '❌'} {_wo5['stem']}: "

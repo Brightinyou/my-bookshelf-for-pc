@@ -148,9 +148,11 @@ def find_bilingual(ws_name: str, stem: str) -> Path | None:
     return None
 
 def find_txt(base: Path, ws_name: str, stem: str) -> Path | None:
-    """_txt/ 우선, 없으면 워크스페이스 루트에서 .txt 찾기."""
+    """_txt/ 우선 → 1_txt/완료/(분할 후 보관, 2026-07-07) → 워크스페이스 루트."""
     p1 = txt_dir(base, ws_name) / f"{stem}.txt"
     if p1.exists(): return p1
+    p_arch = txt_dir(base, ws_name) / "완료" / f"{stem}.txt"
+    if p_arch.exists(): return p_arch
     p2 = base / ws_name / f"{stem}.txt"
     return p2 if p2.exists() else None
 

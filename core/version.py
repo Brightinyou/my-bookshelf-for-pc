@@ -1,2 +1,2 @@
-APP_VERSION = "v0.8.1"
+APP_VERSION = "v0.8.2"
 APP_VERSION_NUMBER = APP_VERSION.removeprefix("v")

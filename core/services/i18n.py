@@ -297,6 +297,17 @@ _EN: dict[str, str] = {
     "— 없음": "— none",
     "↻ 재생성": "↻ Regenerate",
     "▶ 생성": "▶ Generate",
+    "📦 분할이 끝난 원본 TXT는 1_txt\\완료 폴더로 이동합니다 — 보관·열람용이며, 더 이상 필요 없으면 직접 삭제해도 됩니다.":
+        "📦 After splitting, the source TXT moves to 1_txt\\완료 — kept for reference; you may delete it manually when no longer needed.",
+    "✅ 완료 보관 (원본 TXT)": "✅ Archive (source TXT)",
+    "%d권 보관": "%d archived",
+    "📦 원본 TXT → 1_txt\\완료 이동 (보관용)": "📦 Source TXT moved to 1_txt\\완료 (archive)",
+    "요약 준비 중…": "Preparing summaries…",
+    "요약 %d/%d — %s": "Summarizing %d/%d — %s",
+    "전체요약 ✓": "overview ✓",
+    "전체요약 — (반영 시 자동 생성)": "overview — (auto-generated on publish)",
+    "📚 허브 노트 생성 — 책 전체요약 + 챕터 링크·요약 포함":
+        "📚 Building hub note — includes book overview + chapter links/summaries",
     "↻ 선택 재시도 대기 (%d개)": "↻ Retry selected (%d)",
     "🗑 실패 목록 비우기": "🗑 Clear failed list",
     "4-문서요약 완료": "Summaries finished",
