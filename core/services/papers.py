@@ -139,7 +139,7 @@ def translate_downloaded_paper(source_file: Path, engine: str, progress_cb=None)
     """다운로드한 논문 파일을 TXT로 준비한 뒤 한국어 번역본을 저장."""
     try:
         txt_dir(DONE_DIR, DEFAULT_WS).mkdir(parents=True, exist_ok=True)
-        pdf_dir = DONE_DIR / DEFAULT_WS / PDF_SUB
+        pdf_dir = cfg.PDF_DIR
         pdf_dir.mkdir(parents=True, exist_ok=True)
         if source_file.suffix.lower() == ".pdf":
             txt_path, _md, err = pdf_to_txt(source_file)
@@ -154,7 +154,7 @@ def translate_downloaded_paper(source_file: Path, engine: str, progress_cb=None)
             shutil.copy2(str(source_file), str(final_txt))
         ok, msg = translate_one_chapter(final_txt, engine, progress_cb=progress_cb)
         if ok:
-            queue_add("tab4_ready", [str(final_txt.relative_to(DONE_DIR))])
+            queue_add("tab4_ready", [str(final_txt.relative_to(cfg.BASE_DIR))])
             return True, f"{msg} → {final_txt.with_name(final_txt.stem + '_ko.txt').name}"
         return False, msg
     except Exception as e:
@@ -167,7 +167,7 @@ def prepare_downloaded_paper_source(source_file: Path) -> tuple[bool, Path | Non
     try:
         out_txt_dir = txt_dir(DONE_DIR, DEFAULT_WS)
         out_txt_dir.mkdir(parents=True, exist_ok=True)
-        pdf_out_dir = DONE_DIR / DEFAULT_WS / PDF_SUB
+        pdf_out_dir = cfg.PDF_DIR
         pdf_out_dir.mkdir(parents=True, exist_ok=True)
         final_pdf: Path | None = None
         if source_file.suffix.lower() == ".pdf":

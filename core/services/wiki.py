@@ -11,7 +11,10 @@ from pathlib import Path
 import config as cfg
 import llm_providers as llm
 
-from services.chapters import chapters_dir, list_summary_files, load_summary_file
+from services.chapters import (
+    chapters_dir, find_overview_file, list_summary_files, load_overview_file,
+    load_summary_file, summarize_book_overview,
+)
 from services.common import append_log, open_path
 
 WIKI_DIR      = cfg.WIKI_DIR
@@ -282,7 +285,16 @@ def build_wiki_from_chapter_summaries(ws_name: str, stem: str, wiki_dir: Path | 
                          "body": d.get("body", "")})
     if not sections:
         return False, "유효한 요약 없음"
-    ov = _cw.generate_overview(stem, sections)
+    # 책 전체요약: _overview.md가 있으면 그대로 사용 (요약 단계에서 생성·수정한
+    # 것을 존중 — 2026-07-07). 없으면 즉석 생성 후 편집 가능하게 저장해 둔다.
+    ov_file = find_overview_file(ws_name, stem)
+    ov = load_overview_file(ov_file) if ov_file else None
+    if ov is None:
+        ok_ov, _msg_ov = summarize_book_overview(ws_name, stem)
+        ov_file = find_overview_file(ws_name, stem) if ok_ov else None
+        ov = load_overview_file(ov_file) if ov_file else None
+    if ov is None:
+        ov = _cw.generate_overview(stem, sections)
     cat  = ov.get("category", "기타")
     intro = ov.get("intro", "")
     summ  = ov.get("summary", "")

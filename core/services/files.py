@@ -23,14 +23,16 @@ OLD_TRANSLATED_DIR = cfg.OLD_TRANSLATED_DIR
 
 
 def txt_dir(base: Path, ws_name: str) -> Path:
-    return base / ws_name / TXT_SUB
+    """v0.9.0: 단일 트리 — 인자는 옛 시그니처 호환용."""
+    return cfg.TXT_DIR
 
 def md_dir(base: Path, ws_name: str) -> Path:
-    return base / ws_name / MD_SUB
+    """v0.9.0: MD 사이드카는 구버전 산출물 — 보관 폴더로."""
+    return cfg.LEGACY_KEEP / "2_md"
 
 def translated_dir(base: Path, ws_name: str) -> Path:
-    """bilingual.txt를 두는 폴더. done/<ws>/_translated/. (2026-05-18 통합)"""
-    return base / ws_name / TRANS_SUB
+    """v0.9.0: 전체실행 모드 대역 번역은 2_변환TXT/bilingual/."""
+    return cfg.BILINGUAL_DIR
 
 
 _PROC_STEMS_CACHE: dict = {"t": 0.0, "stems": set()}
@@ -44,8 +46,10 @@ def processed_stems(max_age: float = 60.0) -> set[str]:
         return _PROC_STEMS_CACHE["stems"]
     stems: set[str] = set()
     try:
-        if DONE_DIR.exists():
-            for p in DONE_DIR.rglob("*"):
+        for root in (cfg.TXT_DIR, cfg.PDF_DIR, cfg.CHAPTERS_DIR, DONE_DIR):
+            if not root.exists():
+                continue
+            for p in root.rglob("*"):
                 if p.is_file() and p.suffix.lower() in {".pdf", ".txt", ".md", ".docx", ".doc"}:
                     stems.add(_nfc(p.stem))
         gd = cfg.GEMINI_DONE_FILE
@@ -139,7 +143,7 @@ def collect_cross_ws_cache(stem: str, exclude_ws: str) -> dict:
 
 def find_bilingual(ws_name: str, stem: str) -> Path | None:
     """bilingual.txt 우선 검색 — 새 위치(done/<ws>/_translated/) 먼저, 옛 위치(translated/<ws>/) fallback."""
-    new = translated_dir(DONE_DIR, ws_name) / f"{stem}_bilingual.txt"
+    new = cfg.BILINGUAL_DIR / f"{stem}_bilingual.txt"
     if new.exists():
         return new
     old = OLD_TRANSLATED_DIR / ws_name / f"{stem}_bilingual.txt"
@@ -148,9 +152,13 @@ def find_bilingual(ws_name: str, stem: str) -> Path | None:
     return None
 
 def find_txt(base: Path, ws_name: str, stem: str) -> Path | None:
-    """_txt/ 우선, 없으면 워크스페이스 루트에서 .txt 찾기."""
-    p1 = txt_dir(base, ws_name) / f"{stem}.txt"
+    """_txt/ 우선 → 1_txt/완료/(분할 후 보관, 2026-07-07) → 워크스페이스 루트."""
+    p1 = cfg.TXT_DIR / f"{stem}.txt"
     if p1.exists(): return p1
+    p_arch = cfg.TXT_ARCHIVE_DIR / f"{stem}.txt"
+    if p_arch.exists(): return p_arch
+    p_old = cfg.DONE_DIR / ws_name / TXT_SUB / f"{stem}.txt"   # 마이그레이션 전 안전망
+    if p_old.exists(): return p_old
     p2 = base / ws_name / f"{stem}.txt"
     return p2 if p2.exists() else None
 

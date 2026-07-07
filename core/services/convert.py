@@ -87,8 +87,6 @@ def _do_ocr_only(uf, ws_name: str, fast: bool = False) -> dict:
         uf.seek(0)
         with open(dest, "wb") as f:
             f.write(uf.read())
-    done_sub = DONE_DIR / ws_name
-    done_sub.mkdir(parents=True, exist_ok=True)
     if dest.suffix.lower() != ".pdf":
         txt_dir(DONE_DIR, ws_name).mkdir(parents=True, exist_ok=True)
         final = txt_dir(DONE_DIR, ws_name) / dest.name
@@ -102,7 +100,7 @@ def _do_ocr_only(uf, ws_name: str, fast: bool = False) -> dict:
         except Exception: pass
         append_log(f"ERROR: TXT 변환 실패 — {uf.name}: {err}")
         return {"ok": False, "name": uf.name, "txt_path": "", "md_path": "", "error": err}
-    pdf_save_dir2 = done_sub / PDF_SUB
+    pdf_save_dir2 = cfg.PDF_DIR
     pdf_save_dir2.mkdir(parents=True, exist_ok=True)
     final_pdf = pdf_save_dir2 / uf.name
     shutil.move(str(dest), str(final_pdf))

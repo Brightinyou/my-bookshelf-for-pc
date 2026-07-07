@@ -59,35 +59,76 @@ def _file(key: str, default: Path) -> Path:
 
 
 # ── 경로 ─────────────────────────────────────────────────
+# 2026-07-07 v0.9.0 폴더 재구성: 앱 단계와 1:1 대응하는 단일 트리.
+#   0_업로드대기 → (TXT변환) → 2_변환TXT → (장분할) → 3_챕터 → (번역·요약) → 위키
+#   원본 PDF는 1_원본PDF에 보관. 숫자 접두 = 작업 순서.
+# 기존 데이터는 services/migrate.py가 첫 실행 때 자동 이동한다.
 BASE_DIR = _p(_cfg.get("base_dir") or "~/Documents/My Bookshelf")
 
-RAW_DIR       = _dir("raw",    BASE_DIR / "raw")
-PROCESSED_DIR = RAW_DIR / "processed"
-# MYBOOKSHELF_WIKI_DIR 환경변수가 있으면 그 금고로 출력(업로드별 금고 선택, 2026-06-11).
-# 앱이 위키 생성기를 띄울 때 선택 금고를 이 변수로 전달한다.
+# MYBOOKSHELF_WIKI_DIR 환경변수가 있으면 그 보관함으로 출력(업로드별 선택, 2026-06-11).
 _env_wiki = os.environ.get("MYBOOKSHELF_WIKI_DIR", "").strip()
 WIKI_DIR      = _p(_env_wiki) if _env_wiki else _dir("wiki", BASE_DIR / "wiki")
-DONE_DIR      = _dir("done",   BASE_DIR / "done")
-FAILED_DIR    = _dir("failed", BASE_DIR / "failed")
-PAUSE_DIR     = _dir("pause",  BASE_DIR / ".pause")
-LOG_DIR       = _dir("logs",   BASE_DIR / "logs")
-WIKI_LOG_DIR  = _dir("wiki_log", LOG_DIR)          # gemini_wiki_YYYYMMDD.log 위치
 
-# 옛 레이아웃 fallback — 없으면 호출부 .exists() 가드로 그냥 무시된다.
+
+def _folder_lang() -> str:
+    """폴더명 언어 — config.json "folder_lang"이 있으면 그것으로 고정(pin).
+    없으면 UI 언어 규칙과 동일하게 해석: env → config "lang" → app_lang.txt → ko.
+    첫 마이그레이션 때 migrate.py가 folder_lang을 기록해 이후 언어를 바꿔도
+    폴더가 움직이지 않게 한다."""
+    v = str(_cfg.get("folder_lang", "")).strip().lower()
+    if v in ("ko", "en"):
+        return v
+    v = os.environ.get("MYBOOKSHELF_LANG", "").strip().lower()
+    if v in ("ko", "en"):
+        return v
+    v = str(_cfg.get("lang", "")).strip().lower()
+    if v in ("ko", "en"):
+        return v
+    try:
+        f = _HERE_EARLY.parent / "app_lang.txt"
+        if f.exists():
+            v = f.read_text(encoding="utf-8", errors="ignore").strip().lower()
+            if v in ("ko", "en"):
+                return v
+    except Exception:
+        pass
+    return "ko"
+
+
+_HERE_EARLY = Path(__file__).resolve().parent
+FOLDER_LANG = _folder_lang()
+_FN = {   # 폴더 표시명 — 한국어/영어 (2026-07-07)
+    "ko": {"upload": "0_업로드대기", "pdf": "1_원본PDF", "txt": "2_변환TXT",
+           "chapters": "3_챕터", "failed": "실패", "logs": "로그",
+           "legacy": "_구버전보관", "txt_done": "완료"},
+    "en": {"upload": "0_Inbox", "pdf": "1_PDF_Originals", "txt": "2_Converted_TXT",
+           "chapters": "3_Chapters", "failed": "Failed", "logs": "Logs",
+           "legacy": "_Legacy_Files", "txt_done": "Done"},
+}[FOLDER_LANG]
+
+UPLOAD_TMP    = _dir("upload_tmp", BASE_DIR / _FN["upload"])    # 처리전 투입함
+PDF_DIR       = _dir("pdf",      BASE_DIR / _FN["pdf"])         # 원본 보관
+TXT_DIR       = _dir("txt",      BASE_DIR / _FN["txt"])         # 변환 TXT
+TXT_ARCHIVE_DIR = TXT_DIR / _FN["txt_done"]                     # 분할 끝난 원본 보관
+CHAPTERS_DIR  = _dir("chapters", BASE_DIR / _FN["chapters"])    # 챕터·번역·요약 작업장
+FAILED_DIR    = _dir("failed",   BASE_DIR / _FN["failed"])
+LOG_DIR       = _dir("logs",     BASE_DIR / _FN["logs"])
+PAUSE_DIR     = _dir("pause",    BASE_DIR / ".pause")
+WIKI_LOG_DIR  = _dir("wiki_log", LOG_DIR)          # gemini_wiki_YYYYMMDD.log 위치
+QUEUE_FILE    = BASE_DIR / ".pipeline_queue.json"
+LEGACY_KEEP   = BASE_DIR / _FN["legacy"]            # 마이그레이션이 옮겨두는 옛 산출물
+
+# 옛 레이아웃 — 마이그레이션·fallback 용. 없으면 호출부 .exists() 가드로 무시.
+DONE_DIR      = _dir("done",   BASE_DIR / "done")
+RAW_DIR       = _dir("raw",    BASE_DIR / "raw")
+PROCESSED_DIR = RAW_DIR / "processed"
 OLD_DONE_DIR       = _dir("old_done",       BASE_DIR / "_legacy" / "done")
 OLD_TRANSLATED_DIR = _dir("old_translated", BASE_DIR / "_legacy" / "translated")
+BILINGUAL_DIR = TXT_DIR / "bilingual"               # 전체실행 모드의 대역 번역 산출물
 
 LOG_FILE         = _file("log_file",     LOG_DIR / "upload.log")
 RESULTS_FILE     = _file("results_file", LOG_DIR / "pipeline_results.json")
 GEMINI_DONE_FILE = _file("gemini_done",  LOG_DIR / "gemini_done.txt")
-
-# 업로드/재시도 대기 폴더. 대량 배치 시 내장 디스크를 채울 수 있어(2026-06-11
-# 설교 300편 디스크풀 사고) config.json dirs.upload_tmp로 외장 등 다른 볼륨 지정 가능.
-# 기본값: Windows %TEMP%.
-UPLOAD_TMP = _dir(
-    "upload_tmp",
-    Path(tempfile.gettempdir()) / "pipeline_uploads",
-)
 
 
 # ── 분류 폴더(워크스페이스) ───────────────────────────────

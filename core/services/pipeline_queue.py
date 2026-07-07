@@ -10,7 +10,7 @@ import config as cfg
 
 from services.common import DEFAULT_WS
 
-_QUEUE_FILE = cfg.DONE_DIR / DEFAULT_WS / ".pipeline_queue.json"
+_QUEUE_FILE = cfg.QUEUE_FILE   # v0.9.0: BASE 루트
 _QUEUE_STAGES = ["tab2_ready", "tab3_ready", "tab4_ready", "tab4_failed", "tab5_ready"]
 
 def _q_load() -> dict:

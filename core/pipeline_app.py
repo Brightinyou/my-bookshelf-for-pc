@@ -58,8 +58,9 @@ from services.translate import (
 from services.chapters import (
     _is_small_document_for_whole_translation, _merge_chapter_folder,
     _write_single_chapter_from_text, chapters_dir, list_done_books,
-    list_summary_files, load_summary_file, split_book_to_chapters,
-    summarize_one_chapter, summary_file_for,
+    find_overview_file, list_summary_files, load_overview_file,
+    load_summary_file, split_book_to_chapters, summarize_book_overview,
+    summarize_one_chapter, summary_file_for, SPLIT_MODE_LABELS,
 )
 from services.papers import (
     download_paper_source, prepare_downloaded_paper_source,
@@ -90,8 +91,10 @@ OLD_TRANSLATED_DIR = cfg.OLD_TRANSLATED_DIR
 LOG_FILE      = cfg.LOG_FILE
 RESULTS_FILE  = cfg.RESULTS_FILE
 
-for _d in [DONE_DIR, FAILED_DIR, RAW_DIR, WIKI_DIR, PROCESSED_DIR, UPLOAD_TMP,
-           LOG_FILE.parent, RESULTS_FILE.parent]:
+from services import migrate as _migrate
+_migrate.ensure_layout()   # v0.9.0 폴더 재구성 — 옛 데이터 자동 이동 (1회)
+for _d in [cfg.UPLOAD_TMP, cfg.PDF_DIR, cfg.TXT_DIR, cfg.CHAPTERS_DIR,
+           FAILED_DIR, WIKI_DIR, LOG_FILE.parent, RESULTS_FILE.parent]:
     _d.mkdir(parents=True, exist_ok=True)
 
 CATEGORY_ICONS: dict[str, str] = {}  # 워크스페이스 이름 → 이모지. 빈 경우 기본 📚 사용
@@ -377,10 +380,8 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
         if partial_fail_n:
             st.warning(f"⚠️ 번역 {partial_fail_n}단락 실패 — 그래도 Gemini가 TXT(원문/부분번역)로 노트 생성.")
         # PDF → DONE/pdf/
-        done_sub = DONE_DIR / ws_name
-        done_sub.mkdir(parents=True, exist_ok=True)
         if dest.exists():
-            pdf_save_dir = done_sub / PDF_SUB
+            pdf_save_dir = cfg.PDF_DIR
             pdf_save_dir.mkdir(parents=True, exist_ok=True)
             final_pdf = pdf_save_dir / uf.name
             shutil.move(str(dest), str(final_pdf))
@@ -388,15 +389,15 @@ def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
         _src_txt = txt_path if (txt_path and txt_path.exists()) else None
         md_ok = bool(md_src and md_src.exists())
         if md_ok:
-            txt_dir(DONE_DIR, ws_name).mkdir(parents=True, exist_ok=True)
+            cfg.TXT_DIR.mkdir(parents=True, exist_ok=True)
             md_dir(DONE_DIR, ws_name).mkdir(parents=True, exist_ok=True)
             if _src_txt:
-                final_txt = txt_dir(DONE_DIR, ws_name) / _src_txt.name
+                final_txt = cfg.TXT_DIR / _src_txt.name
                 shutil.move(str(_src_txt), str(final_txt))
             final_md = md_dir(DONE_DIR, ws_name) / md_src.name
             shutil.move(str(md_src), str(final_md))
         elif _src_txt:
-            final_txt = done_sub / _src_txt.name
+            final_txt = cfg.TXT_DIR / _src_txt.name
             shutil.move(str(_src_txt), str(final_txt))
         # Gemini 위키 생성 (책 전문 TXT → 옵시디언 노트)
         if not do_wiki:
@@ -869,15 +870,14 @@ if st.query_params.get("view") in {tid for tid, _ in _STAGE_TASKS}:
 
 with st.expander(t("📁 저장 위치"), expanded=False):
     _loc_rows = [
-        ("원본", RAW_DIR),
-        ("처리완료", DONE_DIR / DEFAULT_WS),
-        ("1_txt", txt_dir(DONE_DIR, DEFAULT_WS)),
-        ("2_md", md_dir(DONE_DIR, DEFAULT_WS)),
-        ("3_translated", translated_dir(DONE_DIR, DEFAULT_WS)),
-        ("chapters", DONE_DIR / DEFAULT_WS / "chapters"),
-        ("wiki", WIKI_DIR),
-        ("failed", FAILED_DIR),
-        ("logs", cfg.LOG_DIR),
+        ("0_업로드대기", cfg.UPLOAD_TMP),
+        ("1_원본PDF", cfg.PDF_DIR),
+        ("2_변환TXT", cfg.TXT_DIR),
+        ("3_챕터", cfg.CHAPTERS_DIR),
+        ("위키(Vault)", WIKI_DIR),
+        ("실패", FAILED_DIR),
+        ("로그", cfg.LOG_DIR),
+        ("구버전보관", cfg.LEGACY_KEEP),
     ]
     for _lname, _lpath in _loc_rows:
         _lc1, _lc2 = st.columns([0.85, 2.2])
@@ -906,14 +906,14 @@ def _view_target_from_item(it: dict) -> Path | None:
         stem = obj.get("stem")
         ws = obj.get("ws") or DEFAULT_WS
         if stem:
-            txt_path = txt_dir(DONE_DIR, ws) / f"{stem}.txt"
+            txt_path = cfg.TXT_DIR / f"{stem}.txt"
             ch_path = chapters_dir(ws, stem)
             if txt_path.exists():
                 return txt_path
             if ch_path.exists():
                 return ch_path
     if isinstance(obj, str):
-        rel_path = DONE_DIR / obj
+        rel_path = cfg.BASE_DIR / obj
         if rel_path.exists():
             return rel_path
     return None
@@ -973,12 +973,12 @@ def _render_stage_completion_notice() -> None:
 
 def _stage_folder(stage_id: str) -> Path:
     if stage_id == "1_txt":
-        return txt_dir(DONE_DIR, DEFAULT_WS)
+        return cfg.TXT_DIR
     if stage_id in {"2_split", "3_translate", "4_summary"}:
-        return DONE_DIR / DEFAULT_WS / "chapters"
+        return cfg.CHAPTERS_DIR
     if stage_id == "5_wiki":
         return WIKI_DIR
-    return DONE_DIR / DEFAULT_WS
+    return cfg.BASE_DIR
 
 
 def _chapter_rel_paths(ws_name: str, stem: str) -> list[str]:
@@ -986,7 +986,7 @@ def _chapter_rel_paths(ws_name: str, stem: str) -> list[str]:
     if not ch_dir.exists():
         return []
     return [
-        str(f.relative_to(DONE_DIR))
+        str(f.relative_to(cfg.BASE_DIR))
         for f in sorted(ch_dir.glob("??_*.txt"))
         if not f.stem.endswith(("_ko", "_wiki"))
     ]
@@ -1062,7 +1062,7 @@ def _prepare_uploaded_single_chapter(ws_name: str, upload_name: str, upload_byte
     _copy_direct_upload_to_processing(stage_name, upload_name, upload_bytes)
     stem = _nfc(Path(upload_name).stem)
     suffix = ".txt"
-    src_dir = txt_dir(DONE_DIR, ws_name)
+    src_dir = cfg.TXT_DIR
     src_dir.mkdir(parents=True, exist_ok=True)
     src_path = src_dir / f"{stem}{suffix}"
     src_path.write_bytes(upload_bytes)
@@ -1074,7 +1074,7 @@ def _prepare_uploaded_single_chapter(ws_name: str, upload_name: str, upload_byte
     if len(existing_rels) > 1:
         return False, None, stem, t("이미 여러 장으로 분할된 책입니다. 2-장별분할 탭에서 처리하세요.")
     if existing_rels:
-        existing_path = DONE_DIR / existing_rels[0]
+        existing_path = cfg.BASE_DIR / existing_rels[0]
         existing_text = existing_path.read_text(encoding="utf-8", errors="ignore")
         if existing_text == source_text:
             return True, existing_path, stem, t("기존 단일장 파일을 이어서 사용합니다.")
@@ -1097,7 +1097,7 @@ def _count_files(path: Path, patterns: list[str], exclude_suffixes: tuple = ()) 
 
 def _chapter_counts() -> tuple[int, int, int]:
     """chapters/ 전체의 (원문 챕터, 번역본 _ko, 요약 _wiki.md/.json) 개수."""
-    root = DONE_DIR / DEFAULT_WS / "chapters"
+    root = cfg.CHAPTERS_DIR
     src_n = ko_n = 0
     summary_stems: set[str] = set()
     if root.exists():
@@ -1249,15 +1249,15 @@ _loading_step("화면 구성 중…", "탭과 UI를 초기화하고 있습니다
 
 # ── 1: TXT변환 / 전체 실행 ───────────────────────────────
 if _active_view in {"1_txt", "all_run"}:
-    _pdf_dir1 = DONE_DIR / DEFAULT_WS / PDF_SUB
+    _pdf_dir1 = cfg.PDF_DIR
     _stage_flow_panel(
         "📄 TXT변환 앱",
         "PDF의 텍스트 레이어를 추출해 TXT로 저장합니다 (OCR 변환된 문서만 가능). 원본 PDF는 pdf/ 폴더에 보관됩니다.",
         [
             ("① 처리전 · 업로드 대기", UPLOAD_TMP,
              tf("%d개 대기", _count_files(UPLOAD_TMP, ['*.pdf', '*.txt', '*.md']))),
-            ("② 처리후 · 변환 TXT", txt_dir(DONE_DIR, DEFAULT_WS),
-             tf("%d권 변환됨", _count_files(txt_dir(DONE_DIR, DEFAULT_WS), ['*.txt']))),
+            ("② 처리후 · 변환 TXT", cfg.TXT_DIR,
+             tf("%d권 변환됨", _count_files(cfg.TXT_DIR, ['*.txt']))),
             ("📄 원본 PDF 보관", _pdf_dir1,
              tf("%d개 보관", _count_files(_pdf_dir1, ['*.pdf']))),
         ],
@@ -1336,6 +1336,7 @@ if _active_view in {"1_txt", "all_run"}:
                     "txt": str(_final_txt1) if _final_txt1 else "",
                     "pdf": str(_final_pdf1) if _final_pdf1 else "",
                 }
+                _src_file1.unlink(missing_ok=True)   # Temp에 받은 원본 정리 (보관본은 pdf/에 복사됨)
                 st.rerun()
 
     _pr1 = st.session_state.get("paper1_result")
@@ -1420,8 +1421,8 @@ if _active_view in {"1_txt", "all_run"}:
     # 완료 기록
     _fws1 = DEFAULT_WS
     _done_txts1: list[Path] = []
-    if _fws1 and DONE_DIR.exists():
-        _t_sub1 = DONE_DIR / _fws1 / TXT_SUB
+    if _fws1 and cfg.TXT_DIR.exists():
+        _t_sub1 = cfg.TXT_DIR
         if _t_sub1.exists():
             _done_txts1 = sorted(_t_sub1.glob("*.txt"),
                                  key=lambda p: p.stat().st_mtime, reverse=True)
@@ -1458,18 +1459,40 @@ if _active_view in {"1_txt", "all_run"}:
 
 # ── 2: 장별 분할 ────────────────────────────────────────
 if _active_view == "2_split":
-    _ch_root2f = DONE_DIR / DEFAULT_WS / "chapters"
+    _ch_root2f = cfg.CHAPTERS_DIR
     _n_books2f = len([d for d in _ch_root2f.iterdir() if d.is_dir()]) if _ch_root2f.exists() else 0
     _stage_flow_panel(
         "📂 장분할 앱",
         "책 TXT를 장(Chapter) 단위 파일로 분리해 책별 폴더에 저장합니다.",
         [
-            ("① 처리전 · 변환 TXT", txt_dir(DONE_DIR, DEFAULT_WS),
-             tf("%d권", _count_files(txt_dir(DONE_DIR, DEFAULT_WS), ['*.txt', '*.md']))),
+            ("① 처리전 · 변환 TXT", cfg.TXT_DIR,
+             tf("%d권", _count_files(cfg.TXT_DIR, ['*.txt', '*.md']))),
             ("② 처리후 · 챕터 폴더", _ch_root2f, tf("%d권 분할됨", _n_books2f)),
+            ("✅ 완료 보관 (원본 TXT)", cfg.TXT_ARCHIVE_DIR,
+             tf("%d권 보관", _count_files(cfg.TXT_ARCHIVE_DIR, ['*.txt', '*.md']))),
         ],
         "flow2",
     )
+    _sp_prov2, _sp_model2 = llm.wiki_provider_model()
+    st.caption(tf("🤖 장 구조 감지에 설정된 AI 모델이 사용될 수 있습니다 (PDF 시각 판독·비정형 헤딩) — 현재: %s",
+                  f"{llm.PROVIDERS.get(_sp_prov2, {}).get('label', _sp_prov2)} · {_sp_model2}"))
+    st.caption(tf("📦 분할이 끝난 원본 TXT는 완료 보관 폴더(%s)로 이동합니다 — 보관·열람용이며, 더 이상 필요 없으면 직접 삭제해도 됩니다.", cfg.TXT_ARCHIVE_DIR.name))
+
+    _split_arch_dir2 = cfg.TXT_ARCHIVE_DIR
+
+    def _archive_split_source(stem: str) -> bool:
+        """분할이 끝난 원본 TXT/MD를 1_txt/완료/로 이동 (2026-07-07)."""
+        moved = False
+        _split_arch_dir2.mkdir(parents=True, exist_ok=True)
+        for _ext in (".txt", ".md"):
+            _srcf = cfg.TXT_DIR / (stem + _ext)
+            if _srcf.exists():
+                try:
+                    shutil.move(str(_srcf), str(_split_arch_dir2 / _srcf.name))
+                    moved = True
+                except Exception:
+                    pass
+        return moved
 
     # TXT 직접 업로드
     _up2 = st.file_uploader(t("TXT 직접 업로드 (done/ 폴더로 저장)"),
@@ -1477,8 +1500,8 @@ if _active_view == "2_split":
     if _up2:
         _added_split_stems2: list[str] = []
         for _u2 in _up2:
-            txt_dir(DONE_DIR, DEFAULT_WS).mkdir(parents=True, exist_ok=True)
-            _dst2 = txt_dir(DONE_DIR, DEFAULT_WS) / _u2.name
+            cfg.TXT_DIR.mkdir(parents=True, exist_ok=True)
+            _dst2 = cfg.TXT_DIR / _u2.name
             _dst2.write_bytes(_u2.read())
             _added_split_stems2.append(_nfc(Path(_u2.name).stem))
         if _added_split_stems2:
@@ -1490,7 +1513,7 @@ if _active_view == "2_split":
     _split_pend2: list[dict] = []
     _split_done2: list[dict] = []
     _split_short2: list[dict] = []
-    _txt_root2 = DONE_DIR / DEFAULT_WS / TXT_SUB
+    _txt_root2 = cfg.TXT_DIR
 
     # 큐에 없어도 1_txt/에 있는 TXT 모두 포함
     _all_txt2_stems = ({f.stem for f in _txt_root2.glob("*.txt")} | {f.stem for f in _txt_root2.glob("*.md")}) if _txt_root2.exists() else set()
@@ -1591,9 +1614,10 @@ if _active_view == "2_split":
                 st.rerun()
             _sp2 = st.progress(0.0)
             _completed2 = 0
+            _any_en2 = False   # 영문 책 포함 여부 — 다음 단계 라우팅용 (2026-07-07)
             for _si2, _s2 in enumerate(_to2, 1):
                 with st.status(f"분할 [{_si2}/{len(_to2)}]: {_s2['stem']}", expanded=False):
-                    _sn2, _serr2 = split_book_to_chapters(_s2["ws"], _s2["stem"])
+                    _sn2, _serr2, _smode2 = split_book_to_chapters(_s2["ws"], _s2["stem"])
                 _small_single2 = bool(_serr2 and _serr2.startswith("짧은 문서로 감지"))
                 if _serr2 and not _small_single2:
                     st.warning(f"⚠️ {_s2['stem']}: {_serr2}")
@@ -1603,30 +1627,38 @@ if _active_view == "2_split":
                         if _s2["stem"] not in _ns_list2:
                             _ns_list2.append(_s2["stem"])
                 else:
-                    st.success(f"✅ {_s2['stem']} → {_sn2}개 챕터")
+                    _mode_lbl2 = t(SPLIT_MODE_LABELS.get(_smode2, _smode2))
+                    st.success(f"✅ {_s2['stem']} → {_sn2}" + t("개 챕터") + f" · {_mode_lbl2}")
+                    if _smode2 in ("visual", "llm"):
+                        st.caption(tf("🤖 AI 모델 사용됨: %s", f"{_sp_prov2} · {_sp_model2}"))
                     if _small_single2:
                         st.caption("📄 문서가 짧아 전체 번역용 단일 챕터로 저장됨")
                     queue_remove("tab2_ready", [_s2["stem"]])
                     _ch_dir2 = chapters_dir(_s2["ws"], _s2["stem"])
-                    _new_chs2 = [str(f.relative_to(DONE_DIR))
+                    _new_chs2 = [str(f.relative_to(cfg.BASE_DIR))
                                  for f in sorted(_ch_dir2.glob("??_*.txt"))
                                  if not f.stem.endswith(("_ko", "_wiki"))]
                     if _new_chs2:
                         _completed2 += 1
                         if _needs_translation(_s2["stem"]):
+                            _any_en2 = True
                             queue_add("tab3_ready", _new_chs2)
                             st.caption("🌐 영문 책 → 영문번역 대기 등록")
                         else:
                             queue_add("tab4_ready", _new_chs2)
                             st.caption("🇰🇷 한국어 책 → 번역 건너뜀, 📝 문서요약 대기 등록")
+                        if _archive_split_source(_s2["stem"]):
+                            st.caption(t("📦 원본 TXT → 완료 보관 폴더로 이동 (보관용)"))
                     else:
                         st.warning(f"⚠️ {_s2['stem']}: 챕터 파일이 생성되지 않았습니다.")
                 _sp2.progress(_si2 / len(_to2))
             if _completed2:
+                # 한국어 책만 분할했으면 번역을 건너뛰고 문서요약으로 안내 (2026-07-07)
                 _set_stage_completion(
                     t("2-장별분할 완료"),
-                    tf("%d권 분할을 마쳤습니다. 다음 단계로 이동하세요.", _completed2),
-                    next_stage="3_translate",
+                    tf("%d권 분할을 마쳤습니다. 다음 단계로 이동하세요.", _completed2)
+                    + ("" if _any_en2 else " " + t("(한국어 책 — 번역 생략, 문서요약으로 이동)")),
+                    next_stage="3_translate" if _any_en2 else "4_summary",
                     open_target=_stage_folder("2_split"),
                 )
             st.rerun()
@@ -1645,14 +1677,14 @@ if _active_view == "2_split":
             _sc1.markdown(f"**{_sh2['label']}**")
             _sc2.caption(_sh2["meta"])
             if _sc3.button(t("분리하기"), key=f"short_split_yes_{_sh2['key']}", use_container_width=True):
-                _sn2, _serr2 = split_book_to_chapters(_sh2["obj"]["ws"], _sh2["obj"]["stem"], allow_short=True)
+                _sn2, _serr2, _ = split_book_to_chapters(_sh2["obj"]["ws"], _sh2["obj"]["stem"], allow_short=True)
                 if _serr2:
                     st.warning(f"⚠️ {_sh2['key']}: {_serr2}")
                 else:
                     st.success(f"✅ {_sh2['key']} → {_sn2}개 챕터")
                     queue_remove("tab2_ready", [_sh2["obj"]["stem"]])
                     _ch_dir2 = chapters_dir(_sh2["obj"]["ws"], _sh2["obj"]["stem"])
-                    _new_chs2 = [str(f.relative_to(DONE_DIR))
+                    _new_chs2 = [str(f.relative_to(cfg.BASE_DIR))
                                  for f in sorted(_ch_dir2.glob("??_*.txt"))
                                  if not f.stem.endswith(("_ko", "_wiki"))]
                     if _new_chs2:
@@ -1660,12 +1692,13 @@ if _active_view == "2_split":
                             queue_add("tab3_ready", _new_chs2)
                         else:
                             queue_add("tab4_ready", _new_chs2)
+                        _archive_split_source(_sh2["obj"]["stem"])
                     st.rerun()
             if _sc4.button(t("단일장 유지"), key=f"short_split_keep_{_sh2['key']}", use_container_width=True):
                 _one_path2, _ = _write_single_chapter_from_text(_sh2["obj"]["ws"], _sh2["obj"]["stem"], _sh2["text"])
                 st.success(f"✅ 단일장으로 저장: {_one_path2.name}")
                 queue_remove("tab2_ready", [_sh2["obj"]["stem"]])
-                _new_chs2 = [str(f.relative_to(DONE_DIR))
+                _new_chs2 = [str(f.relative_to(cfg.BASE_DIR))
                              for f in sorted(_one_path2.parent.glob("??_*.txt"))
                              if not f.stem.endswith(("_ko", "_wiki"))]
                 if _new_chs2:
@@ -1673,6 +1706,7 @@ if _active_view == "2_split":
                         queue_add("tab3_ready", _new_chs2)
                     else:
                         queue_add("tab4_ready", _new_chs2)
+                    _archive_split_source(_sh2["obj"]["stem"])
                 st.rerun()
 
     # 장 구조 미감지 — 단일장 저장 선택지 (2026-07-03)
@@ -1685,11 +1719,11 @@ if _active_view == "2_split":
             _nc1, _nc2, _nc3 = st.columns([4, 1.6, 0.7])
             _nc1.markdown(f"**{_ns2}**")
             if _nc2.button(t("📄 단일장으로 저장"), key=f"nosplit_save_{_ns2}", use_container_width=True):
-                _sn2b, _smsg2b = split_book_to_chapters(DEFAULT_WS, _ns2, allow_short=True)
+                _sn2b, _smsg2b, _ = split_book_to_chapters(DEFAULT_WS, _ns2, allow_short=True)
                 if _sn2b > 0:
                     queue_remove("tab2_ready", [_ns2])
                     _ch_dir2b = chapters_dir(DEFAULT_WS, _ns2)
-                    _new_chs2b = [str(f.relative_to(DONE_DIR))
+                    _new_chs2b = [str(f.relative_to(cfg.BASE_DIR))
                                   for f in sorted(_ch_dir2b.glob("??_*.txt"))
                                   if not f.stem.endswith(("_ko", "_wiki"))]
                     if _new_chs2b:
@@ -1697,6 +1731,7 @@ if _active_view == "2_split":
                             queue_add("tab3_ready", _new_chs2b)
                         else:
                             queue_add("tab4_ready", _new_chs2b)
+                        _archive_split_source(_ns2)
                     st.session_state["split2_nosplit"] = [x for x in _nosplit2 if x != _ns2]
                     st.rerun()
                 else:
@@ -1757,7 +1792,7 @@ if _active_view == "2_split":
 # ── 3: 번역 ─────────────────────────────────────────────
 if _active_view == "3_translate":
     _src_n3f, _ko_n3f, _ = _chapter_counts()
-    _ch_root3f = DONE_DIR / DEFAULT_WS / "chapters"
+    _ch_root3f = cfg.CHAPTERS_DIR
     _stage_flow_panel(
         "🌐 영문번역 앱",
         "챕터 TXT를 한국어로 번역해 같은 폴더에 `_ko.txt`로 저장합니다.",
@@ -1797,7 +1832,7 @@ if _active_view == "3_translate":
                 if not _ok3p or _ch3_path is None:
                     st.error(f"❌ {_u3.name}: {_prep3_msg}")
                     continue
-                _rel3u = str(_ch3_path.relative_to(DONE_DIR))
+                _rel3u = str(_ch3_path.relative_to(cfg.BASE_DIR))
                 queue_add("tab3_ready", [_rel3u])
                 with st.status(f"번역 중: {_u3.name}", expanded=True):
                     _up_prog3 = st.progress(0, text="번역 준비 중…")
@@ -1827,7 +1862,7 @@ if _active_view == "3_translate":
         _tr_pend3: list[dict] = []
         _tr_done3 = 0
         for _rel3 in _q3_rels:
-            _cf3 = DONE_DIR / _rel3
+            _cf3 = cfg.BASE_DIR / _rel3
             if not _cf3.exists():
                 continue
             _ko3 = _cf3.with_name(_cf3.stem + "_ko.txt")
@@ -1877,7 +1912,7 @@ if _active_view == "3_translate":
                     (st.success if _ok3 else st.warning)(
                         f"{'✅' if _ok3 else '⚠️'} {_tf3.name}: {_msg3}")
                     if _ok3:
-                        _rel3_done = str(_tf3.relative_to(DONE_DIR))
+                        _rel3_done = str(_tf3.relative_to(cfg.BASE_DIR))
                         queue_remove("tab3_ready", [_rel3_done])
                         queue_add("tab4_ready", [_rel3_done])
                     _tp3.progress(_ti3 / len(_to3))
@@ -1897,14 +1932,14 @@ if _active_view == "3_translate":
             _mc3a, _mc3b = st.columns([3, 2])
             _search3 = _mc3a.text_input(t("책/챕터 이름 검색"), key="tr3_search", placeholder=t("검색어 입력…"))
             _sort3 = _mc3b.radio(t("정렬"), [t("최근 추가순"), t("이름순")], horizontal=True, key="tr3_sort")
-            _ch_root3m = DONE_DIR / DEFAULT_WS / "chapters"
+            _ch_root3m = cfg.CHAPTERS_DIR
             _all_cfs3 = list(_ch_root3m.rglob("??_*.txt")) if _ch_root3m.exists() else []
             _all_cfs3 = [f for f in _all_cfs3 if not f.stem.endswith(("_ko","_wiki"))]
             _all_cfs3 = sorted(_all_cfs3, key=lambda f: f.stat().st_mtime, reverse=True) \
                         if _sort3 == t("최근 추가순") else sorted(_all_cfs3, key=lambda f: str(f))
             _filt3 = [f for f in _all_cfs3 if _search3.lower() in str(f).lower()] if _search3 else _all_cfs3
-            _mitems3 = [{"key": str(f.relative_to(DONE_DIR)), "label": f"{f.parent.name}/{f.name}",
-                         "meta": f"{f.stat().st_size//1024}KB", "obj": str(f.relative_to(DONE_DIR))}
+            _mitems3 = [{"key": str(f.relative_to(cfg.BASE_DIR)), "label": f"{f.parent.name}/{f.name}",
+                         "meta": f"{f.stat().st_size//1024}KB", "obj": str(f.relative_to(cfg.BASE_DIR))}
                         for f in _filt3]
             _msel3 = _checklist(_mitems3, "tr3m", height=200)
             if st.button(tf("➕ 선택 항목 큐에 추가 (%d개)", len(_msel3)), key="tr3m_add", disabled=len(_msel3)==0):
@@ -1913,7 +1948,7 @@ if _active_view == "3_translate":
             _txt3a, _txt3b = st.columns([3, 2])
             _search3_txt = _txt3a.text_input(t("책 이름 검색"), key="tr3_txt_search", placeholder=t("검색어 입력"))
             _sort3_txt = _txt3b.radio(t("정렬"), [t("최근 추가순"), t("이름순")], horizontal=True, key="tr3_txt_sort")
-            _txt_root3 = txt_dir(DONE_DIR, DEFAULT_WS)
+            _txt_root3 = cfg.TXT_DIR
             _txt_candidates3: dict[str, Path] = {}
             for _src3 in (list(_txt_root3.glob("*.txt")) + list(_txt_root3.glob("*.md"))) if _txt_root3.exists() else []:
                 _stem3 = _nfc(_src3.stem)
@@ -1961,7 +1996,7 @@ if _active_view == "3_translate":
 # ── 4: 요약생성 ─────────────────────────────────────────
 if _active_view == "4_summary":
     _src_n4f, _ko_n4f, _json_n4f = _chapter_counts()
-    _ch_root4f = DONE_DIR / DEFAULT_WS / "chapters"
+    _ch_root4f = cfg.CHAPTERS_DIR
     _stage_flow_panel(
         "📝 문서요약 앱",
         "챕터 TXT(번역본 우선)로 요약을 생성해 같은 폴더에 `_wiki.md`로 저장합니다. 위키반영 전에 열어서 손으로 고칠 수 있습니다.",
@@ -2002,7 +2037,7 @@ if _active_view == "4_summary":
                 if not _ok4p or _ch4_path is None:
                     st.error(f"❌ {_u4.name}: {_prep4_msg}")
                     continue
-                _rel4u = str(_ch4_path.relative_to(DONE_DIR))
+                _rel4u = str(_ch4_path.relative_to(cfg.BASE_DIR))
                 queue_add("tab4_ready", [_rel4u])
                 queue_remove("tab4_failed", [_rel4u])
                 with st.status(f"요약 중: {_u4.name}", expanded=True):
@@ -2028,7 +2063,7 @@ if _active_view == "4_summary":
         _q4_remove_missing: list[str] = []
         _q4_remove_done: list[str] = []
         for _rel4 in _q4_rels:
-            _cf4 = DONE_DIR / _rel4
+            _cf4 = cfg.BASE_DIR / _rel4
             if not _cf4.exists():
                 _q4_remove_missing.append(_rel4)
                 continue
@@ -2046,7 +2081,7 @@ if _active_view == "4_summary":
                     "obj": (_cf4, _bstem4),
                 })
         for _rel4f in _q4_failed_rels:
-            _cf4f = DONE_DIR / _rel4f
+            _cf4f = cfg.BASE_DIR / _rel4f
             if not _cf4f.exists():
                 _q4_remove_missing.append(_rel4f)
                 continue
@@ -2080,26 +2115,41 @@ if _active_view == "4_summary":
                 queue_clear("tab4_ready"); st.rerun()
             _to4: list = ([it["obj"] for it in _sum_pend4] if _ra4 else (_sel4 if _rs4 else []))
             if _to4:
-                _sp4 = st.progress(0.0)
+                # 진행바 하나가 "요약 n/N — 현재 장"으로 갱신 (상자 나열 대신, 2026-07-07)
+                _sp4 = st.progress(0.0, text=t("요약 준비 중…"))
+                _last4 = st.empty()
+                _fails4: list[tuple[str, str]] = []
                 _stems4_done: set[str] = set()
                 for _si4, (_sf4, _bst4) in enumerate(_to4, 1):
-                    with st.status(f"요약 [{_si4}/{len(_to4)}]: {_sf4.name}", expanded=False):
-                        _ok4, _msg4 = summarize_one_chapter(_sf4, _bst4)
-                    (st.success if _ok4 else st.warning)(
-                        f"{'✅' if _ok4 else '⚠️'} {_sf4.name}: {_msg4[:80]}")
+                    _sp4.progress((_si4 - 1) / len(_to4),
+                                  text=tf("요약 %d/%d — %s", _si4, len(_to4), _sf4.stem[:40]))
+                    _ok4, _msg4 = summarize_one_chapter(_sf4, _bst4)
                     if _ok4:
-                        _rel4_done = str(_sf4.relative_to(DONE_DIR))
+                        _last4.caption(f"✅ {_sf4.stem[:40]}: {_msg4[:70]}")
+                        _rel4_done = str(_sf4.relative_to(cfg.BASE_DIR))
                         queue_remove("tab4_ready", [_rel4_done])
                         queue_remove("tab4_failed", [_rel4_done])
                         _stems4_done.add(_bst4)
                     else:
-                        _rel4_fail = str(_sf4.relative_to(DONE_DIR))
+                        _fails4.append((_sf4.name, _msg4))
+                        _last4.caption(f"⚠️ {_sf4.stem[:40]}: {_msg4[:70]}")
+                        _rel4_fail = str(_sf4.relative_to(cfg.BASE_DIR))
                         queue_remove("tab4_ready", [_rel4_fail])
                         queue_add("tab4_failed", [_rel4_fail])
-                    _sp4.progress(_si4 / len(_to4))
+                    _sp4.progress(_si4 / len(_to4),
+                                  text=tf("요약 %d/%d — %s", _si4, len(_to4), _sf4.stem[:40]))
+                _last4.empty()
+                for _fn4, _fm4 in _fails4:
+                    st.warning(f"⚠️ {_fn4}: {_fm4[:100]}")
                 # 책 단위로 모든 챕터 요약 완료된 것만 tab5 큐에 등록
+                # + 책 전체요약(_overview.md) 자동 생성 (2026-07-07)
                 for _st5 in _stems4_done:
                     queue_add("tab5_ready", [_st5])
+                    with st.status(tf("📚 책 전체요약 생성: %s", _st5), expanded=False):
+                        _ok_ov4, _msg_ov4 = summarize_book_overview(DEFAULT_WS, _st5)
+                    (st.success if _ok_ov4 else st.warning)(
+                        f"{'✅' if _ok_ov4 else '⚠️'} " +
+                        tf("전체요약 %s: %s", _st5, _msg_ov4[:80]))
                 st.success(f"요약 처리 완료: {len(_to4)}개")
                 _set_stage_completion(
                     t("4-문서요약 완료"),
@@ -2124,19 +2174,48 @@ if _active_view == "4_summary":
                 queue_clear("tab4_failed")
                 st.rerun()
 
+        # 책 전체요약 관리 (2026-07-07)
+        _ch_root4o = cfg.CHAPTERS_DIR
+        _ov_books4 = [d for d in (_ch_root4o.iterdir() if _ch_root4o.exists() else [])
+                      if d.is_dir() and list_summary_files(d)]
+        if _ov_books4:
+            with st.expander(tf("📚 책 전체요약 (<책제목>_전체요약.md) — %d권", len(_ov_books4))):
+                st.caption(t("장별 요약을 합쳐 만든 책 전체 요약입니다. 위키반영 전에 열어서 고칠 수 있고, 수정본이 허브 노트에 그대로 반영됩니다."))
+                for _bd4 in sorted(_ov_books4, key=lambda d: d.name):
+                    _ovf4 = find_overview_file(DEFAULT_WS, _nfc(_bd4.name))
+                    _has4 = _ovf4 is not None
+                    _oc1, _oc2, _oc3, _oc4 = st.columns([4, 1.2, 1.4, 1])
+                    _oc1.markdown(f"**{_bd4.name}**")
+                    _oc2.caption(t("✅ 있음") if _has4 else t("— 없음"))
+                    if _oc3.button(t("↻ 재생성") if _has4 else t("▶ 생성"),
+                                   key=f"ov4_gen_{_bd4.name}", use_container_width=True):
+                        with st.status(tf("📚 책 전체요약 생성: %s", _bd4.name), expanded=False):
+                            _ok_ov4b, _msg_ov4b = summarize_book_overview(DEFAULT_WS, _nfc(_bd4.name))
+                        (st.success if _ok_ov4b else st.error)(
+                            f"{'✅' if _ok_ov4b else '❌'} {_msg_ov4b[:100]}")
+                        if _ok_ov4b:
+                            st.rerun()
+                    if _oc4.button(t("보기"), key=f"ov4_view_{_bd4.name}",
+                                   use_container_width=True, disabled=not _has4):
+                        open_path(_ovf4, reveal=True)
+                    if _has4:
+                        _ovd4 = load_overview_file(_ovf4)
+                        if _ovd4 and _ovd4.get("summary"):
+                            st.caption(f"› {_ovd4['summary'][:110]}")
+
         # 수동 추가 expander
         with st.expander(t("➕ 수동으로 추가 (기존 챕터에서 선택)")):
             _mc4a, _mc4b = st.columns([3, 2])
             _search4 = _mc4a.text_input(t("책/챕터 이름 검색"), key="summ4_search", placeholder=t("검색어 입력…"))
             _sort4 = _mc4b.radio(t("정렬"), [t("최근 추가순"), t("이름순")], horizontal=True, key="summ4_sort")
-            _ch_root4m = DONE_DIR / DEFAULT_WS / "chapters"
+            _ch_root4m = cfg.CHAPTERS_DIR
             _all_cfs4 = list(_ch_root4m.rglob("??_*.txt")) if _ch_root4m.exists() else []
             _all_cfs4 = [f for f in _all_cfs4 if not f.stem.endswith(("_ko","_wiki"))]
             _all_cfs4 = sorted(_all_cfs4, key=lambda f: f.stat().st_mtime, reverse=True) \
                         if _sort4 == t("최근 추가순") else sorted(_all_cfs4, key=lambda f: str(f))
             _filt4 = [f for f in _all_cfs4 if _search4.lower() in str(f).lower()] if _search4 else _all_cfs4
-            _mitems4 = [{"key": str(f.relative_to(DONE_DIR)), "label": f"{f.parent.name}/{f.name}",
-                         "meta": f"{f.stat().st_size//1024}KB", "obj": str(f.relative_to(DONE_DIR))}
+            _mitems4 = [{"key": str(f.relative_to(cfg.BASE_DIR)), "label": f"{f.parent.name}/{f.name}",
+                         "meta": f"{f.stat().st_size//1024}KB", "obj": str(f.relative_to(cfg.BASE_DIR))}
                         for f in _filt4]
             _msel4 = _checklist(_mitems4, "summ4m", height=200)
             if st.button(tf("➕ 선택 항목 큐에 추가 (%d개)", len(_msel4)), key="summ4m_add", disabled=len(_msel4)==0):
@@ -2148,7 +2227,7 @@ if _active_view == "4_summary":
 # ── 5: Wiki반영 ─────────────────────────────────────────
 if _active_view == "5_wiki":
     _, _, _json_n5f = _chapter_counts()
-    _ch_root5f = DONE_DIR / DEFAULT_WS / "chapters"
+    _ch_root5f = cfg.CHAPTERS_DIR
     _vault5f = _current_wiki_dir()
     _n_notes5f = sum(1 for _ in _vault5f.rglob("*.md")) if _vault5f.exists() else 0
     _stage_flow_panel(
@@ -2210,13 +2289,14 @@ if _active_view == "5_wiki":
         # 챕터 이름 목록 (NN_제목.txt → 제목)
         _ch_names5 = [_re.sub(r'^\d+_', '', f.stem) for f in sorted(_ch5.glob("??_*.txt"))
                       if not f.stem.endswith(("_ko","_wiki"))] if _ch5.exists() else []
+        _has_ov5 = find_overview_file(DEFAULT_WS, _stem5) is not None
         if _stem5 in _wiki_stems5:
             _wiki_done5_list.append({"stem": _stem5, "n": len(_jsons5), "total": _total5})
         else:
             _wiki_pend5.append({
                 "key": _stem5,
                 "label": _stem5,
-                "meta": _ratio5,
+                "meta": _ratio5 + " · " + (t("전체요약 ✓") if _has_ov5 else t("전체요약 — (반영 시 자동 생성)")),
                 "obj": {"ws": DEFAULT_WS, "stem": _stem5},
                 "ch_names": _ch_names5,
             })
@@ -2296,7 +2376,8 @@ if _active_view == "5_wiki":
                             st.warning(f"챕터 노트 실패: {_cjf5.stem} — {_bmsg5}")
                     if _ch_jsons5:
                         st.write(f"챕터 노트: ✅ {_ch_ok5}개 생성" + (f", ❌ {_ch_fail5}개 실패" if _ch_fail5 else ""))
-                    # 2단계: 전체 요약 노트 생성 (챕터 노트 완료 후)
+                    # 2단계: 허브 노트 — 책 전체요약(_전체요약.md, 없으면 자동 생성) + 챕터 링크·요약
+                    st.write(t("📚 허브 노트 생성 — 책 전체요약 + 챕터 링크·요약 포함"))
                     _ok5, _msg5 = build_wiki_from_chapter_summaries(_wo5["ws"], _wo5["stem"], wiki_dir=_cur_wiki5_path)
                 (st.success if _ok5 else st.error)(
                     f"{'✅' if _ok5 else '❌'} {_wo5['stem']}: "
@@ -2319,7 +2400,7 @@ if _active_view == "5_wiki":
         _mc5a, _mc5b = st.columns([3, 2])
         _search5 = _mc5a.text_input(t("책 이름 검색"), key="wiki5_search", placeholder=t("검색어 입력…"))
         _sort5 = _mc5b.radio(t("정렬"), [t("최근 추가순"), t("이름순")], horizontal=True, key="wiki5_sort")
-        _ch_root5m = DONE_DIR / DEFAULT_WS / "chapters"
+        _ch_root5m = cfg.CHAPTERS_DIR
         _all_books5 = list(_ch_root5m.iterdir()) if _ch_root5m.exists() else []
         _books_with_json5 = [d for d in _all_books5 if d.is_dir() and list_summary_files(d)]
         _books_with_json5 = sorted(_books_with_json5, key=lambda d: d.stat().st_mtime, reverse=True) \
@@ -2334,7 +2415,7 @@ if _active_view == "5_wiki":
 
     # 단일 TXT 기반 (챕터 분할 없는 책 — 큐 외 별도 경로)
     _single_pend5: list[dict] = []
-    _t5s = DONE_DIR / DEFAULT_WS / TXT_SUB
+    _t5s = cfg.TXT_DIR
     if _t5s.exists():
         for _txt5s in sorted(_t5s.glob("*.txt")):
             _stem5s = _nfc(_txt5s.stem)

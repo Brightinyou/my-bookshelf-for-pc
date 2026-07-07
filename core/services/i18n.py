@@ -220,6 +220,19 @@ _EN: dict[str, str] = {
     "TXT 직접 업로드 (done/ 폴더로 저장)": "Upload TXT directly (saved into done/)",
     "%d개 TXT 저장 완료": "Saved %d TXT file(s)",
     "#### 분할 대기 (%d권)": "#### Split queue (%d)",
+    "🤖 장 구조 감지에 설정된 AI 모델이 사용될 수 있습니다 (PDF 시각 판독·비정형 헤딩) — 현재: %s":
+        "🤖 The configured AI model may be used to detect chapter structure (PDF visual reading, irregular headings) — current: %s",
+    "개 챕터": " chapters",
+    "🤖 AI 모델 사용됨: %s": "🤖 AI model used: %s",
+    "📑 PDF 북마크": "📑 PDF bookmarks",
+    "🤖 AI 시각판독": "🤖 AI visual reading",
+    "패턴(MD 헤딩)": "pattern (MD headings)",
+    "패턴(목차 복원)": "pattern (TOC reconstruction)",
+    "패턴(번호 헤딩)": "pattern (numbered headings)",
+    "🤖 AI 텍스트판정": "🤖 AI text analysis",
+    "단일 본문": "single body",
+    "(한국어 책 — 번역 생략, 문서요약으로 이동)":
+        "(Korean book — translation skipped, continue to Summarizer)",
     "▶ 선택 분할 (%d권)": "▶ Split selected (%d)",
     "▶ 전체 분할 (%d권)": "▶ Split all (%d)",
     "짧은 문서가 감지되었습니다. 아래 '짧은 문서 확인'에서 분리 또는 단일장 유지를 선택하세요.":
@@ -275,6 +288,26 @@ _EN: dict[str, str] = {
     "요약 대기 없음 — 🌐 영문번역 앱 처리 후 자동 등록되거나 아래에서 수동 추가하세요":
         "Nothing to summarize — chapters register automatically after 🌐 Translator, or add manually below",
     "#### 요약 실패 (%d개)": "#### Failed summaries (%d)",
+    "📚 책 전체요약 생성: %s": "📚 Generating book overview: %s",
+    "전체요약 %s: %s": "Overview %s: %s",
+    "📚 책 전체요약 (<책제목>_전체요약.md) — %d권": "📚 Book overviews (<title>_전체요약.md) — %d",
+    "장별 요약을 합쳐 만든 책 전체 요약입니다. 위키반영 전에 열어서 고칠 수 있고, 수정본이 허브 노트에 그대로 반영됩니다.":
+        "A whole-book overview built from the chapter summaries. You can edit it before publishing; your edits go into the hub note as-is.",
+    "✅ 있음": "✅ exists",
+    "— 없음": "— none",
+    "↻ 재생성": "↻ Regenerate",
+    "▶ 생성": "▶ Generate",
+    "📦 분할이 끝난 원본 TXT는 완료 보관 폴더(%s)로 이동합니다 — 보관·열람용이며, 더 이상 필요 없으면 직접 삭제해도 됩니다.":
+        "📦 After splitting, the source TXT moves to the archive folder (%s) — kept for reference; you may delete it manually when no longer needed.",
+    "✅ 완료 보관 (원본 TXT)": "✅ Archive (source TXT)",
+    "%d권 보관": "%d archived",
+    "📦 원본 TXT → 완료 보관 폴더로 이동 (보관용)": "📦 Source TXT moved to the archive folder",
+    "요약 준비 중…": "Preparing summaries…",
+    "요약 %d/%d — %s": "Summarizing %d/%d — %s",
+    "전체요약 ✓": "overview ✓",
+    "전체요약 — (반영 시 자동 생성)": "overview — (auto-generated on publish)",
+    "📚 허브 노트 생성 — 책 전체요약 + 챕터 링크·요약 포함":
+        "📚 Building hub note — includes book overview + chapter links/summaries",
     "↻ 선택 재시도 대기 (%d개)": "↻ Retry selected (%d)",
     "🗑 실패 목록 비우기": "🗑 Clear failed list",
     "4-문서요약 완료": "Summaries finished",
