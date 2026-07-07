@@ -50,6 +50,41 @@ def _p(v) -> Path:
     return Path(v).expanduser()
 
 
+def _same_path(a: Path, b: Path) -> bool:
+    return str(a.expanduser()) == str(b.expanduser())
+
+
+def _drop_legacy_v090_overrides() -> None:
+    """Ignore v0.8-style per-folder overrides that keep recreating add_pdf_done.
+
+    `done` and `raw` remain as legacy migration anchors. Runtime folders use the
+    v0.9.0 single tree unless the user points them somewhere non-legacy.
+    """
+    base = _p(_cfg.get("base_dir") or "~/Documents/My Bookshelf")
+    legacy_done = _p(_dirs.get("done") or (base / "done"))
+    legacy_dirs = {
+        "upload_tmp": legacy_done / ".upload_tmp",
+        "failed": legacy_done / "_failed",
+        "pause": legacy_done / ".pause",
+        "wiki_log": legacy_done / ".logs",
+    }
+    for key, legacy_path in legacy_dirs.items():
+        if _dirs.get(key) and _same_path(_p(_dirs[key]), legacy_path):
+            _dirs.pop(key, None)
+
+    legacy_files = {
+        "log_file": legacy_done / ".upload.log",
+        "results_file": legacy_done / ".pipeline_results.json",
+        "gemini_done": legacy_done / ".gemini_done.txt",
+    }
+    for key, legacy_path in legacy_files.items():
+        if _files.get(key) and _same_path(_p(_files[key]), legacy_path):
+            _files.pop(key, None)
+
+
+_drop_legacy_v090_overrides()
+
+
 def _dir(key: str, default: Path) -> Path:
     return _p(_dirs[key]) if _dirs.get(key) else default
 
