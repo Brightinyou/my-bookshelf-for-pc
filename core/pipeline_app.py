@@ -58,8 +58,8 @@ from services.translate import (
 from services.chapters import (
     _is_small_document_for_whole_translation, _merge_chapter_folder,
     _write_single_chapter_from_text, chapters_dir, list_done_books,
-    list_summary_files, load_overview_file, load_summary_file,
-    overview_file_for, split_book_to_chapters, summarize_book_overview,
+    find_overview_file, list_summary_files, load_overview_file,
+    load_summary_file, split_book_to_chapters, summarize_book_overview,
     summarize_one_chapter, summary_file_for, SPLIT_MODE_LABELS,
 )
 from services.papers import (
@@ -2133,11 +2133,11 @@ if _active_view == "4_summary":
         _ov_books4 = [d for d in (_ch_root4o.iterdir() if _ch_root4o.exists() else [])
                       if d.is_dir() and list_summary_files(d)]
         if _ov_books4:
-            with st.expander(tf("📚 책 전체요약 (_overview.md) — %d권", len(_ov_books4))):
+            with st.expander(tf("📚 책 전체요약 (<책제목>_전체요약.md) — %d권", len(_ov_books4))):
                 st.caption(t("장별 요약을 합쳐 만든 책 전체 요약입니다. 위키반영 전에 열어서 고칠 수 있고, 수정본이 허브 노트에 그대로 반영됩니다."))
                 for _bd4 in sorted(_ov_books4, key=lambda d: d.name):
-                    _ovf4 = overview_file_for(DEFAULT_WS, _nfc(_bd4.name))
-                    _has4 = _ovf4.exists()
+                    _ovf4 = find_overview_file(DEFAULT_WS, _nfc(_bd4.name))
+                    _has4 = _ovf4 is not None
                     _oc1, _oc2, _oc3, _oc4 = st.columns([4, 1.2, 1.4, 1])
                     _oc1.markdown(f"**{_bd4.name}**")
                     _oc2.caption(t("✅ 있음") if _has4 else t("— 없음"))

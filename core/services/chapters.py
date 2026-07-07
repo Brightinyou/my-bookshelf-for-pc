@@ -224,7 +224,19 @@ def _merge_chapter_folder(ws_name: str, stem: str, prefer_ko: bool = False) -> t
 # 있는 파일로 저장한다. 위키반영은 이 파일이 있으면 재생성 없이 그대로 쓴다.
 
 def overview_file_for(ws_name: str, stem: str) -> Path:
-    return chapters_dir(ws_name, stem) / "_overview.md"
+    """전체요약 파일 경로 — 책 제목 포함 (2026-07-07 개명: _overview.md → <책>_전체요약.md).
+    stem은 40자로 잘라 경로 길이 초과(WinError 206) 방지. `*_wiki.md` 글롭과 안 겹침."""
+    safe = _re.sub(r'[/\\:*?"<>|]', " ", stem).strip()[:40].strip(" .,:-")
+    return chapters_dir(ws_name, stem) / f"{safe or '책'}_전체요약.md"
+
+
+def find_overview_file(ws_name: str, stem: str) -> Path | None:
+    """전체요약 파일 탐색 — 새 이름 우선, 구형 _overview.md 폴백."""
+    new = overview_file_for(ws_name, stem)
+    if new.exists():
+        return new
+    legacy = chapters_dir(ws_name, stem) / "_overview.md"
+    return legacy if legacy.exists() else None
 
 
 def load_overview_file(path: Path) -> dict | None:
@@ -267,6 +279,12 @@ def summarize_book_overview(ws_name: str, stem: str) -> tuple[bool, str]:
         return False, "전체요약 응답이 비었습니다"
     _p, model = llm.wiki_provider_model()
     out = overview_file_for(ws_name, stem)
+    legacy = chapters_dir(ws_name, stem) / "_overview.md"
+    if legacy.exists():                # 구형 파일은 새 이름으로 대체
+        try:
+            legacy.unlink()
+        except Exception:
+            pass
     out.write_text(
         "---\n"
         f"book: {stem}\n"

@@ -290,7 +290,7 @@ _EN: dict[str, str] = {
     "#### 요약 실패 (%d개)": "#### Failed summaries (%d)",
     "📚 책 전체요약 생성: %s": "📚 Generating book overview: %s",
     "전체요약 %s: %s": "Overview %s: %s",
-    "📚 책 전체요약 (_overview.md) — %d권": "📚 Book overviews (_overview.md) — %d",
+    "📚 책 전체요약 (<책제목>_전체요약.md) — %d권": "📚 Book overviews (<title>_전체요약.md) — %d",
     "장별 요약을 합쳐 만든 책 전체 요약입니다. 위키반영 전에 열어서 고칠 수 있고, 수정본이 허브 노트에 그대로 반영됩니다.":
         "A whole-book overview built from the chapter summaries. You can edit it before publishing; your edits go into the hub note as-is.",
     "✅ 있음": "✅ exists",
