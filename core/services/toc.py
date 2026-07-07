@@ -304,11 +304,13 @@ def pdf_visual_toc(pdf_path: Path, txt: str | None = None) -> list[tuple[str, in
         append_log(f"WARN: PDF 시각 차례 판독 실패 [{prov}] ({type(e).__name__}) {str(e)[:200]}")
         return None
     finally:
+        # 임시 산출물 완전 정리 — 파일뿐 아니라 렌더링 폴더째 제거 (2026-07-07)
         try:
             if scan is not None:
                 scan.unlink(missing_ok=True)
-            for f in pngs:
-                f.unlink(missing_ok=True)
+            if pngs:
+                import shutil as _shutil
+                _shutil.rmtree(pngs[0].parent, ignore_errors=True)
         except Exception:
             pass
     rows = data.get("chapters") if isinstance(data, dict) else None

@@ -1324,6 +1324,7 @@ if _active_view in {"1_txt", "all_run"}:
                     "txt": str(_final_txt1) if _final_txt1 else "",
                     "pdf": str(_final_pdf1) if _final_pdf1 else "",
                 }
+                _src_file1.unlink(missing_ok=True)   # Temp에 받은 원본 정리 (보관본은 pdf/에 복사됨)
                 st.rerun()
 
     _pr1 = st.session_state.get("paper1_result")
