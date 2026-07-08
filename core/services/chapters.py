@@ -23,13 +23,24 @@ DONE_DIR = cfg.DONE_DIR
 _SUMMARY_PREFIX = "> **요약:**"
 
 
-def _format_summary_md(book: str, chapter: str, summary: str, body: str) -> str:
-    _p, model = llm.wiki_provider_model()
+def _author_from_stem(stem: str) -> str:
+    """파일명 '제목_저자(_)' 규약에서 저자 추출 — 숫자 포함·과길이면 저자 아님으로 본다."""
+    parts = [p.strip() for p in stem.split("_") if p.strip()]
+    if len(parts) >= 2:
+        last = parts[-1]
+        if 1 < len(last) <= 25 and not _re.search(r"\d", last):
+            return last
+    return ""
+
+
+def _format_summary_md(book: str, chapter: str, summary: str, body: str, author: str = "") -> str:
+    model = llm.effective_wiki_model()
     one_line = " ".join((summary or "").split())
     return (
         "---\n"
         f"book: {book}\n"
-        f"chapter: {chapter}\n"
+        + (f"author: {author}\n" if author else "")
+        + f"chapter: {chapter}\n"
         f"model: {model}\n"
         f"generated: {date.today().isoformat()}\n"
         "---\n"
@@ -196,6 +207,11 @@ def split_book_to_chapters(ws_name: str, stem: str, allow_short: bool = False) -
         safe = _re.sub(r'[/\\:*?"<>|]', ' ', title).strip()[:50].strip(" .,:-")
         (ch_dir / f"{i:02d}_{safe}.txt").write_text(body, encoding="utf-8")
         saved += 1
+    # 커버리지 자기진단 — 챕터에 담긴 분량이 원문의 60% 미만이면 앞부분 유실
+    # 의심(각주·러닝헤더 오탐으로 첫 장 이전이 통째로 버려진 사고, 2026-07-08)
+    coverage = sum(len(b) for _t, b in chapters) / max(1, len(source_text))
+    if coverage < 0.6:
+        append_log(f"WARN: 장분할 커버리지 {coverage:.0%} — {stem}: 본문 일부가 챕터에 담기지 않았을 수 있음 (분할={mode})")
     return saved, "", mode
 
 
@@ -283,7 +299,9 @@ def summarize_book_overview(ws_name: str, stem: str) -> tuple[bool, str]:
     intro = (ov.get("intro") or "").strip()
     if not (summary or intro):
         return False, "전체요약 응답이 비었습니다"
-    _p, model = llm.wiki_provider_model()
+    model = llm.effective_wiki_model()
+    author = (ov.get("author") or "").strip() or _author_from_stem(stem)
+    keywords = " ".join((ov.get("keywords") or "").split())
     out = overview_file_for(ws_name, stem)
     legacy = chapters_dir(ws_name, stem) / "_overview.md"
     if legacy.exists():                # 구형 파일은 새 이름으로 대체
@@ -294,12 +312,14 @@ def summarize_book_overview(ws_name: str, stem: str) -> tuple[bool, str]:
     out.write_text(
         "---\n"
         f"book: {stem}\n"
-        f"category: {ov.get('category', '기타')}\n"
+        + (f"author: {author}\n" if author else "")
+        + f"category: {ov.get('category', '기타')}\n"
         f"model: {model}\n"
         f"generated: {date.today().isoformat()}\n"
         "---\n"
         f"{_SUMMARY_PREFIX} {summary}\n\n"
-        f"{intro}\n",
+        f"{intro}\n"
+        + (f"\n## 핵심 키워드\n{keywords}\n" if keywords else ""),
         encoding="utf-8",
     )
     return True, summary[:120]
@@ -321,8 +341,9 @@ def summarize_one_chapter(ch_path: Path, book_stem: str) -> tuple[bool, str]:
         if not (data.get("summary") and data.get("body")):
             keys = ", ".join(sorted(map(str, data.keys()))) or "없음"
             raise RuntimeError(f"요약 응답 필드 부족(summary/body 없음, keys={keys})")
+        author = (data.get("author") or "").strip() or _author_from_stem(book_stem)
         (ch_path.with_name(ch_path.stem + "_wiki.md")).write_text(
-            _format_summary_md(book_stem, chap_title, data["summary"], data["body"]),
+            _format_summary_md(book_stem, chap_title, data["summary"], data["body"], author),
             encoding="utf-8",
         )
         legacy = ch_path.with_name(ch_path.stem + "_wiki.json")

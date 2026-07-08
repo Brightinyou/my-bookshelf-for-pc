@@ -175,6 +175,32 @@ def set_pref(key: str, value) -> None:
         pass
 
 
+# CLI가 'default' 모델로 돌 때 세션 헤더에서 확인된 실제 모델명 (요약 노트 기록용)
+_LAST_CLI_MODEL = ""
+
+
+def effective_wiki_model() -> str:
+    """노트 frontmatter 기록용 실제 모델명 — 'default'면 CLI 헤더에서 잡은 이름."""
+    _p, model = wiki_provider_model()
+    if model in ("default", "") and _LAST_CLI_MODEL:
+        return _LAST_CLI_MODEL
+    return model
+
+
+def _cli_env() -> dict:
+    """CLI 서브프로세스용 환경 — Finder/launchd로 뜬 앱은 PATH에 /opt/homebrew/bin이
+    없어 node 셔뱅 CLI(codex·claude)가 exit 127로 죽는다 (2026-07-09)."""
+    env = os.environ.copy()
+    cur = env.get("PATH", "")
+    parts = cur.split(os.pathsep) if cur else []
+    for extra in ("/opt/homebrew/bin", "/usr/local/bin",
+                  str(Path.home() / ".local" / "bin")):
+        if extra not in parts and Path(extra).is_dir():
+            parts.insert(0, extra)
+    env["PATH"] = os.pathsep.join(parts)
+    return env
+
+
 # ── Claude CLI (구독) ──
 def claude_cli_path() -> str | None:
     p = shutil.which("claude")
@@ -287,6 +313,7 @@ def _claude_cli(model: str, system: str, prompt: str) -> str:
         input=prompt,
         capture_output=True, text=True, timeout=600, cwd=tempfile.gettempdir(),
         encoding="utf-8", errors="replace",   # 윈도우 cp949가 한글 UTF-8 출력 못 읽음 (2026-06-11)
+        env=_cli_env(),
         **_no_window_kwargs(),
     )
     if r.returncode != 0:
@@ -323,9 +350,14 @@ def _codex_cli(model: str, system: str, prompt: str) -> str:
                 capture_output=True, text=True, timeout=600,
                 cwd=tempfile.gettempdir(), encoding="utf-8", errors="replace",
                 input=full_prompt,
+                env=_cli_env(),
                 **_no_window_kwargs(),
             )
             if r.returncode == 0:
+                mh = re.search(r"(?m)^model:\s*(\S+)", (r.stdout or "") + (r.stderr or ""))
+                if mh:
+                    global _LAST_CLI_MODEL
+                    _LAST_CLI_MODEL = mh.group(1)
                 if out_file.exists():
                     return out_file.read_text(encoding="utf-8").strip()
                 return (r.stdout or "").strip()
