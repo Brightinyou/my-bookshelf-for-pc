@@ -366,7 +366,9 @@ def _codex_cli(model: str, system: str, prompt: str) -> str:
                 last_err = err
                 out_file.unlink(missing_ok=True)
                 continue  # 모델 없이 재시도
-            raise RuntimeError(f"codex CLI exit {r.returncode}: {err[:300]}")
+            # 실제 사유(usage limit 등)는 버전 배너 뒤에 나오므로 끝부분을 보존 (2026-07-09)
+            detail = (err.strip() + " | " + (r.stdout or "").strip())[-400:]
+            raise RuntimeError(f"codex CLI exit {r.returncode}: …{detail}")
         raise RuntimeError(f"codex CLI 실패: {(last_err or '')[:300]}")
     finally:
         out_file.unlink(missing_ok=True)
