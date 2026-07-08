@@ -31,6 +31,30 @@ def _ko_ratio(text: str) -> float:
     return len(_KO_SCRIPT.findall(text or "")) / max(len(text or ""), 1)
 
 
+_TRANSLATION_REFUSAL_PHRASES = (
+    "번역할 학술 문단을 아직 받지 못했습니다",
+    "번역하실 텍스트",
+    "텍스트를 붙여넣어",
+    "원문을 제공",
+    "본문을 보내",
+)
+
+_TRANSLATION_REFUSAL_RE = _re.compile(
+    r"(?:please\s+provide|send|paste).{0,80}(?:text|paragraph|source)|"
+    r"(?:no|not|haven't|have\s+not).{0,80}(?:text|paragraph|source).{0,80}(?:translate|received)",
+    _re.I | _re.S,
+)
+
+
+def _looks_like_translation_refusal(text: str) -> bool:
+    lowered = (text or "").strip().lower()
+    if not lowered:
+        return False
+    if any(phrase in text for phrase in _TRANSLATION_REFUSAL_PHRASES):
+        return True
+    return bool(_TRANSLATION_REFUSAL_RE.search(lowered))
+
+
 def _translation_is_valid(src: str, out: str | None) -> bool:
     """번역 결과가 실제 한국어 번역인지 확인한다."""
     if not out:
@@ -38,6 +62,8 @@ def _translation_is_valid(src: str, out: str | None) -> bool:
     cleaned_src = _re.sub(r"\s+", " ", src or "").strip()
     cleaned_out = _re.sub(r"\s+", " ", out or "").strip()
     if not cleaned_out:
+        return False
+    if _looks_like_translation_refusal(cleaned_out):
         return False
     if _ko_ratio(cleaned_out) < 0.08:
         return False
