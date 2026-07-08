@@ -298,7 +298,8 @@ def summarize_book_overview(ws_name: str, stem: str) -> tuple[bool, str]:
         return False, "전체요약 응답이 비었습니다"
     model = llm.effective_wiki_model()
     author = (ov.get("author") or "").strip() or _author_from_stem(stem)
-    keywords = " ".join((ov.get("keywords") or "").split())
+    # '#키워드 — 해설' 한 줄씩 — 줄바꿈 보존 (2026-07-09)
+    keywords = "\n".join(ln.strip() for ln in (ov.get("keywords") or "").splitlines() if ln.strip())
     out = overview_file_for(ws_name, stem)
     legacy = chapters_dir(ws_name, stem) / "_overview.md"
     if legacy.exists():                # 구형 파일은 새 이름으로 대체
