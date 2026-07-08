@@ -282,11 +282,11 @@ def _claude_cli(model: str, system: str, prompt: str) -> str:
     if not cli:
         raise RuntimeError("claude CLI 없음")
     r = subprocess.run(
-        [cli, "-p", prompt, "--model", model,
+        [cli, "-p", "--model", model,
          "--system-prompt", system, "--output-format", "text"],
+        input=prompt,
         capture_output=True, text=True, timeout=600, cwd=tempfile.gettempdir(),
         encoding="utf-8", errors="replace",   # 윈도우 cp949가 한글 UTF-8 출력 못 읽음 (2026-06-11)
-        stdin=subprocess.DEVNULL,             # 미지정 시 CLI가 stdin 3초 대기 — 단락마다 지연
         **_no_window_kwargs(),
     )
     if r.returncode != 0:
