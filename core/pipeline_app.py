@@ -448,26 +448,29 @@ st.set_page_config(page_title="My Bookshelf", page_icon=_page_icon, layout="wide
 
 # Cmd/Ctrl+C(복사)가 Streamlit 내장 'Clear caches' 단축키를 트리거하지 않도록 차단.
 # window 캡처 단계에서 먼저 가로채 전파를 멈춘다(기본 복사 동작은 유지). (2026-07-09)
-import streamlit.components.v1 as _components  # noqa: E402
-_components.html(
-    """
-    <script>
-    (function () {
-      try {
-        var win = window.parent || window;
-        if (win.__cacheHotkeyPatched) return;
-        win.__cacheHotkeyPatched = true;
-        win.addEventListener('keydown', function (e) {
-          if ((e.metaKey || e.ctrlKey) && (e.key === 'c' || e.key === 'C')) {
-            e.stopPropagation();
-          }
-        }, true);
-      } catch (err) {}
-    })();
-    </script>
-    """,
-    height=0,
-)
+try:
+    import streamlit.components.v1 as _components  # noqa: E402
+    _components.html(
+        """
+        <script>
+        (function () {
+          try {
+            var win = window.parent || window;
+            if (win.__cacheHotkeyPatched) return;
+            win.__cacheHotkeyPatched = true;
+            win.addEventListener('keydown', function (e) {
+              if ((e.metaKey || e.ctrlKey) && (e.key === 'c' || e.key === 'C')) {
+                e.stopPropagation();
+              }
+            }, true);
+          } catch (err) {}
+        })();
+        </script>
+        """,
+        height=0,
+    )
+except Exception:
+    pass
 
 if "ui_font_scale" not in st.session_state:
     st.session_state["ui_font_scale"] = 1.0
@@ -873,14 +876,23 @@ _STAGE_TASKS = [
     ("5_wiki", "📖 위키반영"),
     ("settings", "⚙️ 설정"),
 ]
+# 처리 중(잠금)에는 탭 이동 링크를 비활성 텍스트로 렌더 — 작업 이탈 방지 (2026-07-09)
+_run_lock = st.session_state.get("_run_lock")
 _nav_cols = st.columns(len(_STAGE_TASKS))
 for _col, (_tid, _label) in zip(_nav_cols, _STAGE_TASKS):
     _active_cls = " active" if _active_view == _tid else ""
     with _col:
-        st.markdown(
-            f'<a class="stage-nav-link{_active_cls}" href="?view={_tid}" target="_self">{t(_label)}</a>',
-            unsafe_allow_html=True,
-        )
+        if _run_lock:
+            st.markdown(
+                f'<span class="stage-nav-link{_active_cls}" '
+                f'style="opacity:0.4;pointer-events:none;cursor:not-allowed">{t(_label)}</span>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f'<a class="stage-nav-link{_active_cls}" href="?view={_tid}" target="_self">{t(_label)}</a>',
+                unsafe_allow_html=True,
+            )
 if st.query_params.get("view") in {tid for tid, _ in _STAGE_TASKS}:
     _view = st.query_params.get("view")
     if _view != _active_view:
@@ -1138,33 +1150,89 @@ def _chapter_counts() -> tuple[int, int, int]:
 
 def _stage_flow_panel(app_title: str, app_desc: str,
                       cards: list[tuple[str, Path, str]], key_prefix: str) -> None:
-    """앱 헤더 + 처리전 → 처리후 폴더 흐름 패널. cards=[(라벨, 경로, 개수문구)]"""
+    """앱 헤더 + (작게) 진행 요약·폴더 열기. 실제 작업 공간이 눈에 띄도록
+    폴더 열기란은 접이식으로 작게 처리한다 (2026-07-09). cards=[(라벨, 경로, 개수문구)]"""
     st.markdown(f"### {t(app_title)}")
     st.caption(t(app_desc))
-    weights: list[float] = []
-    for i in range(len(cards)):
-        if i:
-            weights.append(0.3)
-        weights.append(2.0)
-    cols = st.columns(weights, vertical_alignment="center")
-    ci = 0
-    for i, (label, path, count_txt) in enumerate(cards):
-        if i:
-            cols[ci].markdown(
-                "<div style='text-align:center;font-size:1.5rem;color:#9ca3af'>→</div>",
-                unsafe_allow_html=True)
-            ci += 1
-        with cols[ci].container(border=True):
-            st.markdown(f"**{t(label)}**")
-            st.markdown(f"<span style='font-size:1.15rem;font-weight:700'>{count_txt}</span>",
-                        unsafe_allow_html=True)
-            # 경로는 캡션으로 노출하지 않고, 폴더 열기 버튼에 호버 툴팁으로만 보여준다 (2026-07-09)
-            if st.button(t("📂 폴더 열기"), key=f"{key_prefix}_open_{i}",
-                         use_container_width=True, disabled=not path.exists(),
-                         help=str(path)):
+    _summary = "  ·  ".join(f"{t(label)} {count_txt}" for label, _p, count_txt in cards)
+    st.caption(_summary)
+    with st.expander(t("📁 폴더 열기"), expanded=False):
+        _fcols = st.columns(len(cards))
+        for i, (label, path, _count_txt) in enumerate(cards):
+            if _fcols[i].button(t(label), key=f"{key_prefix}_open_{i}",
+                                use_container_width=True, disabled=not path.exists(),
+                                help=str(path)):
                 open_path(path)
-        ci += 1
     st.divider()
+
+
+# ─── 처리 잠금(시작/중단) 런 패널 (2026-07-09) ──────────────────
+# 시작 → 처리 화면만 표시(다른 위젯 미렌더 + 상단 탭 이동 잠금).
+# 항목 1개 처리 후 st.rerun → 다음 항목. 중단 클릭은 다음 rerun에서 감지돼
+# 현재 항목 처리 후 멈춘다(남은 항목은 지속 큐에 남아 재시작 시 이어짐).
+
+def _run_active(tab: str) -> bool:
+    return bool(st.session_state.get(f"{tab}_running"))
+
+
+def _run_start(tab: str, work: list) -> None:
+    """선택한 작업 목록으로 처리 시작. work=처리기 인자 목록."""
+    if not work:
+        return
+    st.session_state[f"{tab}_running"] = True
+    st.session_state[f"{tab}_queue"] = list(work)
+    st.session_state[f"{tab}_total"] = len(work)
+    st.session_state[f"{tab}_log"] = []
+    st.session_state["_run_lock"] = tab
+    st.rerun()
+
+
+def _run_finish(tab: str) -> None:
+    st.session_state[f"{tab}_running"] = False
+    if st.session_state.get("_run_lock") == tab:
+        st.session_state.pop("_run_lock", None)
+
+
+def _run_panel(tab: str, title: str, process_one, on_done=None) -> None:
+    """처리 화면 렌더 + 항목 1개 처리 + rerun. process_one(item)->(ok, msg 문자열).
+    on_done(): 큐 소진 시 1회 실행(전체요약 등 후처리)."""
+    queue = list(st.session_state.get(f"{tab}_queue", []))
+    total = st.session_state.get(f"{tab}_total", len(queue)) or 1
+    done = total - len(queue)
+    log = list(st.session_state.get(f"{tab}_log", []))
+
+    st.markdown(f"### ⏳ {t(title)}")
+    st.progress(min(done / total, 1.0), text=tf("%d/%d 처리 중", done, total))
+    _stopped = st.button(t("■ 중단"), key=f"{tab}_stopbtn", type="primary")
+    st.caption(t("처리 중에는 다른 기능이 잠깁니다. '중단'을 누르면 현재 항목까지 마친 뒤 멈추고, 남은 작업은 다시 '시작'으로 이어집니다."))
+    with st.container(height=300, border=True):
+        for _ln in log[-80:]:
+            st.markdown(_ln)
+
+    if _stopped:
+        _run_finish(tab)
+        st.rerun()
+    if not queue:
+        _run_finish(tab)
+        if on_done:
+            try:
+                on_done()
+            except Exception as _e:
+                st.warning(str(_e)[:200])
+        st.rerun()
+
+    _item = queue[0]
+    try:
+        _ok, _msg = process_one(_item)
+    except Exception as _e:
+        _ok, _msg = False, f"{type(_e).__name__}: {str(_e)[:150]}"
+    log.append(f"{'✅' if _ok else '❌'} {_msg}")
+    st.session_state[f"{tab}_log"] = log
+    st.session_state[f"{tab}_queue"] = queue[1:]
+    st.rerun()
+
+
+_DND_HINT = "📎 파일 선택 또는 이 영역으로 끌어다 놓기(Drag & Drop) 가능"
 
 
 def _current_wiki_dir() -> Path:
@@ -1296,27 +1364,12 @@ if _active_view in {"1_txt", "all_run"}:
     _ws1 = DEFAULT_WS
     _fast1 = True
 
-    # 처리 모드
-    _mode1 = st.radio(
-        t("처리 모드"),
-        [t("📄 TXT저장만"), t("🚀 전체 실행 (텍스트 변환→챕터 분할→번역(영어문서인 경우)→Wiki)")],
-        horizontal=True, key="ocr_mode",
-    )
-
-    # 번역 엔진 (전체 파이프라인 모드일 때만) — 설정에서 고른 AI를 그대로 사용
-    _tr_eng1 = ""
-    if _mode1 != t("📄 TXT저장만"):
-        if _settings_engine_id():
-            _tr_eng1 = _settings_engine_id()
-            _settings_ai_note()
-        else:
-            st.warning(t("사용 가능한 AI 없음 — ⚙️ 설정 탭에서 API 키를 입력하세요."))
-
     # 파일 업로드
     _uploads1 = st.file_uploader(
         t("PDF 또는 TXT 업로드 (여러 파일 가능)"),
         type=["pdf", "txt", "md"], accept_multiple_files=True, key="ocr_uploader",
     )
+    st.caption(t(_DND_HINT))
     if _uploads1:
         _already_queued1 = st.session_state.get("_ocr_queued", set())
         _added1 = []
@@ -1341,6 +1394,12 @@ if _active_view in {"1_txt", "all_run"}:
             key="ocr1_paper_source",
             placeholder=t("URL, DOI(10.xxxx/...), doi:..., arXiv 번호 또는 arxiv.org 링크"),
         )
+        st.caption(t(
+            "💡 URL이 잘 안 될 때: ① 로그인·구독이 필요한 페이지(대학도서관·유료 저널)나 "
+            "본문이 아닌 소개 페이지 링크는 받아올 수 없습니다 — PDF를 내려받아 위에서 직접 업로드하세요. "
+            "② DOI(10.xxxx/…)나 arXiv 번호(예: 2412.12107)가 있으면 그 값을 넣는 편이 가장 안정적입니다. "
+            "③ 링크 끝이 `.pdf`인 직접 주소를 쓰세요. ④ 그래도 안 되면 브라우저에서 PDF를 저장한 뒤 업로드하는 방법이 가장 확실합니다."
+        ))
         if st.button(t("다운로드 확인 후 TXT 저장"), key="ocr1_source_prepare",
                      use_container_width=True, type="primary",
                      disabled=not _paper_src1.strip()):
@@ -1425,21 +1484,14 @@ if _active_view in {"1_txt", "all_run"}:
             _prog1 = st.progress(0.0)
             _done_txt_paths1: list[Path] = []
             for _i1, _uf1 in enumerate(_to_run1, 1):
-                if _mode1 == t("📄 TXT저장만"):
-                    with st.status(f"TXT변환 [{_i1}/{len(_to_run1)}]: {_uf1.name}", expanded=False):
-                        _r1 = _do_ocr_only(_uf1, _ws1, fast=_fast1)
-                    if _r1["ok"] and _r1.get("txt_path"):
-                        _done_txt_paths1.append(Path(_r1["txt_path"]))
-                    (st.success if _r1["ok"] else st.error)(
-                        f"{'✅' if _r1['ok'] else '❌'} {_uf1.name}" +
-                        (f" → `{Path(_r1['txt_path']).name}`" if _r1["ok"] else f": {_r1['error']}")
-                    )
-                else:
-                    _ph1 = st.empty()
-                    _process_file_for_pipeline(
-                        _uf1, _ws1, _nfc(_ws1), True, _tr_eng1,
-                        False, False, _ph1, do_wiki=False,
-                    )
+                with st.status(f"텍스트 변환 [{_i1}/{len(_to_run1)}]: {_uf1.name}", expanded=False):
+                    _r1 = _do_ocr_only(_uf1, _ws1, fast=_fast1)
+                if _r1["ok"] and _r1.get("txt_path"):
+                    _done_txt_paths1.append(Path(_r1["txt_path"]))
+                (st.success if _r1["ok"] else st.error)(
+                    f"{'✅' if _r1['ok'] else '❌'} {_uf1.name}" +
+                    (f" → `{Path(_r1['txt_path']).name}`" if _r1["ok"] else f": {_r1['error']}")
+                )
                 _prog1.progress(_i1 / len(_to_run1))
             if _done_txt_paths1:
                 _set_stage_completion(
@@ -1475,6 +1527,55 @@ if _active_view in {"1_txt", "all_run"}:
 
 # ── 2: 장별 분할 ────────────────────────────────────────
 if _active_view == "2_split":
+    _split_arch_dir2 = cfg.TXT_ARCHIVE_DIR
+
+    def _archive_split_source(stem: str) -> bool:
+        """분할이 끝난 원본 TXT/MD를 1_txt/완료/로 이동 (2026-07-07)."""
+        moved = False
+        _split_arch_dir2.mkdir(parents=True, exist_ok=True)
+        for _ext in (".txt", ".md"):
+            _srcf = cfg.TXT_DIR / (stem + _ext)
+            if _srcf.exists():
+                try:
+                    shutil.move(str(_srcf), str(_split_arch_dir2 / _srcf.name))
+                    moved = True
+                except Exception:
+                    pass
+        return moved
+
+    def _proc_split2(obj):
+        _ws, _stem = obj["ws"], obj["stem"]
+        _sn, _serr, _smode = split_book_to_chapters(_ws, _stem)
+        if _serr:
+            return False, f"{_stem}: {_serr}"
+        _cdir = chapters_dir(_ws, _stem)
+        _new = [str(f.relative_to(cfg.BASE_DIR)) for f in sorted(_cdir.glob("??_*.txt"))
+                if not f.stem.endswith(("_ko", "_wiki"))]
+        if not _new:
+            return False, f"{_stem}: 챕터 생성 안 됨"
+        queue_remove("tab2_ready", [_stem])
+        if _needs_translation(_stem):
+            st.session_state["split2_any_en"] = True
+            queue_add("tab3_ready", _new)
+        else:
+            queue_add("tab4_ready", _new)
+        _archive_split_source(_stem)
+        return True, f"{_stem} → {len(_new)}챕터 ({t(SPLIT_MODE_LABELS.get(_smode, _smode))})"
+
+    def _split2_on_done():
+        _any_en = st.session_state.pop("split2_any_en", False)
+        _set_stage_completion(
+            t("2-챕터 분할 완료"),
+            t("분할을 마쳤습니다.")
+            + (" " + t("영문 책 → 영문번역") if _any_en else " " + t("한글 책 → 문서요약")),
+            next_stage="3_translate" if _any_en else "4_summary",
+            open_target=_stage_folder("2_split"),
+        )
+
+    if _run_active("split2"):
+        _run_panel("split2", "챕터 분할 처리 중", _proc_split2, on_done=_split2_on_done)
+        st.stop()
+
     _ch_root2f = cfg.CHAPTERS_DIR
     _n_books2f = len([d for d in _ch_root2f.iterdir() if d.is_dir()]) if _ch_root2f.exists() else 0
     _stage_flow_panel(
@@ -1492,25 +1593,10 @@ if _active_view == "2_split":
     _sp_prov2, _sp_model2 = llm.wiki_provider_model()
     _settings_ai_note()
 
-    _split_arch_dir2 = cfg.TXT_ARCHIVE_DIR
-
-    def _archive_split_source(stem: str) -> bool:
-        """분할이 끝난 원본 TXT/MD를 1_txt/완료/로 이동 (2026-07-07)."""
-        moved = False
-        _split_arch_dir2.mkdir(parents=True, exist_ok=True)
-        for _ext in (".txt", ".md"):
-            _srcf = cfg.TXT_DIR / (stem + _ext)
-            if _srcf.exists():
-                try:
-                    shutil.move(str(_srcf), str(_split_arch_dir2 / _srcf.name))
-                    moved = True
-                except Exception:
-                    pass
-        return moved
-
     # TXT 직접 업로드
     _up2 = st.file_uploader(t("TXT 직접 업로드"),
                               type=["txt", "md"], accept_multiple_files=True, key="split_uploader")
+    st.caption(t(_DND_HINT))
     if _up2:
         _added_split_stems2: list[str] = []
         for _u2 in _up2:
@@ -1578,97 +1664,33 @@ if _active_view == "2_split":
                         pass
                 queue_remove("tab2_ready", [_dstem2])
             st.rerun()
-        _single_mode2 = bool(_next2)
-        _to2 = _sel2 if (_rs2 or _next2) else []
-        if _to2:
-            if _single_mode2:
-                _sp2 = st.progress(0.0)
-                _completed2 = 0
-                _queued_translate2 = 0
-                _queued_summary2 = 0
-                for _si2, _s2 in enumerate(_to2, 1):
-                    _target_stage2 = "3_translate" if _needs_translation(_s2["stem"]) else "4_summary"
-                    with st.status(f"단일장 처리 [{_si2}/{len(_to2)}]: {_s2['stem']}", expanded=False):
-                        _ok2, _detail2, _new_chs2 = _save_book_as_single_chapter(_s2["ws"], _s2["stem"])
-                    if _ok2 and _new_chs2:
-                        _completed2 += 1
-                        st.success(f"✅ {_s2['stem']} -> {_detail2}")
-                        if _target_stage2 == "3_translate":
-                            _queued_translate2 += 1
-                            st.caption("영문 문서라 3-영문번역 대기에 등록했습니다.")
-                        else:
-                            _queued_summary2 += 1
-                            st.caption("분할 없이 4-문서요약 대기에 등록했습니다.")
-                    else:
-                        st.warning(f"⚠️ {_s2['stem']}: {_detail2}")
-                    _sp2.progress(_si2 / len(_to2))
-                if _completed2:
-                    if _queued_translate2 and _queued_summary2:
-                        _next_stage2 = "3_translate"
-                        _done_msg2 = tf("%d건을 다음 단계로 보냈습니다. 영문 문서는 3-영문번역, 한글 문서는 4-문서요약에서 이어서 진행하세요.", _completed2)
-                    elif _queued_translate2:
-                        _next_stage2 = "3_translate"
-                        _done_msg2 = tf("%d건을 3-영문번역 대기로 보냈습니다.", _completed2)
-                    else:
-                        _next_stage2 = "4_summary"
-                        _done_msg2 = tf("%d건을 4-문서요약 대기로 보냈습니다.", _completed2)
-                    _set_stage_completion(
-                        t("2-장 처리 완료"),
-                        _done_msg2,
-                        next_stage=_next_stage2,
-                        open_target=_stage_folder("2_split"),
-                    )
-                st.rerun()
-            _sp2 = st.progress(0.0)
+        if _next2 and _sel2:
+            # 다음단계로 이동: 분할 없이 단일장 저장 후 라우팅 (빠른 처리라 즉시)
             _completed2 = 0
-            _any_en2 = False   # 영문 책 포함 여부 — 다음 단계 라우팅용 (2026-07-07)
-            for _si2, _s2 in enumerate(_to2, 1):
-                with st.status(f"분할 [{_si2}/{len(_to2)}]: {_s2['stem']}", expanded=False):
-                    _sn2, _serr2, _smode2 = split_book_to_chapters(_s2["ws"], _s2["stem"])
-                _small_single2 = bool(_serr2 and _serr2.startswith("짧은 문서로 감지"))
-                if _serr2 and not _small_single2:
-                    st.warning(f"⚠️ {_s2['stem']}: {_serr2}")
-                    if "장 구조 감지 안 됨" in _serr2:
-                        # 아래 '장 구조 미감지' 목록에서 단일장 저장 선택지 제공
-                        _ns_list2 = st.session_state.setdefault("split2_nosplit", [])
-                        if _s2["stem"] not in _ns_list2:
-                            _ns_list2.append(_s2["stem"])
-                else:
-                    _mode_lbl2 = t(SPLIT_MODE_LABELS.get(_smode2, _smode2))
-                    st.success(f"✅ {_s2['stem']} → {_sn2}" + t("개 챕터") + f" · {_mode_lbl2}")
-                    if _smode2 in ("visual", "llm"):
-                        st.caption(tf("🤖 AI 모델 사용됨: %s", f"{_sp_prov2} · {_sp_model2}"))
-                    if _small_single2:
-                        st.caption("📄 문서가 짧아 전체 번역용 단일 챕터로 저장됨")
-                    queue_remove("tab2_ready", [_s2["stem"]])
-                    _ch_dir2 = chapters_dir(_s2["ws"], _s2["stem"])
-                    _new_chs2 = [str(f.relative_to(cfg.BASE_DIR))
-                                 for f in sorted(_ch_dir2.glob("??_*.txt"))
-                                 if not f.stem.endswith(("_ko", "_wiki"))]
-                    if _new_chs2:
-                        _completed2 += 1
-                        if _needs_translation(_s2["stem"]):
-                            _any_en2 = True
-                            queue_add("tab3_ready", _new_chs2)
-                            st.caption("🌐 영문 책 → 영문번역 대기 등록")
-                        else:
-                            queue_add("tab4_ready", _new_chs2)
-                            st.caption("🇰🇷 한국어 책 → 번역 건너뜀, 📝 문서요약 대기 등록")
-                        if _archive_split_source(_s2["stem"]):
-                            st.caption(t("📦 원본 TXT → 완료 보관 폴더로 이동 (보관용)"))
+            _queued_translate2 = 0
+            _queued_summary2 = 0
+            for _s2 in _sel2:
+                _ok2, _detail2, _new_chs2 = _save_book_as_single_chapter(_s2["ws"], _s2["stem"])
+                if _ok2 and _new_chs2:
+                    _completed2 += 1
+                    if _needs_translation(_s2["stem"]):
+                        _queued_translate2 += 1
                     else:
-                        st.warning(f"⚠️ {_s2['stem']}: 챕터 파일이 생성되지 않았습니다.")
-                _sp2.progress(_si2 / len(_to2))
+                        _queued_summary2 += 1
+                else:
+                    st.warning(f"⚠️ {_s2['stem']}: {_detail2}")
             if _completed2:
-                # 한국어 책만 분할했으면 번역을 건너뛰고 문서요약으로 안내 (2026-07-07)
+                _next_stage2 = "3_translate" if _queued_translate2 else "4_summary"
                 _set_stage_completion(
-                    t("2-장별분할 완료"),
-                    tf("%d권 분할을 마쳤습니다. 다음 단계로 이동하세요.", _completed2)
-                    + ("" if _any_en2 else " " + t("(한국어 책 — 번역 생략, 문서요약으로 이동)")),
-                    next_stage="3_translate" if _any_en2 else "4_summary",
+                    t("2-단일장 저장 완료"),
+                    tf("%d건을 다음 단계로 보냈습니다.", _completed2)
+                    + (" " + t("영문 → 영문번역") if _queued_translate2 else " " + t("한글 → 문서요약")),
+                    next_stage=_next_stage2,
                     open_target=_stage_folder("2_split"),
                 )
-            st.rerun()
+                st.rerun()
+        if _rs2 and _sel2:
+            _run_start("split2", _sel2)
     else:
         if _split_short2:
             st.warning(t("⚠️ 짧은 문서가 감지되었습니다. 아래 '짧은 문서 확인'에서 분할 처리 또는 다음단계로 이동을 선택하세요."))
@@ -1806,6 +1828,30 @@ if _active_view == "2_split":
 
 # ── 3: 번역 ─────────────────────────────────────────────
 if _active_view == "3_translate":
+    _tr_eng3 = _settings_engine_id()
+
+    def _proc_translate3(rel):
+        _cf = cfg.BASE_DIR / rel
+        if not _cf.exists():
+            return False, f"{Path(rel).name}: 파일 없음"
+        _ok, _msg = translate_one_chapter(_cf, _tr_eng3)
+        if _ok:
+            queue_remove("tab3_ready", [rel])
+            queue_add("tab4_ready", [rel])
+        return _ok, f"{_cf.name}: {str(_msg)[:80]}"
+
+    def _tr3_on_done():
+        _set_stage_completion(
+            t("3-영문번역 완료"),
+            t("번역을 마쳤습니다. 다음 단계에서 요약을 생성하세요."),
+            next_stage="4_summary",
+            open_target=_stage_folder("3_translate"),
+        )
+
+    if _run_active("tr3"):
+        _run_panel("tr3", "영문번역 처리 중", _proc_translate3, on_done=_tr3_on_done)
+        st.stop()
+
     _src_n3f, _ko_n3f, _ = _chapter_counts()
     _ch_root3f = cfg.CHAPTERS_DIR
     _stage_flow_panel(
@@ -1818,61 +1864,42 @@ if _active_view == "3_translate":
         "flow3",
     )
 
-    _tr_eng3 = _settings_engine_id()
     if not _tr_eng3:
         st.warning(t("사용 가능한 AI 없음 — ⚙️ 설정 탭에서 API 키를 입력하세요."))
     else:
         _settings_ai_note()
 
-        # TXT 직접 업로드 후 즉시 번역
-        _up3 = st.file_uploader(t("TXT 직접 업로드 (즉시 번역)"),
+        # TXT 직접 업로드 — 즉시 번역하지 않고 번역 대기 큐에 등록 (2026-07-09)
+        _up3 = st.file_uploader(t("TXT 직접 업로드"),
                                   type=["txt"], accept_multiple_files=True, key="tr3_uploader")
-        st.info(t("번역 결과는 오역이나 누락이 있을 수 있으니 원본과 직접 대조해 확인하세요. 저작권과 이용허락 범위를 준수하고, 생성 결과는 개인 연구·검토 용도로 우선 사용하세요."))
+        st.caption(t(_DND_HINT))
+        st.caption(t("업로드한 TXT는 아래 '번역 대기'에 등록됩니다. [▶ 시작]을 눌러야 번역이 시작됩니다."))
         if not _up3:
             st.session_state.pop("_tr3_uploaded_tokens", None)
         if _up3:
             _seen3 = set(st.session_state.get("_tr3_uploaded_tokens", []))
-            _done_rel3u: list[str] = []
+            _staged3 = 0
             for _u3 in _up3:
                 _u3_bytes = _u3.getvalue()
                 _token3 = _upload_token(_u3.name, _u3_bytes)
                 if _token3 in _seen3:
                     continue
                 _seen3.add(_token3)
-                st.session_state["_tr3_uploaded_tokens"] = sorted(_seen3)
                 _ok3p, _ch3_path, _book3u, _prep3_msg = _prepare_uploaded_single_chapter(
                     DEFAULT_WS, _u3.name, _u3_bytes, "translate"
                 )
                 if not _ok3p or _ch3_path is None:
                     st.error(f"❌ {_u3.name}: {_prep3_msg}")
                     continue
-                _rel3u = str(_ch3_path.relative_to(cfg.BASE_DIR))
-                queue_add("tab3_ready", [_rel3u])
-                with st.status(f"번역 중: {_u3.name}", expanded=True):
-                    _up_prog3 = st.progress(0, text="번역 준비 중…")
-                    def _upload_progress3(done, total, translated, preserved, dropped, failed, resumed, api_calls):
-                        _up_prog3.progress(
-                            min(done / max(total, 1), 1.0),
-                            text=(
-                                f"번역 처리 중 {done}/{total} · 재사용 {resumed} · 신규API {api_calls} · 번역 {translated} · "
-                                f"원문보존 {preserved} · 삭제 {dropped}"
-                                + (f" · 실패보존 {failed}" if failed else "")
-                            ),
-                        )
-                    _ok3u, _msg3u = translate_one_chapter(
-                        _ch3_path, _tr_eng3, progress_cb=_upload_progress3
-                    )
-                    if _ok3u:
-                        _done_rel3u.append(_rel3u)
-                        queue_remove("tab3_ready", [_rel3u])
-                        queue_add("tab4_ready", [_rel3u])
-                    if _ok3u:
-                        _up_prog3.progress(1.0, text="번역 처리 완료")
-                (st.success if _ok3u else st.error)(f"{'✅' if _ok3u else '❌'} {_u3.name}: {_msg3u}")
+                queue_add("tab3_ready", [str(_ch3_path.relative_to(cfg.BASE_DIR))])
+                _staged3 += 1
+            st.session_state["_tr3_uploaded_tokens"] = sorted(_seen3)
+            if _staged3:
+                st.success(tf("번역 대기에 %d개 등록됨 — 아래에서 [▶ 시작]", _staged3))
             st.rerun()
 
         # ── 번역 대기 (큐 기반) ──────────────────────────────
-        _q3_rels = queue_list("tab3_ready")   # Tab2가 등록한 챕터 경로(상대)
+        _q3_rels = queue_list("tab3_ready")
         _tr_pend3: list[dict] = []
         _tr_done3 = 0
         for _rel3 in _q3_rels:
@@ -1890,80 +1917,67 @@ if _active_view == "3_translate":
                     "key": _rel3,
                     "label": f"{_cf3.parent.name} / {_cf3.name}",
                     "meta": _meta3,
-                    "obj": _cf3,
+                    "obj": _rel3,
                 })
 
         st.divider()
         st.markdown(tf("#### 번역 대기 (%d개) / 완료 %d개", len(_tr_pend3), _tr_done3))
-        st.caption(t("⏸️ 번역 중 다른 버튼을 누르거나 화면을 이동하면 중단됩니다 — 진행분은 `_ko.partial.md`로 저장되고, 같은 챕터를 다시 실행하면 이어서 번역합니다."))
         if _tr_pend3:
             _sel3 = _checklist(_tr_pend3, "tr3", height=280, viewable=True)
-            _b3c1, _b3c2, _b3c3 = st.columns([2, 2, 1])
-            _rs3 = _b3c1.button(tf("▶ 선택 번역 (%d개)", len(_sel3)), key="tr3_run_sel",
+            _b3c1, _b3c2 = st.columns(2)
+            _rs3 = _b3c1.button(tf("▶ 시작 (%d개)", len(_sel3)), key="tr3_start",
                                   use_container_width=True, type="primary", disabled=len(_sel3)==0)
-            _ra3 = _b3c2.button(tf("▶ 전체 번역 (%d개)", len(_tr_pend3)), key="tr3_run_all",
-                                  use_container_width=True)
-            if _b3c3.button(t("🗑 큐 비우기"), key="tr3_clear", use_container_width=True):
-                queue_clear("tab3_ready"); st.rerun()
-            _to3: list = ([it["obj"] for it in _tr_pend3] if _ra3 else (_sel3 if _rs3 else []))
-            if _to3:
-                _tp3 = st.progress(0.0)
-                for _ti3, _tf3 in enumerate(_to3, 1):
-                    _prog3 = st.progress(0, text=f"번역 준비 중… ({_tf3.name})")
-                    def _queue_progress3(done, total, translated, preserved, dropped, failed, resumed, api_calls):
-                        _prog3.progress(
-                            min(done / max(total, 1), 1.0),
-                            text=(
-                                f"{_tf3.name} · {done}/{total} · 재사용 {resumed} · 신규API {api_calls} · "
-                                f"번역 {translated} · 원문보존 {preserved}"
-                                + (f" · 삭제 {dropped}" if dropped else "")
-                                + (f" · 실패보존 {failed}" if failed else "")
-                            ),
-                        )
-                    _ok3, _msg3 = translate_one_chapter(_tf3, _tr_eng3, progress_cb=_queue_progress3)
-                    if _ok3:
-                        _prog3.progress(1.0, text=f"번역 처리 완료 ({_tf3.name})")
-                    (st.success if _ok3 else st.warning)(
-                        f"{'✅' if _ok3 else '⚠️'} {_tf3.name}: {_msg3}")
-                    if _ok3:
-                        _rel3_done = str(_tf3.relative_to(cfg.BASE_DIR))
-                        queue_remove("tab3_ready", [_rel3_done])
-                        queue_add("tab4_ready", [_rel3_done])
-                    _tp3.progress(_ti3 / len(_to3))
-                st.success(f"번역 처리 완료: {len(_to3)}개")
-                _set_stage_completion(
-                    t("3-영문번역 완료"),
-                    tf("%d개 챕터 번역을 마쳤습니다. 다음 단계에서 요약 MD를 생성하세요.", len(_to3)),
-                    next_stage="4_summary",
-                    open_target=_stage_folder("3_translate"),
-                )
+            _del3 = _b3c2.button(tf("🗑 삭제 (%d개)", len(_sel3)), key="tr3_del",
+                                 use_container_width=True, disabled=len(_sel3)==0)
+            if _del3 and _sel3:
+                queue_remove("tab3_ready", _sel3)
                 st.rerun()
+            if _rs3 and _sel3:
+                _run_start("tr3", _sel3)
         else:
             st.info(t("번역 대기 없음 — 📂 챕터 분할에서 챕터를 먼저 분리하세요"))
-
-        # 수동 추가 expander
-        with st.expander(t("➕ 수동으로 추가 (기존 챕터에서 선택)")):
-            _mc3a, _mc3b = st.columns([3, 2])
-            _search3 = _mc3a.text_input(t("책/챕터 이름 검색"), key="tr3_search", placeholder=t("검색어 입력…"))
-            _sort3 = _mc3b.radio(t("정렬"), [t("최근 추가순"), t("이름순")], horizontal=True, key="tr3_sort")
-            _ch_root3m = cfg.CHAPTERS_DIR
-            _all_cfs3 = list(_ch_root3m.rglob("??_*.txt")) if _ch_root3m.exists() else []
-            _all_cfs3 = [f for f in _all_cfs3 if not f.stem.endswith(("_ko","_wiki"))]
-            _all_cfs3 = sorted(_all_cfs3, key=lambda f: f.stat().st_mtime, reverse=True) \
-                        if _sort3 == t("최근 추가순") else sorted(_all_cfs3, key=lambda f: str(f))
-            _filt3 = [f for f in _all_cfs3 if _search3.lower() in str(f).lower()] if _search3 else _all_cfs3
-            _mitems3 = [{"key": str(f.relative_to(cfg.BASE_DIR)), "label": f"{f.parent.name}/{f.name}",
-                         "meta": f"{f.stat().st_size//1024}KB", "obj": str(f.relative_to(cfg.BASE_DIR))}
-                        for f in _filt3]
-            _msel3 = _checklist(_mitems3, "tr3m", height=200)
-            if st.button(tf("➕ 선택 항목 큐에 추가 (%d개)", len(_msel3)), key="tr3m_add", disabled=len(_msel3)==0):
-                queue_add("tab3_ready", _msel3); st.rerun()
 
     st.info(t("💡 다음 단계: **📝 문서요약**으로 이동하세요"))
 
 
 # ── 4: 요약생성 ─────────────────────────────────────────
 if _active_view == "4_summary":
+    def _proc_summary4(rel):
+        _cf = cfg.BASE_DIR / rel
+        if not _cf.exists():
+            return False, f"{Path(rel).name}: 파일 없음"
+        _book = _nfc(_cf.parent.name)
+        _ok, _msg = summarize_one_chapter(_cf, _book)
+        if _ok:
+            queue_remove("tab4_ready", [rel])
+            queue_remove("tab4_failed", [rel])
+            _touched = set(st.session_state.get("summ4_touched", []))
+            _touched.add(_book)
+            st.session_state["summ4_touched"] = sorted(_touched)
+            queue_add("tab5_ready", [_book])
+        else:
+            queue_remove("tab4_ready", [rel])
+            queue_add("tab4_failed", [rel])
+        return _ok, f"{_cf.name}: {str(_msg)[:70]}"
+
+    def _summ4_on_done():
+        for _stem in st.session_state.get("summ4_touched", []):
+            try:
+                summarize_book_overview(DEFAULT_WS, _stem)
+            except Exception:
+                pass
+        st.session_state.pop("summ4_touched", None)
+        _set_stage_completion(
+            t("4-문서요약 완료"),
+            t("요약을 마쳤습니다. 다음 단계에서 Wiki 반영을 진행하세요."),
+            next_stage="5_wiki",
+            open_target=_stage_folder("4_summary"),
+        )
+
+    if _run_active("summ4"):
+        _run_panel("summ4", "문서요약 처리 중", _proc_summary4, on_done=_summ4_on_done)
+        st.stop()
+
     _src_n4f, _ko_n4f, _json_n4f = _chapter_counts()
     _ch_root4f = cfg.CHAPTERS_DIR
     _stage_flow_panel(
@@ -1983,14 +1997,16 @@ if _active_view == "4_summary":
     else:
         _settings_ai_note()
 
-        # TXT 직접 업로드 — 즉시 요약하지 않고 스테이징 후 선택 처리 (2026-07-09)
+        # TXT 직접 업로드 — 즉시 요약하지 않고 요약 대기 큐에 등록 (2026-07-09)
         _up4 = st.file_uploader(t("TXT 직접 업로드"),
                                   type=["txt"], accept_multiple_files=True, key="summ4_uploader")
+        st.caption(t(_DND_HINT))
+        st.caption(t("업로드한 TXT는 아래 '요약 대기'에 등록됩니다. [▶ 시작]을 눌러야 요약이 시작됩니다."))
         if not _up4:
             st.session_state.pop("_summ4_uploaded_tokens", None)
         if _up4:
             _seen4 = set(st.session_state.get("_summ4_uploaded_tokens", []))
-            _staged4 = list(st.session_state.get("_summ4_staged", []))
+            _staged4n = 0
             for _u4 in _up4:
                 _u4_bytes = _u4.getvalue()
                 _token4 = _upload_token(_u4.name, _u4_bytes)
@@ -2003,57 +2019,13 @@ if _active_view == "4_summary":
                 if not _ok4p or _ch4_path is None:
                     st.error(f"❌ {_u4.name}: {_prep4_msg}")
                     continue
-                _rel4u = str(_ch4_path.relative_to(cfg.BASE_DIR))
-                if _rel4u not in _staged4:
-                    _staged4.append(_rel4u)
+                queue_add("tab4_ready", [str(_ch4_path.relative_to(cfg.BASE_DIR))])
+                queue_remove("tab4_failed", [str(_ch4_path.relative_to(cfg.BASE_DIR))])
+                _staged4n += 1
             st.session_state["_summ4_uploaded_tokens"] = sorted(_seen4)
-            st.session_state["_summ4_staged"] = _staged4
+            if _staged4n:
+                st.success(tf("요약 대기에 %d개 등록됨 — 아래에서 [▶ 시작]", _staged4n))
             st.rerun()
-
-        # 업로드한 TXT 스테이징 목록 (선택 처리 / 전체 처리 / 삭제)
-        _staged4 = [r for r in st.session_state.get("_summ4_staged", [])
-                    if (cfg.BASE_DIR / r).exists() and summary_file_for(cfg.BASE_DIR / r) is None]
-        st.session_state["_summ4_staged"] = _staged4
-        if _staged4:
-            st.markdown(tf("#### 업로드한 TXT (%d개)", len(_staged4)))
-            _stg_items4 = [{"key": r, "label": Path(r).name,
-                            "meta": f"{(cfg.BASE_DIR / r).stat().st_size//1024}KB", "obj": r}
-                           for r in _staged4]
-            _stg_sel4 = _checklist(_stg_items4, "summ4stg", height=180, viewable=True)
-            _sb4c1, _sb4c2, _sb4c3 = st.columns(3)
-            _stg_run_sel4 = _sb4c1.button(tf("▶ 선택 처리 (%d개)", len(_stg_sel4)), key="summ4stg_sel",
-                                          use_container_width=True, type="primary", disabled=len(_stg_sel4)==0)
-            _stg_run_all4 = _sb4c2.button(tf("▶ 전체 처리 (%d개)", len(_staged4)), key="summ4stg_all",
-                                          use_container_width=True)
-            _stg_del4 = _sb4c3.button(tf("🗑 삭제 (%d개)", len(_stg_sel4)), key="summ4stg_del",
-                                      use_container_width=True, disabled=len(_stg_sel4)==0)
-            if _stg_del4 and _stg_sel4:
-                for _dr4 in _stg_sel4:
-                    try:
-                        (cfg.BASE_DIR / _dr4).unlink(missing_ok=True)
-                    except Exception:
-                        pass
-                st.session_state["_summ4_staged"] = [x for x in _staged4 if x not in _stg_sel4]
-                st.rerun()
-            _stg_to4 = _staged4 if _stg_run_all4 else (_stg_sel4 if _stg_run_sel4 else [])
-            if _stg_to4:
-                _sprog4 = st.progress(0.0)
-                _stg_stems4: set[str] = set()
-                for _sgi4, _sgr4 in enumerate(_stg_to4, 1):
-                    _sgcf4 = cfg.BASE_DIR / _sgr4
-                    _sgbook4 = _nfc(_sgcf4.parent.name)
-                    with st.status(f"요약 중: {_sgcf4.name}", expanded=False):
-                        _sgok4, _sgmsg4 = summarize_one_chapter(_sgcf4, _sgbook4)
-                    if _sgok4:
-                        _stg_stems4.add(_sgbook4)
-                        queue_add("tab5_ready", [_sgbook4])
-                    (st.success if _sgok4 else st.error)(f"{'✅' if _sgok4 else '❌'} {_sgcf4.name}: {_sgmsg4[:80]}")
-                    _sprog4.progress(_sgi4 / len(_stg_to4))
-                st.session_state["_summ4_staged"] = [x for x in _staged4 if x not in _stg_to4]
-                for _sgst4 in _stg_stems4:
-                    with st.status(tf("📚 책 전체요약 생성: %s", _sgst4), expanded=False):
-                        summarize_book_overview(DEFAULT_WS, _sgst4)
-                st.rerun()
 
         # ── 요약 대기 (큐 기반) ──────────────────────────────
         _q4_rels = queue_list("tab4_ready")
@@ -2107,65 +2079,20 @@ if _active_view == "4_summary":
         st.markdown(tf("#### 요약 대기 (%d개) / 완료 %d개", len(_sum_pend4), _sum_done4))
         if _sum_pend4:
             _sel4 = _checklist(_sum_pend4, "summ4", height=280, viewable=True)
-            _b4c1, _b4c2, _b4c3 = st.columns(3)
-            _rs4 = _b4c1.button(tf("▶ 선택 요약 (%d개)", len(_sel4)), key="summ4_run_sel",
+            _b4c1, _b4c2 = st.columns(2)
+            _rs4 = _b4c1.button(tf("▶ 시작 (%d개)", len(_sel4)), key="summ4_start",
                                   use_container_width=True, type="primary", disabled=len(_sel4)==0)
-            _ra4 = _b4c2.button(tf("▶ 전체 요약 (%d개)", len(_sum_pend4)), key="summ4_run_all",
-                                  use_container_width=True)
-            _del4 = _b4c3.button(tf("🗑 삭제 (%d개)", len(_sel4)), key="summ4_del",
+            _del4 = _b4c2.button(tf("🗑 삭제 (%d개)", len(_sel4)), key="summ4_del",
                                  use_container_width=True, disabled=len(_sel4)==0)
+            _sel4_rels = [str(_cfx.relative_to(cfg.BASE_DIR)) for _cfx, _bx in _sel4]
             if _del4 and _sel4:
-                _del4_rels = [str(_cfx.relative_to(cfg.BASE_DIR)) for _cfx, _bx in _sel4]
-                queue_remove("tab4_ready", _del4_rels)
-                queue_remove("tab4_failed", _del4_rels)
+                queue_remove("tab4_ready", _sel4_rels)
+                queue_remove("tab4_failed", _sel4_rels)
                 st.rerun()
-            _to4: list = ([it["obj"] for it in _sum_pend4] if _ra4 else (_sel4 if _rs4 else []))
-            if _to4:
-                # 진행바 하나가 "요약 n/N — 현재 장"으로 갱신 (상자 나열 대신, 2026-07-07)
-                _sp4 = st.progress(0.0, text=t("요약 준비 중…"))
-                _last4 = st.empty()
-                _fails4: list[tuple[str, str]] = []
-                _stems4_done: set[str] = set()
-                for _si4, (_sf4, _bst4) in enumerate(_to4, 1):
-                    _sp4.progress((_si4 - 1) / len(_to4),
-                                  text=tf("요약 %d/%d — %s", _si4, len(_to4), _sf4.stem[:40]))
-                    _ok4, _msg4 = summarize_one_chapter(_sf4, _bst4)
-                    if _ok4:
-                        _last4.caption(f"✅ {_sf4.stem[:40]}: {_msg4[:70]}")
-                        _rel4_done = str(_sf4.relative_to(cfg.BASE_DIR))
-                        queue_remove("tab4_ready", [_rel4_done])
-                        queue_remove("tab4_failed", [_rel4_done])
-                        _stems4_done.add(_bst4)
-                    else:
-                        _fails4.append((_sf4.name, _msg4))
-                        _last4.caption(f"⚠️ {_sf4.stem[:40]}: {_msg4[:70]}")
-                        _rel4_fail = str(_sf4.relative_to(cfg.BASE_DIR))
-                        queue_remove("tab4_ready", [_rel4_fail])
-                        queue_add("tab4_failed", [_rel4_fail])
-                    _sp4.progress(_si4 / len(_to4),
-                                  text=tf("요약 %d/%d — %s", _si4, len(_to4), _sf4.stem[:40]))
-                _last4.empty()
-                for _fn4, _fm4 in _fails4:
-                    st.warning(f"⚠️ {_fn4}: {_fm4[:100]}")
-                # 책 단위로 모든 챕터 요약 완료된 것만 tab5 큐에 등록
-                # + 책 전체요약(_overview.md) 자동 생성 (2026-07-07)
-                for _st5 in _stems4_done:
-                    queue_add("tab5_ready", [_st5])
-                    with st.status(tf("📚 책 전체요약 생성: %s", _st5), expanded=False):
-                        _ok_ov4, _msg_ov4 = summarize_book_overview(DEFAULT_WS, _st5)
-                    (st.success if _ok_ov4 else st.warning)(
-                        f"{'✅' if _ok_ov4 else '⚠️'} " +
-                        tf("전체요약 %s: %s", _st5, _msg_ov4[:80]))
-                st.success(f"요약 처리 완료: {len(_to4)}개")
-                _set_stage_completion(
-                    t("4-문서요약 완료"),
-                    tf("%d개 챕터 요약을 마쳤습니다. 다음 단계에서 Wiki 반영을 진행하세요.", len(_to4)),
-                    next_stage="5_wiki",
-                    open_target=_stage_folder("4_summary"),
-                )
-                st.rerun()
+            if _rs4 and _sel4_rels:
+                _run_start("summ4", _sel4_rels)
         else:
-            st.info(t("요약 대기 없음 — 🌐 영문번역 처리 후 자동 등록되거나 아래에서 수동 추가하세요"))
+            st.info(t("요약 대기 없음 — 🌐 영문번역 처리 후 자동 등록되거나 위에서 TXT를 직접 업로드하세요"))
 
         if _sum_failed4:
             st.markdown(tf("#### 요약 실패 (%d개)", len(_sum_failed4)))
@@ -2232,6 +2159,34 @@ if _active_view == "4_summary":
 
 # ── 5: Wiki반영 ─────────────────────────────────────────
 if _active_view == "5_wiki":
+    _cur_wiki5_path = _current_wiki_dir()
+
+    def _proc_wiki5(stem):
+        # 1단계: 챕터별 개별 노트, 2단계: 허브 노트(책 전체요약 + 링크)
+        _cdir = chapters_dir(DEFAULT_WS, stem)
+        _cfail = 0
+        for _cjf in list_summary_files(_cdir):
+            _cok, _ = build_single_chapter_wiki(DEFAULT_WS, stem, _cjf, wiki_dir=_cur_wiki5_path)
+            if not _cok:
+                _cfail += 1
+        _ok, _msg = build_wiki_from_chapter_summaries(DEFAULT_WS, stem, wiki_dir=_cur_wiki5_path)
+        if _ok:
+            queue_remove("tab5_ready", [stem])
+        _tail = f" (챕터노트 실패 {_cfail})" if _cfail else ""
+        return _ok, f"{stem}: {Path(_msg).name if _ok else str(_msg)[:70]}{_tail}"
+
+    def _wiki5_on_done():
+        _set_stage_completion(
+            t("5-Wiki 반영 완료"),
+            t("Wiki 반영을 마쳤습니다."),
+            next_stage=None,
+            open_target=_stage_folder("5_wiki"),
+        )
+
+    if _run_active("wiki5"):
+        _run_panel("wiki5", "위키반영 처리 중", _proc_wiki5, on_done=_wiki5_on_done)
+        st.stop()
+
     _, _, _json_n5f = _chapter_counts()
     _ch_root5f = cfg.CHAPTERS_DIR
     _vault5f = _current_wiki_dir()
@@ -2369,48 +2324,15 @@ if _active_view == "5_wiki":
                             else:
                                 _cj1.caption(f"⏳ {_cn5}")
         _b5c1, _b5c2 = st.columns(2)
-        _rs5 = _b5c1.button(tf("▶ Wiki 생성 (%d권)", len(_sel5)), key="wiki5_run_sel",
+        _rs5 = _b5c1.button(tf("▶ 시작 (%d권)", len(_sel5)), key="wiki5_run_sel",
                               use_container_width=True, type="primary", disabled=len(_sel5)==0)
         _del5 = _b5c2.button(tf("🗑 삭제 (%d권)", len(_sel5)), key="wiki5_del",
                              use_container_width=True, disabled=len(_sel5)==0)
         if _del5 and _sel5:
             queue_remove("tab5_ready", [_o5["stem"] for _o5 in _sel5])
             st.rerun()
-        _to5 = _sel5 if _rs5 else []
-        if _to5:
-            _wp5 = st.progress(0.0)
-            for _wi5, _wo5 in enumerate(_to5, 1):
-                with st.status(f"Wiki [{_wi5}/{len(_to5)}]: {_wo5['stem']}", expanded=True):
-                    # 1단계: 챕터별 개별 노트 생성
-                    _ch_dir5 = chapters_dir(_wo5["ws"], _wo5["stem"])
-                    _ch_jsons5 = list_summary_files(_ch_dir5)
-                    _ch_ok5, _ch_fail5 = 0, 0
-                    for _cjf5 in _ch_jsons5:
-                        _bok5, _bmsg5 = build_single_chapter_wiki(
-                            _wo5["ws"], _wo5["stem"], _cjf5, wiki_dir=_cur_wiki5_path)
-                        if _bok5:
-                            _ch_ok5 += 1
-                        else:
-                            _ch_fail5 += 1
-                            st.warning(f"챕터 노트 실패: {_cjf5.stem} — {_bmsg5}")
-                    if _ch_jsons5:
-                        st.write(f"챕터 노트: ✅ {_ch_ok5}개 생성" + (f", ❌ {_ch_fail5}개 실패" if _ch_fail5 else ""))
-                    # 2단계: 허브 노트 — 책 전체요약(_전체요약.md, 없으면 자동 생성) + 챕터 링크·요약
-                    st.write(t("📚 허브 노트 생성 — 책 전체요약 + 챕터 링크·요약 포함"))
-                    _ok5, _msg5 = build_wiki_from_chapter_summaries(_wo5["ws"], _wo5["stem"], wiki_dir=_cur_wiki5_path)
-                (st.success if _ok5 else st.error)(
-                    f"{'✅' if _ok5 else '❌'} {_wo5['stem']}: "
-                    f"{Path(_msg5).name if _ok5 else _msg5}")
-                if _ok5:
-                    queue_remove("tab5_ready", [_wo5["stem"]])
-                _wp5.progress(_wi5 / len(_to5))
-            _set_stage_completion(
-                t("5-Wiki 반영 완료"),
-                tf("%d권 Wiki 반영을 마쳤습니다.", len(_to5)),
-                next_stage=None,
-                open_target=_stage_folder("5_wiki"),
-            )
-            st.rerun()
+        if _rs5 and _sel5:
+            _run_start("wiki5", [_o5["stem"] for _o5 in _sel5])
     else:
         st.info(t("Wiki 대기 없음 — 📝 문서요약에서 요약 완료 후 자동 등록되거나 아래에서 수동 추가하세요"))
 
@@ -2508,17 +2430,24 @@ if _active_view == "settings":
         "저장 키는 `~/.config/mybookshelf/keys.json`에만 보관되며 저장소에 올라가지 않습니다."
     ))
     with st.expander(t("저작권 및 사용 주의"), expanded=False):
-        st.write(
-            "이 앱은 문서 정리와 개인 연구 보조를 위한 도구입니다. 저작권 보호 문서의 복제, 번역, 요약, 배포 가능 여부는 "
-            "사용자가 직접 확인해야 합니다."
-        )
-        st.write(
-            "AI API 또는 CLI 구독 도구를 활성화하면 문서 일부 또는 전체가 외부 서비스로 전송될 수 있습니다. "
-            "개인정보, 비공개 원고, 계약상 반출 금지 자료는 넣지 않는 것을 권장합니다."
-        )
-        st.write(
-            "생성 결과의 정확성, 인용 적합성, 신학적 해석, 법적 판단은 자동 보증되지 않습니다. 출판, 제출, 배포 전에는 원문과 직접 대조해 검토하세요."
-        )
+        st.markdown(t(
+            "**My Bookshelf** · © 2026 저작자 — 개인·비상업 연구 보조 용도. "
+            "이 프로그램의 저작권은 저작자에게 있으며, 개인적·학술적 용도로 사용할 수 있으나 "
+            "서면 동의 없는 재판매·상업적 배포는 허용되지 않습니다. 프로그램은 '있는 그대로' 제공되며 "
+            "정확성·무결성을 보증하지 않습니다."
+        ))
+        st.write(t(
+            "원문 문서의 저작권·번역권·요약·재배포 가능 여부는 이용자 본인이 확인해야 합니다. "
+            "이 앱은 법률·출판·학술 제출 요건을 자동 판정하지 않습니다."
+        ))
+        st.write(t(
+            "AI API 또는 CLI 구독 도구를 활성화하면 문서 일부 또는 전체가 외부 AI 서비스로 전송됩니다. "
+            "개인정보, 비공개 원고, 배포 권한이 불명확한 자료는 넣지 마세요."
+        ))
+        st.write(t(
+            "생성된 번역·요약·위키 노트의 정확성·완전성은 보장되지 않습니다. "
+            "출판·제출·인용·대외 배포 전에는 반드시 원문과 결과물을 직접 대조해 검토하세요."
+        ))
 
     # 🧠 위키 생성 모델 (공급자/모델)
     _wp, _wm = llm.wiki_provider_model()

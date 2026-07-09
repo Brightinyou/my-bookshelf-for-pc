@@ -141,12 +141,23 @@ def main() -> int:
             "Run setup.bat again or check whether security software blocked Python.",
         )
 
+    # 창 크기를 화면 해상도에 맞춘다 — HD(1366×768)에서 세로 넘침 방지 (2026-07-09).
+    # 화면의 ~92%를 넘지 않게, 기본 최대치(1280×1040)로 상한. 실패 시 HD 기준.
+    try:
+        _scr = webview.screens[0]
+        _sw, _sh = int(_scr.width), int(_scr.height)
+    except Exception:
+        _sw, _sh = 1366, 768
+    _win_w = max(900, min(1280, int(_sw * 0.92)))
+    _win_h = max(640, min(1040, int(_sh * 0.92)))
+    _min_w = min(900, _win_w)
+    _min_h = min(720, _win_h)
     webview.create_window(
         APP_TITLE,
         url,
-        width=1280,
-        height=1040,
-        min_size=(980, 820),
+        width=_win_w,
+        height=_win_h,
+        min_size=(_min_w, _min_h),
         text_select=True,
     )
     icon = APP_ICON if os.path.exists(APP_ICON) else None
