@@ -478,7 +478,7 @@ if "ui_font_scale" not in st.session_state:
 def _font_scale_controls():
     cur = float(st.session_state.get("ui_font_scale", 1.0))
     c1, c2, c3 = st.columns([0.75, 1, 0.75])
-    if c1.button("-", key="font_size_minus", use_container_width=True, help="글자 크기 줄이기"):
+    if c1.button("", icon=":material/text_decrease:", key="font_size_minus", use_container_width=True, help="글자 크기 줄이기"):
         st.session_state["ui_font_scale"] = max(0.85, round(cur - 0.05, 2))
         st.rerun()
     c2.markdown(
@@ -486,7 +486,7 @@ def _font_scale_controls():
         f"{int(cur * 100)}%</div>",
         unsafe_allow_html=True,
     )
-    if c3.button("+", key="font_size_plus", use_container_width=True, help="글자 크기 키우기"):
+    if c3.button("", icon=":material/text_increase:", key="font_size_plus", use_container_width=True, help="글자 크기 키우기"):
         st.session_state["ui_font_scale"] = min(1.35, round(cur + 0.05, 2))
         st.rerun()
 
@@ -759,6 +759,14 @@ textarea,
     border-color: #111827;
     color: #ffffff !important;
 }
+/* 버튼 아이콘·라벨 통일 (Material 아이콘 도입, 2026-07-09) */
+.stButton button p, .stFormSubmitButton button p { font-weight: 600; }
+.stButton button [data-testid="stIconMaterial"],
+.stFormSubmitButton button [data-testid="stIconMaterial"] {
+    font-size: 1.15em;
+    margin-right: 0.15em;
+    vertical-align: middle;
+}
 </style>
 """.replace("__MB_FONT_SCALE__", str(_ui_font_scale)), unsafe_allow_html=True)
 
@@ -918,7 +926,7 @@ with st.expander(t("📁 저장 위치"), expanded=False):
         _lc1, _lc2 = st.columns([0.85, 2.2])
         _lc1.markdown(f"**{_lname}**")
         _lc2.caption(str(_lpath))
-        if _lc1.button(t("열기"), key=f"open_loc_{_lname}", use_container_width=True, disabled=not _lpath.exists()):
+        if _lc1.button(t("열기"), icon=":material/folder_open:", key=f"open_loc_{_lname}", use_container_width=True, disabled=not _lpath.exists()):
             open_path(_lpath)
 
 
@@ -984,15 +992,15 @@ def _render_stage_completion_notice() -> None:
         st.write(payload["message"])
         c1, c2, c3 = st.columns(3)
         if payload.get("next_stage"):
-            if c1.button(t("다음 단계"), key="stage_done_next", use_container_width=True, type="primary"):
+            if c1.button(t("다음 단계"), icon=":material/arrow_forward:", key="stage_done_next", use_container_width=True, type="primary"):
                 next_stage = payload["next_stage"]
                 _clear_stage_completion()
                 _goto_view(next_stage)
         if payload.get("open_target"):
             _target = Path(payload["open_target"])
-            if c2.button(t("결과 폴더 열기"), key="stage_done_open", use_container_width=True):
+            if c2.button(t("결과 폴더 열기"), icon=":material/folder_open:", key="stage_done_open", use_container_width=True):
                 open_path(_target, reveal=_target.is_file())
-        if c3.button(t("닫기"), key="stage_done_close", use_container_width=True):
+        if c3.button(t("닫기"), icon=":material/close:", key="stage_done_close", use_container_width=True):
             _clear_stage_completion()
             st.rerun()
 
@@ -1159,7 +1167,7 @@ def _stage_flow_panel(app_title: str, app_desc: str,
     with st.expander(t("📁 폴더 열기"), expanded=False):
         _fcols = st.columns(len(cards))
         for i, (label, path, _count_txt) in enumerate(cards):
-            if _fcols[i].button(t(label), key=f"{key_prefix}_open_{i}",
+            if _fcols[i].button(t(label), icon=":material/folder_open:", key=f"{key_prefix}_open_{i}",
                                 use_container_width=True, disabled=not path.exists(),
                                 help=str(path)):
                 open_path(path)
@@ -1203,7 +1211,7 @@ def _run_panel(tab: str, title: str, process_one, on_done=None) -> None:
 
     st.markdown(f"### ⏳ {t(title)}")
     st.progress(min(done / total, 1.0), text=tf("%d/%d 처리 중", done, total))
-    _stopped = st.button(t("■ 중단"), key=f"{tab}_stopbtn", type="primary")
+    _stopped = st.button(t("중단"), icon=":material/stop:", key=f"{tab}_stopbtn", type="primary")
     st.caption(t("처리 중에는 다른 기능이 잠깁니다. '중단'을 누르면 현재 항목까지 마친 뒤 멈추고, 남은 작업은 다시 '시작'으로 이어집니다."))
     with st.container(height=300, border=True):
         for _ln in log[-80:]:
@@ -1269,11 +1277,11 @@ def _checklist(items: list[dict], prefix: str, height: int = 320, viewable: bool
     Returns: 선택된 obj 목록."""
     _keys = _checklist_keys(items, prefix)
     h1, h2, h3 = st.columns([1.3, 1, 4])
-    if h1.button(t("✅ 전체 선택"), key=f"{prefix}_sa", use_container_width=True):
+    if h1.button(t("전체 선택"), icon=":material/select_all:", key=f"{prefix}_sa", use_container_width=True):
         for _k in _keys:
             st.session_state[_k] = True
         st.rerun()
-    if h2.button(t("⬜ 해제"), key=f"{prefix}_da", use_container_width=True):
+    if h2.button(t("해제"), icon=":material/deselect:", key=f"{prefix}_da", use_container_width=True):
         for _k in _keys:
             st.session_state[_k] = False
         st.rerun()
@@ -1292,7 +1300,7 @@ def _checklist(items: list[dict], prefix: str, height: int = 320, viewable: bool
             if viewable:
                 target = _view_target_from_item(it)
                 safe_key = _re.sub(r"[^a-zA-Z0-9가-힣_-]+", "_", str(it["key"]))[:80]
-                if cols[2].button(t("보기"), key=f"{prefix}_view_{idx}_{safe_key}", use_container_width=True,
+                if cols[2].button(t("보기"), icon=":material/visibility:", key=f"{prefix}_view_{idx}_{safe_key}", use_container_width=True,
                                   disabled=target is None):
                     open_path(target, reveal=target.is_file())
             if chk:
@@ -1413,7 +1421,7 @@ if _active_view in {"1_txt", "all_run"}:
             "② DOI(10.xxxx/…)나 arXiv 번호(예: 2412.12107)가 있으면 그 값을 넣는 편이 가장 안정적입니다. "
             "③ 링크 끝이 `.pdf`인 직접 주소를 쓰세요. ④ 그래도 안 되면 브라우저에서 PDF를 저장한 뒤 업로드하는 방법이 가장 확실합니다."
         ))
-        if st.button(t("다운로드 확인 후 TXT 저장"), key="ocr1_source_prepare",
+        if st.button(t("다운로드 확인 후 TXT 저장"), icon=":material/download:", key="ocr1_source_prepare",
                      use_container_width=True, type="primary",
                      disabled=not _paper_src1.strip()):
             _ok_prep1 = False
@@ -1445,19 +1453,19 @@ if _active_view in {"1_txt", "all_run"}:
         with st.container(border=True):
             _prh1, _prh2 = st.columns([5, 1])
             _prh1.markdown(tf("**🔎 최근 가져온 논문:** %s", _pr1["name"]))
-            if _prh2.button(t("✕ 닫기"), key="paper1_result_close", use_container_width=True):
+            if _prh2.button(t("닫기"), icon=":material/close:", key="paper1_result_close", use_container_width=True):
                 st.session_state.pop("paper1_result", None)
                 st.rerun()
             _txt_p1 = Path(_pr1["txt"]) if _pr1.get("txt") else None
             _pdf_p1 = Path(_pr1["pdf"]) if _pr1.get("pdf") else None
             _pra1, _prb1 = st.columns([4.2, 1])
             _pra1.caption(tf("📝 변환 TXT: %s", _txt_p1 if _txt_p1 else "—"))
-            if _prb1.button(t("📂 위치 열기"), key="paper1_open_txt", use_container_width=True,
+            if _prb1.button(t("위치 열기"), icon=":material/folder_open:", key="paper1_open_txt", use_container_width=True,
                             disabled=not (_txt_p1 and _txt_p1.exists())):
                 open_path(_txt_p1, reveal=True)
             _pra2, _prb2 = st.columns([4.2, 1])
             _pra2.caption(tf("📄 원본 PDF: %s", _pdf_p1 if _pdf_p1 else t("— (TXT 출처라 PDF 없음)")))
-            if _prb2.button(t("📂 위치 열기"), key="paper1_open_pdf", use_container_width=True,
+            if _prb2.button(t("위치 열기"), icon=":material/folder_open:", key="paper1_open_pdf", use_container_width=True,
                             disabled=not (_pdf_p1 and _pdf_p1.exists())):
                 open_path(_pdf_p1, reveal=True)
 
@@ -1480,9 +1488,9 @@ if _active_view in {"1_txt", "all_run"}:
         ]
         _sel1 = _checklist(_items1, "ocr1", height=250, viewable=True)
         _b1c1, _b1c2 = st.columns(2)
-        _run_sel1 = _b1c1.button(tf("▶ 텍스트 변환 처리 (%d개)", len(_sel1)), key="ocr1_run_sel",
+        _run_sel1 = _b1c1.button(tf("텍스트 변환 처리 (%d개)", len(_sel1)), icon=":material/play_arrow:", key="ocr1_run_sel",
                                    use_container_width=True, type="primary", disabled=len(_sel1)==0)
-        _del1 = _b1c2.button(tf("🗑 삭제 (%d개)", len(_sel1)), key="ocr1_del_sel",
+        _del1 = _b1c2.button(tf("삭제 (%d개)", len(_sel1)), icon=":material/delete:", key="ocr1_del_sel",
                              use_container_width=True, disabled=len(_sel1)==0)
         if _del1 and _sel1:
             for _dobj1 in _sel1:
@@ -1528,9 +1536,9 @@ if _active_view in {"1_txt", "all_run"}:
             for _ff1 in _fail1[:30]:
                 _fc1, _fc2, _fc3 = st.columns([5, 1, 1])
                 _fc1.caption(_ff1.name)
-                if _fc2.button("↩️", key=f"retry_f1_{_ff1}", help="재시도"):
+                if _fc2.button("", icon=":material/undo:", key=f"retry_f1_{_ff1}", help="재시도"):
                     shutil.move(str(_ff1), str(UPLOAD_TMP / _ff1.name)); st.rerun()
-                if _fc3.button("🗑", key=f"del_f1_{_ff1}", help="삭제"):
+                if _fc3.button("", icon=":material/delete:", key=f"del_f1_{_ff1}", help="삭제"):
                     try: _ff1.unlink()
                     except Exception: pass
                     st.rerun()
@@ -1660,12 +1668,12 @@ if _active_view == "2_split":
     if _split_pend2:
         _sel2 = _checklist(_split_pend2, "split2", height=280, viewable=True)
         _b2c1, _b2c2, _b2c3 = st.columns(3)
-        _rs2 = _b2c1.button(tf("▶ 분할 처리 (%d권)", len(_sel2)), key="split2_run_sel",
+        _rs2 = _b2c1.button(tf("분할 처리 (%d권)", len(_sel2)), icon=":material/play_arrow:", key="split2_run_sel",
                               use_container_width=True, type="primary", disabled=len(_sel2)==0)
-        _next2 = _b2c2.button(tf("➡ 다음단계로 이동 (%d권)", len(_sel2)), key="split2_next",
+        _next2 = _b2c2.button(tf("다음단계로 이동 (%d권)", len(_sel2)), icon=":material/arrow_forward:", key="split2_next",
                               use_container_width=True, disabled=len(_sel2)==0,
                               help=t("분할 없이 단일장으로 저장하고 영문은 영문번역, 한글은 문서요약으로 이동"))
-        _del2 = _b2c3.button(tf("🗑 삭제 (%d권)", len(_sel2)), key="split2_del",
+        _del2 = _b2c3.button(tf("삭제 (%d권)", len(_sel2)), icon=":material/delete:", key="split2_del",
                              use_container_width=True, disabled=len(_sel2)==0)
         if _del2 and _sel2:
             for _dobj2 in _sel2:
@@ -1719,7 +1727,7 @@ if _active_view == "2_split":
                 _sc1, _sc2, _sc3, _sc4 = st.columns([4, 1, 1.4, 1.4])
                 _sc1.markdown(f"**{_sh2['label']}**")
                 _sc2.caption(_sh2["meta"])
-                if _sc3.button(t("분할 처리"), key=f"short_split_yes_{_sh2['key']}",
+                if _sc3.button(t("분할 처리"), icon=":material/play_arrow:", key=f"short_split_yes_{_sh2['key']}",
                                use_container_width=True):
                     _sn2, _serr2, _ = split_book_to_chapters(_sh2["obj"]["ws"], _sh2["obj"]["stem"], allow_short=True)
                     if _serr2:
@@ -1738,7 +1746,7 @@ if _active_view == "2_split":
                                 queue_add("tab4_ready", _new_chs2)
                             _archive_split_source(_sh2["obj"]["stem"])
                         st.rerun()
-                if _sc4.button(t("➡ 다음단계로 이동"), key=f"short_split_keep_{_sh2['key']}",
+                if _sc4.button(t("다음단계로 이동"), icon=":material/arrow_forward:", key=f"short_split_keep_{_sh2['key']}",
                                use_container_width=True, type="primary"):
                     _one_path2, _ = _write_single_chapter_from_text(_sh2["obj"]["ws"], _sh2["obj"]["stem"], _sh2["text"])
                     queue_remove("tab2_ready", [_sh2["obj"]["stem"]])
@@ -1768,7 +1776,7 @@ if _active_view == "2_split":
         for _ns2 in list(_nosplit2):
             _nc1, _nc2, _nc3 = st.columns([4, 1.6, 0.7])
             _nc1.markdown(f"**{_ns2}**")
-            if _nc2.button(t("📄 단일장으로 저장"), key=f"nosplit_save_{_ns2}", use_container_width=True):
+            if _nc2.button(t("단일장으로 저장"), icon=":material/article:", key=f"nosplit_save_{_ns2}", use_container_width=True):
                 _sn2b, _smsg2b, _ = split_book_to_chapters(DEFAULT_WS, _ns2, allow_short=True)
                 if _sn2b > 0:
                     queue_remove("tab2_ready", [_ns2])
@@ -1786,7 +1794,7 @@ if _active_view == "2_split":
                     st.rerun()
                 else:
                     st.error(f"❌ {_ns2}: {_smsg2b}")
-            if _nc3.button("✕", key=f"nosplit_dismiss_{_ns2}", help="목록에서 제거"):
+            if _nc3.button("", icon=":material/close:", key=f"nosplit_dismiss_{_ns2}", help="목록에서 제거"):
                 st.session_state["split2_nosplit"] = [x for x in _nosplit2 if x != _ns2]
                 st.rerun()
 
@@ -1804,7 +1812,7 @@ if _active_view == "2_split":
                            "meta": f"{f.stat().st_size//1024}KB", "obj": f.stem}
                           for f in _filtered2]
         _msel2 = _checklist(_manual_items2, "split2m", height=220)
-        if st.button(tf("➕ 선택 항목 큐에 추가 (%d권)", len(_msel2)), key="split2m_add",
+        if st.button(tf("선택 항목 큐에 추가 (%d권)", len(_msel2)), icon=":material/add:", key="split2m_add",
                      disabled=len(_msel2)==0):
             queue_add("tab2_ready", _msel2); st.rerun()
 
@@ -1816,19 +1824,19 @@ if _active_view == "2_split":
                 _sdc1, _sdc2, _sdc3, _sdc4 = st.columns([5, 1.2, 1.2, 1])
                 _sdc1.markdown(f"**{_sd2['stem']}** &nbsp;<small style='color:#9ca3af'>{_sd2['n']}챕터</small>",
                                unsafe_allow_html=True)
-                if _sdc2.button(t("📂 열기"), key=f"open_ch2_{_sd2['stem']}", use_container_width=True):
+                if _sdc2.button(t("열기"), icon=":material/folder_open:", key=f"open_ch2_{_sd2['stem']}", use_container_width=True):
                     open_path(_sd2["ch_dir"])
-                if _sdc3.button("↔", key=f"merge_ch2_{_sd2['stem']}", help="다시 합치기"):
+                if _sdc3.button("", icon=":material/merge:", key=f"merge_ch2_{_sd2['stem']}", help="다시 합치기"):
                     _okm2, _mp2, _mm2 = _merge_chapter_folder(DEFAULT_WS, _sd2["stem"], prefer_ko=False)
                     (st.success if _okm2 else st.error)(
                         f"{'✅' if _okm2 else '❌'} {_sd2['stem']}: {Path(_mp2).name if _okm2 else _mm2}")
                     st.rerun()
-                if _sdc4.button(t("🌐 합친 번역본"), key=f"merge_ch2_ko_{_sd2['stem']}", use_container_width=True):
+                if _sdc4.button(t("합친 번역본"), icon=":material/translate:", key=f"merge_ch2_ko_{_sd2['stem']}", use_container_width=True):
                     _okm2, _mp2, _mm2 = _merge_chapter_folder(DEFAULT_WS, _sd2["stem"], prefer_ko=True)
                     (st.success if _okm2 else st.error)(
                         f"{'✅' if _okm2 else '❌'} {_sd2['stem']}: {Path(_mp2).name if _okm2 else _mm2}")
                     st.rerun()
-                if st.button("🔄", key=f"resplit2_{_sd2['stem']}", help="재분할"):
+                if st.button("", icon=":material/refresh:", key=f"resplit2_{_sd2['stem']}", help="재분할"):
                     for _f2 in _sd2["ch_dir"].glob("*"):
                         try: _f2.unlink()
                         except Exception: pass
@@ -1938,9 +1946,9 @@ if _active_view == "3_translate":
         if _tr_pend3:
             _sel3 = _checklist(_tr_pend3, "tr3", height=280, viewable=True)
             _b3c1, _b3c2 = st.columns(2)
-            _rs3 = _b3c1.button(tf("▶ 시작 (%d개)", len(_sel3)), key="tr3_start",
+            _rs3 = _b3c1.button(tf("시작 (%d개)", len(_sel3)), icon=":material/play_arrow:", key="tr3_start",
                                   use_container_width=True, type="primary", disabled=len(_sel3)==0)
-            _del3 = _b3c2.button(tf("🗑 삭제 (%d개)", len(_sel3)), key="tr3_del",
+            _del3 = _b3c2.button(tf("삭제 (%d개)", len(_sel3)), icon=":material/delete:", key="tr3_del",
                                  use_container_width=True, disabled=len(_sel3)==0)
             if _del3 and _sel3:
                 queue_remove("tab3_ready", _sel3)
@@ -2093,9 +2101,9 @@ if _active_view == "4_summary":
         if _sum_pend4:
             _sel4 = _checklist(_sum_pend4, "summ4", height=280, viewable=True)
             _b4c1, _b4c2 = st.columns(2)
-            _rs4 = _b4c1.button(tf("▶ 시작 (%d개)", len(_sel4)), key="summ4_start",
+            _rs4 = _b4c1.button(tf("시작 (%d개)", len(_sel4)), icon=":material/play_arrow:", key="summ4_start",
                                   use_container_width=True, type="primary", disabled=len(_sel4)==0)
-            _del4 = _b4c2.button(tf("🗑 삭제 (%d개)", len(_sel4)), key="summ4_del",
+            _del4 = _b4c2.button(tf("삭제 (%d개)", len(_sel4)), icon=":material/delete:", key="summ4_del",
                                  use_container_width=True, disabled=len(_sel4)==0)
             _sel4_rels = [str(_cfx.relative_to(cfg.BASE_DIR)) for _cfx, _bx in _sel4]
             if _del4 and _sel4:
@@ -2111,12 +2119,12 @@ if _active_view == "4_summary":
             st.markdown(tf("#### 요약 실패 (%d개)", len(_sum_failed4)))
             _fail_sel4 = _checklist(_sum_failed4, "summ4_failed", height=180)
             _f4c1, _f4c2 = st.columns([2, 1])
-            if _f4c1.button(tf("↻ 선택 재시도 대기 (%d개)", len(_fail_sel4)), key="summ4_retry_failed",
+            if _f4c1.button(tf("선택 재시도 대기 (%d개)", len(_fail_sel4)), icon=":material/refresh:", key="summ4_retry_failed",
                               use_container_width=True, disabled=len(_fail_sel4)==0):
                 queue_remove("tab4_failed", _fail_sel4)
                 queue_add("tab4_ready", _fail_sel4)
                 st.rerun()
-            if _f4c2.button(t("🗑 실패 목록 비우기"), key="summ4_clear_failed", use_container_width=True):
+            if _f4c2.button(t("실패 목록 비우기"), icon=":material/delete_sweep:", key="summ4_clear_failed", use_container_width=True):
                 queue_clear("tab4_failed")
                 st.rerun()
 
@@ -2133,7 +2141,8 @@ if _active_view == "4_summary":
                     _oc1, _oc2, _oc3, _oc4 = st.columns([4, 1.2, 1.4, 1])
                     _oc1.markdown(f"**{_bd4.name}**")
                     _oc2.caption(t("✅ 있음") if _has4 else t("— 없음"))
-                    if _oc3.button(t("↻ 재생성") if _has4 else t("▶ 생성"),
+                    if _oc3.button(t("재생성") if _has4 else t("생성"),
+                                   icon=":material/refresh:" if _has4 else ":material/play_arrow:",
                                    key=f"ov4_gen_{_bd4.name}", use_container_width=True):
                         with st.status(tf("📚 책 전체요약 생성: %s", _bd4.name), expanded=False):
                             _ok_ov4b, _msg_ov4b = summarize_book_overview(DEFAULT_WS, _nfc(_bd4.name))
@@ -2141,7 +2150,7 @@ if _active_view == "4_summary":
                             f"{'✅' if _ok_ov4b else '❌'} {_msg_ov4b[:100]}")
                         if _ok_ov4b:
                             st.rerun()
-                    if _oc4.button(t("보기"), key=f"ov4_view_{_bd4.name}",
+                    if _oc4.button(t("보기"), icon=":material/visibility:", key=f"ov4_view_{_bd4.name}",
                                    use_container_width=True, disabled=not _has4):
                         open_path(_ovf4, reveal=True)
                     if _has4:
@@ -2164,7 +2173,7 @@ if _active_view == "4_summary":
                          "meta": f"{f.stat().st_size//1024}KB", "obj": str(f.relative_to(cfg.BASE_DIR))}
                         for f in _filt4]
             _msel4 = _checklist(_mitems4, "summ4m", height=200)
-            if st.button(tf("➕ 선택 항목 큐에 추가 (%d개)", len(_msel4)), key="summ4m_add", disabled=len(_msel4)==0):
+            if st.button(tf("선택 항목 큐에 추가 (%d개)", len(_msel4)), icon=":material/add:", key="summ4m_add", disabled=len(_msel4)==0):
                 queue_add("tab4_ready", _msel4); st.rerun()
 
     st.info(t("💡 다음 단계: **📖 위키반영**으로 이동하세요"))
@@ -2227,7 +2236,7 @@ if _active_view == "5_wiki":
                                        key="wiki5_vault_sel",
                                        format_func=lambda p: f"{Path(p).name}  ({p})")
             if _vault_sel5 != _cur_wiki5:
-                if st.button(t("✅ 이 보관함(Vault)로 변경 (즉시 적용)"), key="wiki5_vault_save"):
+                if st.button(t("이 보관함(Vault)로 변경 (즉시 적용)"), icon=":material/check:", key="wiki5_vault_save"):
                     set_wiki_dir(_vault_sel5)
                     st.session_state["wiki5_active_dir"] = _vault_sel5
                     st.success(f"✅ 보관함(Vault) 변경됨: {_vault_sel5}")
@@ -2235,7 +2244,7 @@ if _active_view == "5_wiki":
         else:
             st.info(t("Obsidian 보관함(Vault) 목록을 가져올 수 없습니다. Obsidian이 설치·실행됐는지 확인하세요."))
         _custom5 = st.text_input(t("또는 직접 경로 입력"), key="wiki5_vault_custom", placeholder="/path/to/vault")
-        if _custom5 and st.button(t("✅ 직접 입력 경로로 변경 (즉시 적용)"), key="wiki5_vault_custom_save"):
+        if _custom5 and st.button(t("직접 입력 경로로 변경 (즉시 적용)"), icon=":material/check:", key="wiki5_vault_custom_save"):
             set_wiki_dir(_custom5)
             st.session_state["wiki5_active_dir"] = _custom5
             st.success(f"✅ 보관함(Vault) 변경됨: {_custom5}")
@@ -2281,11 +2290,11 @@ if _active_view == "5_wiki":
         # 전체 선택 / 해제 (분할 탭 체크리스트와 동일한 조작)
         _wk5_keys = [f"wiki5_{_it5['key']}" for _it5 in _wiki_pend5]
         _wsel5c1, _wsel5c2, _wsel5c3 = st.columns([1.3, 1, 4])
-        if _wsel5c1.button(t("✅ 전체 선택"), key="wiki5_select_all", use_container_width=True):
+        if _wsel5c1.button(t("전체 선택"), icon=":material/select_all:", key="wiki5_select_all", use_container_width=True):
             for _wk in _wk5_keys:
                 st.session_state[_wk] = True
             st.rerun()
-        if _wsel5c2.button(t("⬜ 해제"), key="wiki5_deselect_all", use_container_width=True):
+        if _wsel5c2.button(t("해제"), icon=":material/deselect:", key="wiki5_deselect_all", use_container_width=True):
             for _wk in _wk5_keys:
                 st.session_state[_wk] = False
             st.rerun()
@@ -2308,7 +2317,7 @@ if _active_view == "5_wiki":
                     _ch_preview5 += f" … +{len(_it5['ch_names'])-4}개"
                 _c5c.caption(_it5["meta"])
                 _view_dir5 = chapters_dir(DEFAULT_WS, _it5["obj"]["stem"])
-                if _c5d.button(t("보기"), key=f"wiki5_view_{_it5['key']}", use_container_width=True,
+                if _c5d.button(t("보기"), icon=":material/visibility:", key=f"wiki5_view_{_it5['key']}", use_container_width=True,
                                 disabled=not _view_dir5.exists()):
                     open_path(_view_dir5)
                 if _it5["ch_names"]:
@@ -2323,7 +2332,7 @@ if _active_view == "5_wiki":
                             if _has_json5:
                                 _cj1.markdown(f"✅ **{_cn5}**")
                                 _safe_key5 = _re.sub(r"[^a-zA-Z0-9가-힣]", "_", _cn5)[:30]
-                                if _cj2.button("Wiki", key=f"ch5w_{_it5['key'][:20]}_{_safe_key5}", use_container_width=True):
+                                if _cj2.button("Wiki", icon=":material/menu_book:", key=f"ch5w_{_it5['key'][:20]}_{_safe_key5}", use_container_width=True):
                                     _bok5, _bmsg5 = build_single_chapter_wiki(DEFAULT_WS, _it5["obj"]["stem"], _cn5_json, wiki_dir=_cur_wiki5_path)
                                     (st.success if _bok5 else st.error)(
                                         f"{'✅ ' + Path(_bmsg5).name if _bok5 else '❌ ' + _bmsg5}")
@@ -2337,9 +2346,9 @@ if _active_view == "5_wiki":
                             else:
                                 _cj1.caption(f"⏳ {_cn5}")
         _b5c1, _b5c2 = st.columns(2)
-        _rs5 = _b5c1.button(tf("▶ 시작 (%d권)", len(_sel5)), key="wiki5_run_sel",
+        _rs5 = _b5c1.button(tf("시작 (%d권)", len(_sel5)), icon=":material/play_arrow:", key="wiki5_run_sel",
                               use_container_width=True, type="primary", disabled=len(_sel5)==0)
-        _del5 = _b5c2.button(tf("🗑 삭제 (%d권)", len(_sel5)), key="wiki5_del",
+        _del5 = _b5c2.button(tf("삭제 (%d권)", len(_sel5)), icon=":material/delete:", key="wiki5_del",
                              use_container_width=True, disabled=len(_sel5)==0)
         if _del5 and _sel5:
             queue_remove("tab5_ready", [_o5["stem"] for _o5 in _sel5])
@@ -2365,10 +2374,10 @@ if _active_view == "5_wiki":
                     for d in _filt5]
         _msel5 = _checklist(_mitems5, "wiki5m", height=200)
         _madd5c1, _madd5c2 = st.columns(2)
-        if _madd5c1.button(tf("➕ 선택 항목 큐에 추가 (%d권)", len(_msel5)), key="wiki5m_add",
+        if _madd5c1.button(tf("선택 항목 큐에 추가 (%d권)", len(_msel5)), icon=":material/add:", key="wiki5m_add",
                            use_container_width=True, disabled=len(_msel5)==0):
             queue_add("tab5_ready", _msel5); st.rerun()
-        if _madd5c2.button(tf("🗑 삭제 (%d권)", len(_msel5)), key="wiki5m_del",
+        if _madd5c2.button(tf("삭제 (%d권)", len(_msel5)), icon=":material/delete:", key="wiki5m_del",
                            use_container_width=True, disabled=len(_msel5)==0):
             queue_remove("tab5_ready", _msel5); st.rerun()
 
@@ -2397,7 +2406,7 @@ if _active_view == "5_wiki":
         st.markdown(tf("#### 단일 TXT → Wiki (%d권 · 챕터 분할 없음)", len(_single_pend5)))
         st.caption(t("전체 TXT를 Gemini에 넣어 백그라운드로 단일 위키 노트 생성"))
         _sel5s = _checklist(_single_pend5, "wiki5s", height=200)
-        if st.button(tf("▶ 선택 단일 Wiki (%d권)", len(_sel5s)), key="wiki5s_run",
+        if st.button(tf("선택 단일 Wiki (%d권)", len(_sel5s)), icon=":material/play_arrow:", key="wiki5s_run",
                      use_container_width=True, type="primary", disabled=len(_sel5s)==0):
             for _wo5s in _sel5s:
                 _ok5s = trigger_gemini_wiki(_wo5s["txt"])
@@ -2412,16 +2421,16 @@ if _active_view == "5_wiki":
     st.markdown(tf("#### Wiki 완료 (%d노트)", len(_wiki_files5)))
     if _wiki_files5:
         _wv_col1, _wv_col2 = st.columns(2)
-        if _wv_col1.button(t("📓 Obsidian 보관함(Vault) 열기"), key="w5_vault", use_container_width=True):
+        if _wv_col1.button(t("Obsidian 보관함(Vault) 열기"), icon=":material/menu_book:", key="w5_vault", use_container_width=True):
             open_wiki_vault()
-        if _wv_col2.button("📂 폴더 열기", key="w5_folder", use_container_width=True):
+        if _wv_col2.button(t("폴더 열기"), icon=":material/folder_open:", key="w5_folder", use_container_width=True):
             open_path(_cur_wiki5_path)
         with st.container(height=300, border=True):
             for _wf5 in _wiki_files5[:100]:
                 _wc1, _wc2, _wc3 = st.columns([5, 2, 1])
                 _wc1.caption(f"**{_wf5.stem}**")
                 _wc2.caption(datetime.fromtimestamp(_wf5.stat().st_mtime).strftime("%m-%d %H:%M"))
-                if _wc3.button("📂", key=f"w5_open_{_wf5}", help="열기"):
+                if _wc3.button("", icon=":material/folder_open:", key=f"w5_open_{_wf5}", help="열기"):
                     open_path(_wf5)
     else:
         st.caption("생성된 Wiki 없음")
@@ -2472,7 +2481,7 @@ if _active_view == "settings":
         _idx = _labels.index(_curlbl) if _curlbl in _labels else 0
         _sel = st.selectbox(t("위키 노트를 생성할 모델"), _labels, index=_idx, key="wiki_model_sel")
         _p, _m = _avail[_labels.index(_sel)]
-        if (_p, _m) != (_wp, _wm) and st.button("✅ 이 모델로 위키 생성", use_container_width=True):
+        if (_p, _m) != (_wp, _wm) and st.button(t("이 모델로 위키 생성"), icon=":material/check:", use_container_width=True):
             llm.set_wiki_model(_p, _m); st.success(f"위키 모델 = {_p} · {_m}"); st.rerun()
     else:
         st.info(t("사용 가능한 API 키나 활성화된 CLI가 없습니다. 아래에서 API 키를 입력하거나 CLI 사용을 켜세요."))
@@ -2543,8 +2552,8 @@ if _active_view == "settings":
                 _newk = st.text_input(f"{_info['label']} API 키", type="password",
                                       placeholder=_info["hint"], key=f"keyin_{_prov}")
                 _c1, _c2 = st.columns(2)
-                _save = _c1.form_submit_button(t("💾 저장"), use_container_width=True)
-                _del = _c2.form_submit_button(t("🗑 삭제"), use_container_width=True)
+                _save = _c1.form_submit_button(t("저장"), icon=":material/save:", use_container_width=True)
+                _del = _c2.form_submit_button(t("삭제"), icon=":material/delete:", use_container_width=True)
                 if _save:
                     if _newk.strip():
                         llm.save_key(_prov, _newk.strip())
@@ -2580,7 +2589,7 @@ if _active_view == "settings":
     )
     _wd_custom = st.text_input("또는 폴더 경로 직접 입력 (비우면 위 선택 사용)", value="", key="wiki_dir_custom")
     _wd_target = (_wd_custom.strip() or _wd_sel).strip()
-    if st.button("💾 위키 보관함(Vault) 저장 (즉시 적용)", use_container_width=True, key="wiki_dir_save"):
+    if st.button(t("위키 보관함(Vault) 저장 (즉시 적용)"), icon=":material/save:", use_container_width=True, key="wiki_dir_save"):
         if _wd_target == _cur_wiki:
             st.info("이미 이 폴더를 쓰고 있습니다.")
         else:
