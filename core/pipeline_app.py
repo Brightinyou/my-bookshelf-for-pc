@@ -763,17 +763,8 @@ textarea,
       border-color: #e5e7eb !important; background: rgba(255,255,255,0.04) !important;
   }
 }
-/* 체크박스 무채색 — 검은 네모 박스 안 체크 (초록 강조색 제거, 2026-07-10) */
-[data-testid="stCheckbox"] input:checked + div,
-[data-baseweb="checkbox"] input:checked + span,
-[data-baseweb="checkbox"] input:checked ~ div {
-    background-color: #111827 !important;
-    border-color: #111827 !important;
-}
-[data-testid="stCheckbox"] [data-baseweb="checkbox"] > label > div:first-child {
-    border-radius: 4px !important;
-    border-color: #6b7280 !important;
-}
+/* 체크박스/토글 검은색 강조는 theme.primaryColor(#111827)가 네이티브로 처리한다.
+   과거 커스텀 배경 CSS는 토글 라벨까지 검게 칠해 글씨가 안 보이던 버그가 있어 제거함 (2026-07-10). */
 /* 버튼 아이콘 무채색 고정 */
 .stButton button [data-testid="stIconMaterial"],
 .stFormSubmitButton button [data-testid="stIconMaterial"] { color: inherit !important; }
