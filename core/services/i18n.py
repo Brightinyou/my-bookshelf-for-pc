@@ -360,3 +360,211 @@ _EN: dict[str, str] = {
     "키를 입력하세요.": "Enter a key.",
     "미설정": "not set",
 }
+
+# ── v0.9.2~v0.9.8 UI(버튼·메뉴·제목·설명) 영어 번역 보강 (2026-07-10) ──
+_EN.update({
+    # 상단 지표
+    "AI 구독(CLI)": "AI subscription (CLI)",
+    "AI API 키": "AI API keys",
+    "✕ 없음": "✕ none",
+    "생성 중": "running",
+    # 내비 · 메뉴 · 탭 제목
+    "메뉴": "Menu",
+    "텍스트 변환": "Text",
+    "챕터 분할": "Chapter split",
+    "영문번역": "Translation",
+    "문서요약": "Summaries",
+    "위키반영": "Wiki",
+    "설정": "Settings",
+    ":material/description: 텍스트 변환": ":material/description: Text conversion",
+    ":material/content_cut: 챕터 분할": ":material/content_cut: Chapter split",
+    ":material/translate: 영문번역": ":material/translate: Translation",
+    ":material/summarize: 문서요약": ":material/summarize: Summaries",
+    ":material/menu_book: 위키반영": ":material/menu_book: Wiki",
+    # 탭 설명
+    "PDF의 텍스트 레이어를 추출해 TXT로 저장합니다 (OCR 변환된 문서만 가능).":
+        "Extracts the text layer of a PDF and saves it as TXT (text-based PDFs only).",
+    "책 TXT를 챕터(Chapter) 단위 파일로 분리해 책별 폴더에 저장합니다.":
+        "Splits a book TXT into per-chapter files under a per-book folder.",
+    "챕터 TXT를 한국어로 번역해 같은 폴더에 `_ko.txt`로 저장합니다.":
+        "Translates chapter TXT into Korean, saved as `_ko.txt` in the same folder.",
+    "챕터 TXT(번역본 우선)로 요약을 생성해 같은 폴더에 `_wiki.md`로 저장합니다.":
+        "Summarizes chapter TXT (translation preferred), saved as `_wiki.md`.",
+    "챕터 요약(_wiki.md)들을 합쳐 Obsidian 보관함(Vault)에 위키 노트로 저장합니다.":
+        "Merges chapter summaries (_wiki.md) into Wiki notes in the Obsidian vault.",
+    "PDF/TXT를 텍스트로 변환 · 업로드 대기 → 변환 TXT":
+        "Convert PDF/TXT to text · upload queue → converted TXT",
+    "책 TXT를 챕터 단위로 분리 · 변환 TXT → chapters":
+        "Split a book TXT into chapters · converted TXT → chapters",
+    "챕터를 한국어로 번역 · chapters → 번역본(_ko.txt)":
+        "Translate chapters to Korean · chapters → translation (_ko.txt)",
+    "챕터별 요약 노트 생성 · chapters → 요약(_wiki.md)":
+        "Create per-chapter summaries · chapters → summary (_wiki.md)",
+    "요약을 Obsidian 노트로 저장 · 요약(_wiki.md) → 보관함(Vault)":
+        "Save summaries as Obsidian notes · summary (_wiki.md) → vault",
+    "API 키와 위키 생성 모델 설정": "Set API keys and the Wiki model",
+    # 흐름 카드 라벨
+    "① 처리전 · 업로드 대기": "① Before · upload queue",
+    "② 처리후 · 변환 TXT": "② After · converted TXT",
+    "📄 원본 PDF 보관": "📄 Original PDF store",
+    "① 처리전 · 변환 TXT": "① Before · converted TXT",
+    "② 처리후 · 챕터 폴더": "② After · chapter folders",
+    "✅ 완료 보관 (원본 TXT)": "✅ Archived (source TXT)",
+    "① 처리전 · 원문 챕터": "① Before · source chapters",
+    "② 처리후 · 번역본 (_ko.txt)": "② After · translation (_ko.txt)",
+    "① 처리전 · 챕터 (번역본 우선)": "① Before · chapters (translation first)",
+    "② 처리후 · 요약 (_wiki.md)": "② After · summaries (_wiki.md)",
+    "① 처리전 · 요약 (_wiki.md)": "① Before · summaries (_wiki.md)",
+    "② 처리후 · Obsidian 보관함": "② After · Obsidian vault",
+    # 개수 문구
+    "%d개 대기": "%d waiting",
+    "%d권 변환됨": "%d converted",
+    "%d개 보관": "%d stored",
+    "%d권": "%d books",
+    "%d권 분할됨": "%d split",
+    "%d권 보관": "%d archived",
+    "%d개 번역됨": "%d translated",
+    "원문 %d · 번역 %d": "source %d · translated %d",
+    "%d개 요약됨": "%d summarized",
+    "%d노트": "%d notes",
+    "총 %d권": "%d total",
+    # 버튼 (동작)
+    "시작 (%d개)": "Start (%d)",
+    "시작 (%d권)": "Start (%d)",
+    "중단": "Stop",
+    "삭제": "Delete",
+    "삭제 (%d개)": "Delete (%d)",
+    "삭제 (%d권)": "Delete (%d)",
+    "분할 처리": "Split",
+    "분할 처리 (%d권)": "Split (%d)",
+    "다음단계로 이동": "Move to next step",
+    "다음단계로 이동 (%d권)": "Move to next step (%d)",
+    "텍스트 변환 처리 (%d개)": "Convert to text (%d)",
+    "전체 선택": "Select all",
+    "해제": "Clear",
+    "폴더 열기": "Open folder",
+    "위치 열기": "Open location",
+    "재생성": "Regenerate",
+    "생성": "Generate",
+    "저장": "Save",
+    "합친 번역본": "Merged translation",
+    "단일장으로 저장": "Save as single chapter",
+    "선택 항목 큐에 추가 (%d개)": "Add selected to queue (%d)",
+    "선택 항목 큐에 추가 (%d권)": "Add selected to queue (%d)",
+    "선택 재시도 대기 (%d개)": "Requeue selected (%d)",
+    "실패 목록 비우기": "Clear failed list",
+    "Wiki 생성 (%d권)": "Build Wiki (%d)",
+    "선택 단일 Wiki (%d권)": "Build single Wiki (%d)",
+    "이 모델로 위키 생성": "Use this model for Wiki",
+    "이 보관함(Vault)로 변경 (즉시 적용)": "Switch to this vault (apply now)",
+    "직접 입력 경로로 변경 (즉시 적용)": "Switch to entered path (apply now)",
+    "위키 보관함(Vault) 저장 (즉시 적용)": "Save Wiki vault (apply now)",
+    "Obsidian 보관함(Vault) 열기": "Open Obsidian vault",
+    # 아이콘 전용 버튼 help
+    "다시 합치기": "Merge again",
+    "재분할": "Re-split",
+    "재시도": "Retry",
+    "목록에서 제거": "Remove from list",
+    "글자 크기 줄이기": "Decrease font size",
+    "글자 크기 키우기": "Increase font size",
+    # 처리 화면(런패널)
+    "%d/%d 처리 중": "Processing %d/%d",
+    "챕터 분할 처리 중": "Splitting chapters",
+    "영문번역 처리 중": "Translating",
+    "문서요약 처리 중": "Summarizing",
+    "위키반영 처리 중": "Building Wiki",
+    "처리 중에는 다른 기능이 잠깁니다. '중단'을 누르면 현재 항목까지 마친 뒤 멈추고, 남은 작업은 다시 '시작'으로 이어집니다.":
+        "Other actions are locked while processing. 'Stop' finishes the current item then halts; press 'Start' again to resume the rest.",
+    # 섹션 헤더
+    "### :material/hub: AI 구독 (CLI)": "### :material/hub: AI subscription (CLI)",
+    "### :material/key: API 키 등록": "### :material/key: API keys",
+    "### :material/book_2: 옵시디언(Obsidian) 보관함 설정": "### :material/book_2: Obsidian vault settings",
+    "### ⚠️ 짧은 문서 확인 (%d권)": "### ⚠️ Short documents (%d)",
+    # 설정 · AI 모델
+    "AI 모델은 설정에서 선택합니다 · 현재: ": "AI model is chosen in Settings · current: ",
+    "API 키 없이 구독으로 사용 — 설치·로그인 후 켜세요. AI 키 등록보다 우선합니다.":
+        "Use via subscription without an API key — install, log in, then enable. Takes priority over API keys.",
+    "위키 노트를 생성할 모델": "Model for generating Wiki notes",
+    "미설치": "not installed",
+    "미설치 · `npm i -g @anthropic-ai/claude-code`": "not installed · `npm i -g @anthropic-ai/claude-code`",
+    "미설치 · `npm i -g @openai/codex`": "not installed · `npm i -g @openai/codex`",
+    # 안내(대기 없음 등)
+    "번역 대기 없음 — 📂 챕터 분할에서 챕터를 먼저 분리하세요":
+        "No translation queue — split chapters in 📂 Chapter split first",
+    "분할 대기 없음 — 📄 텍스트 변환에서 TXT를 먼저 생성하거나 아래에서 수동 추가하세요":
+        "No split queue — create TXT in 📄 Text first, or add manually below",
+    "요약 대기 없음 — 🌐 영문번역 처리 후 자동 등록되거나 위에서 TXT를 직접 업로드하세요":
+        "No summary queue — auto-added after 🌐 Translation, or upload TXT above",
+    "Wiki 대기 없음 — 📝 문서요약에서 요약 완료 후 자동 등록되거나 아래에서 수동 추가하세요":
+        "No Wiki queue — auto-added after 📝 Summaries, or add manually below",
+    "번역 대기에 %d개 등록됨 — 아래에서 [▶ 시작]": "Queued %d for translation — press [▶ Start] below",
+    "요약 대기에 %d개 등록됨 — 아래에서 [▶ 시작]": "Queued %d for summary — press [▶ Start] below",
+    "업로드한 TXT는 아래 '번역 대기'에 등록됩니다. [▶ 시작]을 눌러야 번역이 시작됩니다.":
+        "Uploaded TXT is added to the translation queue below. Press [▶ Start] to begin.",
+    "업로드한 TXT는 아래 '요약 대기'에 등록됩니다. [▶ 시작]을 눌러야 요약이 시작됩니다.":
+        "Uploaded TXT is added to the summary queue below. Press [▶ Start] to begin.",
+    "⚠️ 짧은 문서가 감지되었습니다. 아래 '짧은 문서 확인'에서 분할 처리 또는 다음단계로 이동을 선택하세요.":
+        "⚠️ Short documents detected. In 'Short documents' below, choose Split or Move to next step.",
+    "짧은 문서는 챕터로 나누기 애매합니다. 챕터로 분할하거나, 통째로 다음 단계(영문→영문번역·한글→문서요약)로 보낼 수 있습니다.":
+        "Short docs are hard to split. Split into chapters, or send whole to the next step (EN→Translation, KO→Summaries).",
+    "분할 없이 단일장으로 저장하고 영문은 영문번역, 한글은 문서요약으로 이동":
+        "Save as a single chapter without splitting; EN→Translation, KO→Summaries",
+    "아직 위키로 만들지 않은 단일 TXT입니다. 위키로 만들거나, 필요 없으면 원본 TXT를 삭제할 수 있습니다.":
+        "Single TXTs not yet turned into Wiki. Build a Wiki, or delete the source TXT if not needed.",
+    "TXT 직접 업로드": "Upload TXT directly",
+    "📎 파일 선택 또는 이 영역으로 끌어다 놓기(Drag & Drop) 가능":
+        "📎 Pick a file or drag & drop it here",
+    # 완료 메시지 · 라우팅
+    "2-챕터 분할 완료": "2 · Chapter split done",
+    "2-단일장 저장 완료": "2 · Saved as single chapter",
+    "분할을 마쳤습니다.": "Splitting done.",
+    "%d건을 다음 단계로 보냈습니다.": "Sent %d to the next step.",
+    "번역을 마쳤습니다. 다음 단계에서 요약을 생성하세요.": "Translation done. Generate summaries next.",
+    "요약을 마쳤습니다. 다음 단계에서 Wiki 반영을 진행하세요.": "Summaries done. Build the Wiki next.",
+    "Wiki 반영을 마쳤습니다.": "Wiki build done.",
+    "영문 → 영문번역": "EN → Translation",
+    "한글 → 문서요약": "KO → Summaries",
+    "영문 문서 → 영문번역": "EN document → Translation",
+    "한글 문서 → 문서요약": "KO document → Summaries",
+    # 저작권/주의
+    "API 키는 이 화면에서 직접 저장한 값만 사용합니다. ":
+        "Only keys saved on this screen are used. ",
+    "저장 키는 `~/.config/mybookshelf/keys.json`에만 보관되며 저장소에 올라가지 않습니다.":
+        "Saved keys are stored only in `~/.config/mybookshelf/keys.json` and never committed.",
+    # 다음 단계 안내 · 폴더 · 기타
+    "📁 폴더 열기": "📁 Open folder",
+    "💡 다음 단계: **📂 챕터 분할**으로 이동하세요": "💡 Next: go to **📂 Chapter split**",
+    "💡 다음 단계: **🌐 영문번역**으로 이동하세요": "💡 Next: go to **🌐 Translation**",
+    "💡 다음 단계: **📝 문서요약**으로 이동하세요": "💡 Next: go to **📝 Summaries**",
+    "💡 다음 단계: **📖 위키반영**으로 이동하세요": "💡 Next: go to **📖 Wiki**",
+    "영문 책 → 영문번역": "EN book → Translation",
+    "한글 책 → 문서요약": "KO book → Summaries",
+    "%s 을(를) 단일장으로 저장했습니다.": "Saved %s as a single chapter.",
+    "TXT 내용이 비어 있습니다.": "TXT content is empty.",
+    "TXT/MD 내용이 비어 있습니다.": "TXT/MD content is empty.",
+    "TXT/MD 파일이 없습니다.": "No TXT/MD file.",
+    "기존 단일장 파일을 이어서 사용합니다.": "Reusing the existing single-chapter file.",
+    "기존 장 파일을 다시 사용했습니다.": "Reused the existing chapter file.",
+    "단일장 파일 생성에 실패했습니다.": "Failed to create the single-chapter file.",
+    "단일장 파일을 저장했습니다.": "Saved the single-chapter file.",
+    "이미 여러 장으로 분할된 책입니다. 2-장별분할 탭에서 처리하세요.":
+        "This book is already split into chapters. Use the Chapter split tab.",
+    "💡 URL이 잘 안 될 때: ① 로그인·구독이 필요한 페이지(대학도서관·유료 저널)나 ":
+        "💡 If the URL fails: ① Pages needing login/subscription (library, paywalled journals) or ",
+    "본문이 아닌 소개 페이지 링크는 받아올 수 없습니다 — PDF를 내려받아 위에서 직접 업로드하세요. ":
+        "landing-page links (not the full text) can't be fetched — download the PDF and upload it above. ",
+    "② DOI(10.xxxx/…)나 arXiv 번호(예: 2412.12107)가 있으면 그 값을 넣는 편이 가장 안정적입니다. ":
+        "② A DOI (10.xxxx/…) or arXiv number (e.g. 2412.12107) is the most reliable input. ",
+    "③ 링크 끝이 `.pdf`인 직접 주소를 쓰세요. ④ 그래도 안 되면 브라우저에서 PDF를 저장한 뒤 업로드하는 방법이 가장 확실합니다.":
+        "③ Use a direct URL ending in `.pdf`. ④ Otherwise, saving the PDF in your browser and uploading it is the surest way.",
+    "처음 사용 전 확인: 이 앱은 사용자가 제공한 PDF/TXT를 정리, 번역, 요약, 위키 노트로 재구성하는 개인 작업 도구입니다. ":
+        "Before first use: this app organizes, translates, summarizes, and restructures your own PDF/TXT into Wiki notes for personal use. ",
+    "생성된 번역·요약·위키 노트의 정확성·완전성은 보장되지 않습니다. ":
+        "Accuracy and completeness of generated translations, summaries and Wiki notes are not guaranteed. ",
+    "원문 문서의 저작권·번역권·요약·재배포 가능 여부는 이용자 본인이 확인해야 합니다. ":
+        "You are responsible for confirming the source document's copyright, translation, summary and redistribution rights. ",
+    "AI API 또는 CLI 구독 도구를 활성화하면 문서 일부 또는 전체가 외부 AI 서비스로 전송됩니다. ":
+        "Enabling an AI API or CLI tool sends part or all of the document to an external AI service. ",
+    "**My Bookshelf** · © 2026 저작자 — 개인·비상업 연구 보조 용도. ":
+        "**My Bookshelf** · © 2026 the author — for personal, non-commercial research use. ",
+})
