@@ -110,323 +110,6 @@ def trigger_wiki_generation() -> int:
     return wiki_svc.trigger_wiki_generation(st.session_state.get("wiki_target_dir"))
 
 
-# ─── 한 파일 통째 처리 함수 (Phase 1 + Phase 2, 2026-05-19 추출) ────
-def _process_file_for_pipeline(uf, ws_name, ws_slug, do_translate, translate_engine,
-                                force_reembed, defer_embed, placeholder, do_wiki=True):
-    """한 파일 Phase 1+2 통째 처리. UI는 placeholder.container() 안에서.
-    result dict 반환. 워커 스레드에서도 안전 (placeholder 격리)."""
-    with placeholder.container():
-        return _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
-                                    force_reembed, defer_embed, do_wiki=do_wiki)
-
-def _process_file_inner(uf, ws_name, ws_slug, do_translate, translate_engine,
-                         force_reembed, defer_embed, do_wiki=True):
-    """실제 처리 본문."""
-    st.subheader(f"📄 {uf.name}")
-
-    # ── 이미 처리된 파일 건너뛰기 (2026-06-11 v0.3.2) ──
-    # done 폴더 산출물·위키 완료 기록과 stem(NFC) 대조. 토글 끄면 강제 재처리.
-    if st.session_state.get("skip_processed_flag", True) \
-            and _nfc(Path(uf.name).stem) in processed_stems():
-        st.info("⏭️ **이미 처리된 파일** — 건너뜁니다. 재처리하려면 '이미 처리된 파일 건너뛰기' 토글을 끄세요.")
-        append_log(f"건너뜀(이미 처리됨): {uf.name}")
-        _src = getattr(uf, "_p", None)
-        if _src is not None:                       # 재시도 대기열이면 큐에서 제거
-            try:
-                Path(_src).unlink()
-            except Exception:
-                pass
-        _stages = {"ocr": "skip", "txt": "skip", "md": "skip",
-                   "bilingual": "skip", "anythingllm": "skip", "wiki": "skip"}
-        return {"name": uf.name, "ok": True, "ws": ws_name, "stages": _stages,
-                "pdf_path": "", "txt_path": "", "md_path": "", "bilingual_path": "",
-                "skipped": True}
-
-    dest = UPLOAD_TMP / uf.name
-    # 재시도 파일은 이미 UPLOAD_TMP에 있음 — 자기 자신에 덮어쓰면 open("wb")가
-    # 먼저 비워서 0바이트로 잘린다. 같은 파일이면 복사 생략. (2026-06-11)
-    _src = getattr(uf, "_p", None)
-    if not (_src is not None and Path(_src).resolve() == dest.resolve()):
-        uf.seek(0)   # 같은 업로드로 재실행 시 포인터가 끝에 있어 0바이트 저장되는 것 방지
-        with open(dest, "wb") as f:
-            f.write(uf.read())
-
-    success     = True
-    txt_path    = None
-    md_src      = None
-    upload_file = None
-    final_pdf = final_txt = final_md = None
-    partial_fail_n = 0   # 번역 부분 실패 단락 수 (>0 이면 failed 미이동 + 큐 보류)
-
-    with st.status(f"변환/번역 중: {uf.name}", expanded=True) as status_ui:
-        # Phase 1 inline — 기존 코드 그대로
-        if dest.suffix.lower() == ".pdf":
-            st.write("🔄 **1단계** · PDF → TXT 변환")
-            txt_path, md_src, conv_err = pdf_to_txt(dest)
-            if txt_path:
-                st.write(f"✅ TXT 변환 완료 → `{txt_path.name}`")
-                append_log(f"PDF→TXT 변환 완료: {txt_path.name}")
-                if md_src:
-                    st.write(f"✅ MD 사이드카 생성 → `{md_src.name}` ({md_src.stat().st_size // 1024} KB)")
-                else:
-                    st.write("⚠️ MD 사이드카 생성 실패 (비치명적)")
-            else:
-                st.write(f"❌ TXT 변환 실패 — {conv_err}")
-                st.error(f"**변환 실패 원인:** {conv_err}")
-                append_log(f"ERROR: TXT 변환 실패 - {uf.name} ({conv_err})")
-                shutil.move(str(dest), str(FAILED_DIR / uf.name))
-                status_ui.update(label=f"❌ 실패: {uf.name}", state="error")
-                success = False
-        else:
-            txt_path = dest
-            st.write(f"ℹ️ **1단계** · PDF 아님 — 원본 그대로 사용 (`{dest.name}`)")
-
-        upload_file = txt_path
-        _is_en = (txt_path is not None and txt_path.exists() and needs_translation(txt_path))
-        will_translate = do_translate and success and _is_en
-        if do_translate and success and txt_path and txt_path.exists():
-            _tgt_name = "한국어"
-            st.caption(f"🔍 언어 감지: {f'외국어 → {_tgt_name} 번역 진행' if _is_en else f'이미 {_tgt_name} → 번역 스킵'}")
-
-        if will_translate:
-            text_raw = txt_path.read_text(encoding="utf-8", errors="ignore")
-            paragraphs = _split_paragraphs_robust(text_raw)
-            if len(paragraphs) < 5:
-                st.warning(f"⚠️ 단락 분할 결과가 {len(paragraphs)}개에 그쳤습니다 (원본 {len(text_raw)}자).")
-                append_log(f"WARN: 단락 분할 부족 — {uf.name} paragraphs={len(paragraphs)}")
-            bilingual_path = translated_dir(DONE_DIR, ws_name) / (txt_path.stem + "_bilingual.txt")
-            translated_dir(DONE_DIR, ws_name).mkdir(parents=True, exist_ok=True)
-            _legacy = RAW_DIR / ws_name / (txt_path.stem + "_bilingual.txt")
-            if _legacy.exists() and not bilingual_path.exists():
-                shutil.move(str(_legacy), str(bilingual_path))
-            _legacy_old_translated = OLD_TRANSLATED_DIR / ws_name / (txt_path.stem + "_bilingual.txt")
-            if _legacy_old_translated.exists() and not bilingual_path.exists():
-                shutil.move(str(_legacy_old_translated), str(bilingual_path))
-            if not bilingual_path.exists():
-                _cross_src = find_cross_ws_bilingual(txt_path.stem, ws_name)
-                if _cross_src is not None:
-                    shutil.copy2(str(_cross_src), str(bilingual_path))
-                    _src_ws = _cross_src.parent.parent.name
-                    _src_ko = _ko_block_count(_cross_src)
-                    append_log(f"♻️ cross-ws resume: {txt_path.stem} ({_src_ws} → {ws_name}, KO {_src_ko}건)")
-                    st.info(f"♻️ 다른 워크스페이스 진행분을 발견해 이어받았습니다 (`{_src_ws}` → `{ws_name}`, [KO] {_src_ko}건)")
-
-            cached: dict = {}
-            if bilingual_path.exists():
-                for block in bilingual_path.read_text(encoding="utf-8", errors="ignore").split("\n\n---\n\n"):
-                    block = block.strip()
-                    parsed = _parse_bilingual_block(block)
-                    if not parsed or not parsed[1]: continue
-                    cached[parsed[0]] = parsed[1]
-            _cross_cache = collect_cross_ws_cache(txt_path.stem, ws_name)
-            if _cross_cache:
-                _before = len(cached)
-                for _en, _ko in _cross_cache.items():
-                    cached.setdefault(_en, _ko)
-                _added = len(cached) - _before
-                if _added > 0:
-                    append_log(f"♻️ cross-ws 캐시 합침: {txt_path.stem} +{_added}건")
-                    st.caption(f"♻️ 다른 워크스페이스 캐시 {_added}건 추가 합침")
-
-            # 고유명사 용어집 — 단락이 진행되며 누적, 이후 단락엔 한글만 쓰게 전달 (2026-06-11)
-            _name_glossary: dict[str, str] = {}
-            _tr_fn = lambda p, _e=translate_engine, _g=_name_glossary: translate(p, _e, _g)
-            _tr_label = engine_label(translate_engine)
-            skip_section_idxs   = find_skip_section_paragraphs(paragraphs)
-            skip_individual_idxs = {i for i, p in enumerate(paragraphs) if should_skip_translation(p)}
-            skip_sequential_idxs = find_sequential_footnotes(paragraphs)
-            # 페이지번호·그래프레이블 → bilingual에서 완전 제외 (미주로도 안 가고 삭제)
-            drop_idxs = {i for i, p in enumerate(paragraphs) if should_drop_paragraph(p)}
-            skip_all_idxs = (skip_section_idxs | skip_individual_idxs | skip_sequential_idxs) - drop_idxs
-            # 이미 목표 언어인 단락 → 캐시에 사전 입력 (API 호출 없이 원문 그대로 보존)
-            already_target_n = 0
-            for p in paragraphs:
-                if p not in cached and _paragraph_already_target(p):
-                    cached[p] = p
-                    already_target_n += 1
-            resume_n = sum(1 for p in paragraphs if p in cached)
-            if already_target_n:
-                st.write(f"✅ 이미 목표 언어: {already_target_n}개 단락 — API 호출 생략")
-            if resume_n - already_target_n > 0:
-                st.write(f"♻️ 이전 번역 재사용: {resume_n - already_target_n}/{len(paragraphs)} 단락 — 신규 호출 {len(paragraphs)-resume_n}개")
-            if drop_idxs:
-                st.write(f"🗑️ 제외(페이지번호·레이블): {len(drop_idxs)}개 단락")
-            if skip_all_idxs:
-                st.write(f"⏭️ 번역 skip 대상: {len(skip_all_idxs)}/{len(paragraphs)} 단락")
-            st.write(f"🌐 **2단계** · 영→한 번역 중 ({len(paragraphs)}단락, {_tr_label})…")
-            N = len(paragraphs)
-            prog = st.progress(0.0, text=f"0/{N} (0.0%)")
-            bilingual: list = []
-            failed_tr = cache_hits = api_calls = skipped_n = 0
-            consecutive_fail = 0
-            RATE_LIMIT_THRESHOLD = 3
-            # 각주·인용은 본문 뒤로 모아 미주(尾註)로 — 읽기 흐름 보존 (2026-06-11)
-            # drop_idxs(페이지번호·레이블)는 iter_order에서 아예 제외
-            _iter_order = [i for i in range(N) if i not in skip_all_idxs and i not in drop_idxs] + \
-                          [i for i in range(N) if i in skip_all_idxs]
-            _endnote_marked = False
-            try:
-                import time as _time2
-                for _seq, idx in enumerate(_iter_order):
-                    para = paragraphs[idx]
-                    # 일시정지 플래그 체크 (워커가 폴링)
-                    while is_paused(txt_path.stem):
-                        prog.progress(_seq / N, text=f"⏸️ 일시정지 중 ({_seq}/{N}) — ▶️ 재개 누르면 이어감")
-                        _time2.sleep(2)
-                    if idx in skip_all_idxs:
-                        if not _endnote_marked:
-                            bilingual.append("## Endnotes — collected footnotes & citations"
-                                             "\n\n## 미주 — 각주·인용 모음 (원문 보존)")
-                            _endnote_marked = True
-                        bilingual.append(f"{para}\n\n(원문 보존: 각주·인용)")
-                        skipped_n += 1
-                        _save_bilingual_atomic(bilingual_path, bilingual)
-                        _save_en_ko_split(bilingual_path, bilingual)
-                        done = _seq + 1
-                        prog.progress(done / N, text=f"{done}/{N} ({done/N*100:.1f}%) — ♻️ {cache_hits} / 🌐 {api_calls} / ⏭️ {skipped_n}" + (f" / ❌ {failed_tr}" if failed_tr else ""))
-                        continue
-                    ko = cached.get(para)
-                    if ko is None:
-                        ko = _tr_fn(para)
-                        api_calls += 1
-                    else:
-                        cache_hits += 1
-                    if ko:
-                        # 번역 결과에서 '한글명(원어)' 패턴 수집 → 이후 단락은 한글만
-                        for _ko_n, _en_n in _re.findall(
-                                r"([가-힣]{2,}(?:[·\s][가-힣]{2,}){0,4})\(([A-Za-z][A-Za-z .'\-]{1,40})\)", ko):
-                            _name_glossary.setdefault(_en_n.strip(), _ko_n.strip())
-                        bilingual.append(f"{para}\n\n{ko}")
-                        consecutive_fail = 0
-                    else:
-                        bilingual.append(para)
-                        failed_tr += 1
-                        if cached.get(para) is None:
-                            consecutive_fail += 1
-                    if consecutive_fail >= RATE_LIMIT_THRESHOLD:
-                        _save_bilingual_atomic(bilingual_path, bilingual)
-                        _save_en_ko_split(bilingual_path, bilingual)
-                        append_log(f"RATE_LIMIT: 연속 {consecutive_fail}회 실패 — 자동 일시정지 ({uf.name}, {_seq+1}/{N})")
-                        st.warning(f"⏸️ **Claude 한도 임박 추정** — 연속 {consecutive_fail}회 실패. 진행분({_seq+1}/{N}) 저장 후 자동 일시정지.")
-                        break
-                    _save_bilingual_atomic(bilingual_path, bilingual)
-                    _save_en_ko_split(bilingual_path, bilingual)
-                    done = _seq + 1
-                    prog.progress(done / N, text=f"{done}/{N} ({done/N*100:.1f}%) — ♻️ {cache_hits} / 🌐 {api_calls} / ⏭️ {skipped_n}" + (f" / ❌ {failed_tr}" if failed_tr else ""))
-            except Exception as e:
-                _save_bilingual_atomic(bilingual_path, bilingual)
-                _save_en_ko_split(bilingual_path, bilingual)
-                append_log(f"ERROR: 번역 루프 예외 - {uf.name} ({len(bilingual)}/{len(paragraphs)} 단락, {type(e).__name__})")
-                st.error(f"번역 중 예외 발생 — 진행분 {len(bilingual)}/{len(paragraphs)} 저장.")
-                raise
-            upload_file = bilingual_path
-            _total_par = len(paragraphs)
-            if failed_tr == _total_par and _total_par > 0:
-                st.error(f"❌ **번역 전체 실패** ({failed_tr}/{_total_par}) — [KO] 0개. 임베드 자동 차단.")
-            elif failed_tr:
-                st.warning(f"⚠️ **{failed_tr}/{_total_par} 단락 번역 실패** — failed로 보내지 않고 **큐에 보류**합니다 (재번역 후 임베드 권장).")
-            else:
-                st.success(f"✅ 번역 완료 → `{bilingual_path.name}`")
-            append_log(f"번역: {bilingual_path.name} ({_total_par-failed_tr}/{_total_par})")
-            if failed_tr == _total_par and _total_par > 0:
-                # 전체 실패만 failed 폴더로 이동 + 파이프라인 중단 (genuinely broken)
-                success = False
-                if dest.exists():
-                    shutil.move(str(dest), str(FAILED_DIR / uf.name))
-                append_log(f"ERROR: 번역 전체 실패로 중단 - {uf.name} ({failed_tr}/{_total_par} 단락)")
-                status_ui.update(label=f"❌ 번역 전체 실패: {uf.name}", state="error")
-            elif failed_tr:
-                # 부분 실패: failed 미이동 → done 유지 + 큐로 라우팅(자동 임베드 차단).
-                # OCR·MD 성과가 failed 폴더에 묻히지 않게. (2026-05-31 정책 변경)
-                partial_fail_n = failed_tr
-                defer_embed = True
-                append_log(f"WARN: 번역 부분 실패 {failed_tr}/{_total_par} - {uf.name}: failed 미이동, 큐 보류 라우팅")
-                status_ui.update(label=f"⚠️ 부분 실패 ({failed_tr}/{_total_par}) → 큐 보류: {uf.name}", state="complete")
-            else:
-                status_ui.update(label=f"✅ 번역 완료: {uf.name}", state="complete")
-        elif do_translate and txt_path and txt_path.exists():
-            st.write("ℹ️ 한국어 문서 감지 — 번역 스킵")
-            if success:
-                status_ui.update(label=f"✅ {uf.name} (번역 스킵)", state="complete")
-        else:
-            if success:
-                status_ui.update(label=f"✅ {uf.name}", state="complete")
-
-    # Phase 2 inline
-    stages = {"ocr":"skip","txt":"skip","md":"skip","bilingual":"skip","anythingllm":"pending","wiki":"pending"}
-    is_pdf = uf.name.lower().endswith(".pdf")
-    if is_pdf:
-        stages["ocr"] = "ok" if success and txt_path and txt_path.exists() else "fail"
-    if txt_path and txt_path.exists() and txt_path.stat().st_size > 0:
-        stages["txt"] = "ok"
-    stages["md"] = "ok" if (md_src and md_src.exists()) else ("fail" if is_pdf else "skip")
-    _bil = find_bilingual(ws_name, Path(uf.name).stem)
-    if _bil is not None:
-        stages["bilingual"] = "ok"
-
-    if not success:
-        st.warning(f"⏭️ **{uf.name}** — 이전 단계 실패로 임베드/Wiki 건너뜀. FAILED 폴더로 이동됨.")
-        notify(f"{uf.name} 실패 (번역 중단)", title=ws_name)
-        stages["anythingllm"] = "skip"
-        stages["wiki"] = "skip"
-        return {"name": uf.name, "ok": False, "ws": ws_name, "stages": stages,
-                "pdf_path": str(FAILED_DIR / uf.name) if (FAILED_DIR / uf.name).exists() else "",
-                "txt_path": str(RAW_DIR / ws_name / (Path(uf.name).stem + ".txt")),
-                "md_path": "",
-                "bilingual_path": str(_bil) if _bil is not None else ""}
-
-    # ── 마무리 + Gemini 위키 (임베드/AnythingLLM 제거: 2026-06-09) ──
-    with st.status(f"마무리·Wiki 생성: {uf.name}", expanded=True) as status_ui:
-        if partial_fail_n:
-            st.warning(f"⚠️ 번역 {partial_fail_n}단락 실패 — 그래도 Gemini가 TXT(원문/부분번역)로 노트 생성.")
-        # PDF → DONE/pdf/
-        if dest.exists():
-            pdf_save_dir = cfg.PDF_DIR
-            pdf_save_dir.mkdir(parents=True, exist_ok=True)
-            final_pdf = pdf_save_dir / uf.name
-            shutil.move(str(dest), str(final_pdf))
-        # TXT·MD → DONE
-        _src_txt = txt_path if (txt_path and txt_path.exists()) else None
-        md_ok = bool(md_src and md_src.exists())
-        if md_ok:
-            cfg.TXT_DIR.mkdir(parents=True, exist_ok=True)
-            md_dir(DONE_DIR, ws_name).mkdir(parents=True, exist_ok=True)
-            if _src_txt:
-                final_txt = cfg.TXT_DIR / _src_txt.name
-                shutil.move(str(_src_txt), str(final_txt))
-            final_md = md_dir(DONE_DIR, ws_name) / md_src.name
-            shutil.move(str(md_src), str(final_md))
-        elif _src_txt:
-            final_txt = cfg.TXT_DIR / _src_txt.name
-            shutil.move(str(_src_txt), str(final_txt))
-        # Gemini 위키 생성 (책 전문 TXT → 옵시디언 노트)
-        if not do_wiki:
-            st.write("⏭️ 위키 저장 꺼짐 — Wiki 건너뜀")
-            stages["wiki"] = "skip"
-        elif final_txt and Path(final_txt).exists():
-            st.write(f"📝 **Gemini 위키 생성** · `{Path(final_txt).name}`")
-            stages["wiki"] = "pending" if trigger_gemini_wiki(final_txt) else "fail"
-        else:
-            st.write("⏭️ TXT 없음 — Wiki 건너뜀")
-            stages["wiki"] = "skip"
-        stages["anythingllm"] = "removed"
-        append_log(f"완료: {uf.name}")
-        if final_txt and Path(final_txt).exists():
-            queue_add("tab2_ready", [_nfc(Path(final_txt).stem)])  # → 장별분할 큐
-        status_ui.update(label=f"✅ 완료: {uf.name}", state="complete")
-
-    notify(f"{uf.name} {'완료' if success else '실패'}", title=ws_name)
-    bilingual_p = find_bilingual(ws_name, Path(uf.name).stem)
-    if bilingual_p is not None:
-        stages["bilingual"] = "ok"
-    return {
-        "name": uf.name, "ok": success, "ws": ws_name, "stages": stages,
-        "pdf_path": str(final_pdf) if final_pdf else "",
-        "txt_path": str(final_txt) if final_txt else "",
-        "md_path": str(final_md) if final_md else "",
-        "bilingual_path": str(bilingual_p) if bilingual_p is not None else "",
-    }
-
 
 # ── UI ────────────────────────────────────────────────────
 
@@ -796,7 +479,17 @@ _brand_col.markdown(
 )
 with _font_col:
     _font_scale_controls()
-st.caption(t("PDF → TXT변환 → 장별 분할 → 영문번역 → 요약생성 → Obsidian Wiki"))
+# 영어 UI에서는 영→한 번역 단계가 무의미하므로 번역을 파이프라인에서 숨긴다 (2026-07-10)
+_translation_on = (get_lang() != "en")
+if _translation_on:
+    st.caption(t("PDF → TXT변환 → 장별 분할 → 영문번역 → 요약생성 → Obsidian Wiki"))
+else:
+    st.caption("PDF → Text → Chapter split → Summaries → Obsidian Wiki")
+
+
+def _route_translate(stem: str) -> bool:
+    """이 책을 번역 대기로 보낼지 — 영어 UI에서는 항상 False(요약으로 직행)."""
+    return _translation_on and _needs_translation(stem)
 
 _loading_step("파일 목록 확인 중…", "처리된 파일과 API 설정을 읽고 있습니다")
 
@@ -837,6 +530,10 @@ TASKS = [
 ]
 
 _active_view = st.session_state.get("active_view")
+# 영어 UI에서 번역 탭에 머물러 있으면 메뉴로 되돌린다 (번역 단계 숨김)
+if _active_view == "3_translate" and not _translation_on:
+    st.session_state.pop("active_view", None)
+    _active_view = None
 if not _active_view:
     st.markdown("""
 <style>
@@ -879,6 +576,8 @@ if not _active_view:
         "원문 저작권과 이용허락은 사용자 책임으로 확인해야 하며, 외부 AI/CLI로 전송되는 텍스트에는 민감정보나 배포 권한이 불분명한 내용을 넣지 마세요."
     ))
     for _tid, _title, _desc in TASKS:
+        if not _translation_on and _tid == "3_translate":
+            continue  # 영어 UI: 번역 메뉴 숨김
         _clicked = st.query_params.get("view") == _tid
         _mico = f'<span class="msr" style="font-size:1.2rem">{_STAGE_ICONS.get(_tid, "")}</span>'
         st.markdown(
@@ -906,9 +605,11 @@ _STAGE_TASKS = [
     ("settings", "설정"),
 ]
 # 처리 중(잠금)에는 탭 이동 링크를 비활성 텍스트로 렌더 — 작업 이탈 방지 (2026-07-09)
+# 영어 UI면 번역 탭(3_translate)을 내비에서 제외 (2026-07-10)
 _run_lock = st.session_state.get("_run_lock")
-_nav_cols = st.columns(len(_STAGE_TASKS))
-for _col, (_tid, _label) in zip(_nav_cols, _STAGE_TASKS):
+_nav_tasks = [x for x in _STAGE_TASKS if _translation_on or x[0] != "3_translate"]
+_nav_cols = st.columns(len(_nav_tasks))
+for _col, (_tid, _label) in zip(_nav_cols, _nav_tasks):
     _active_cls = " active" if _active_view == _tid else ""
     _ico = f'<span class="msr">{_STAGE_ICONS.get(_tid, "")}</span>'
     with _col:
@@ -1067,7 +768,7 @@ def _queue_book_chapters_for_next_stage(ws_name: str, stem: str) -> list[str]:
     chapter_rels = _chapter_rel_paths(ws_name, stem)
     if not chapter_rels:
         return []
-    if _needs_translation(stem):
+    if _route_translate(stem):
         queue_add("tab3_ready", chapter_rels)
     else:
         queue_add("tab4_ready", chapter_rels)
@@ -1598,7 +1299,7 @@ if _active_view == "2_split":
         if not _new:
             return False, f"{_stem}: 챕터 생성 안 됨"
         queue_remove("tab2_ready", [_stem])
-        if _needs_translation(_stem):
+        if _route_translate(_stem):
             st.session_state["split2_any_en"] = True
             queue_add("tab3_ready", _new)
         else:
@@ -1717,7 +1418,7 @@ if _active_view == "2_split":
                 _ok2, _detail2, _new_chs2 = _save_book_as_single_chapter(_s2["ws"], _s2["stem"])
                 if _ok2 and _new_chs2:
                     _completed2 += 1
-                    if _needs_translation(_s2["stem"]):
+                    if _route_translate(_s2["stem"]):
                         _queued_translate2 += 1
                     else:
                         _queued_summary2 += 1
@@ -1763,7 +1464,7 @@ if _active_view == "2_split":
                                      for f in sorted(_ch_dir2.glob("??_*.txt"))
                                      if not f.stem.endswith(("_ko", "_wiki"))]
                         if _new_chs2:
-                            if _needs_translation(_sh2["obj"]["stem"]):
+                            if _route_translate(_sh2["obj"]["stem"]):
                                 queue_add("tab3_ready", _new_chs2)
                             else:
                                 queue_add("tab4_ready", _new_chs2)
@@ -1776,7 +1477,7 @@ if _active_view == "2_split":
                     _new_chs2 = [str(f.relative_to(cfg.BASE_DIR))
                                  for f in sorted(_one_path2.parent.glob("??_*.txt"))
                                  if not f.stem.endswith(("_ko", "_wiki"))]
-                    _next_stage2s = "3_translate" if _needs_translation(_sh2["obj"]["stem"]) else "4_summary"
+                    _next_stage2s = "3_translate" if _route_translate(_sh2["obj"]["stem"]) else "4_summary"
                     if _new_chs2:
                         queue_add("tab3_ready" if _next_stage2s == "3_translate" else "tab4_ready", _new_chs2)
                         _archive_split_source(_sh2["obj"]["stem"])
@@ -1808,7 +1509,7 @@ if _active_view == "2_split":
                                   for f in sorted(_ch_dir2b.glob("??_*.txt"))
                                   if not f.stem.endswith(("_ko", "_wiki"))]
                     if _new_chs2b:
-                        if _needs_translation(_ns2):
+                        if _route_translate(_ns2):
                             queue_add("tab3_ready", _new_chs2b)
                         else:
                             queue_add("tab4_ready", _new_chs2b)
@@ -1867,7 +1568,8 @@ if _active_view == "2_split":
     else:
         st.caption(t("완료된 분할 없음"))
 
-    st.info(t("💡 다음 단계: **🌐 영문번역**으로 이동하세요"))
+    st.info(t("💡 다음 단계: **🌐 영문번역**으로 이동하세요") if _translation_on
+            else t("💡 다음 단계: **📝 문서요약**으로 이동하세요"))
 
 
 # ── 3: 번역 ─────────────────────────────────────────────
@@ -2426,7 +2128,7 @@ if _active_view == "5_wiki":
                 "obj": {"ws": DEFAULT_WS, "stem": _stem5s, "txt": _txt5s},
             })
 
-    # 단일 TXT → Wiki (Gemini 직접)
+    # 단일 TXT → Wiki (설정된 AI로 직접 생성)
     if _single_pend5:
         st.divider()
         st.markdown(tf("#### 단일 TXT → Wiki (%d권 · 챕터 분할 없음)", len(_single_pend5)))
