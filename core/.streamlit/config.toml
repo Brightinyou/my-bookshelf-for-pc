@@ -1,0 +1,10 @@
+[client]
+# 개발자 툴바·메뉴 숨김 → 'Clear caches'(C 단축키) 등 개발 기능 비활성 (2026-07-10)
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+# 무채색(블랙&화이트) 강조색 — 체크박스는 검은 박스+흰 체크, primary 버튼은 검정 (2026-07-10)
+primaryColor = "#111827"

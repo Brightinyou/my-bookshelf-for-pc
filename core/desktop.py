@@ -98,6 +98,12 @@ def _start_streamlit(port: int) -> subprocess.Popen | None:
         "false",
         "--global.developmentMode",
         "false",
+        # 개발자 툴바 숨김 → 'Clear caches' 등 개발 단축키·메뉴 제거 (2026-07-10)
+        "--client.toolbarMode",
+        "minimal",
+        # 무채색(B&W) 강조색 — 체크박스 검은 박스, primary 버튼 검정
+        "--theme.primaryColor",
+        "#111827",
     ]
     return subprocess.Popen(
         cmd,
