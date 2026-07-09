@@ -817,7 +817,8 @@ col_s2.metric(t("AI API 키"), tf("%d개", len(_avail_api_providers)) if _avail_
 col_s3.metric(t("위키 생성기"), t("생성 중") if wg_ok else t("대기"))
 col_s4.metric(t("Wiki 완성"), sum(1 for _ in WIKI_DIR.rglob("*.md")))
 if not _avail_ai_providers:
-    st.error(t("⚠️ 사용 가능한 AI가 없습니다 — ⚙️ 설정 탭에서 API 키를 입력하거나 CLI 구독 도구를 활성화하세요."))
+    st.error(t("사용 가능한 AI가 없습니다 — :material/settings: 설정 탭에서 API 키를 입력하거나 CLI 구독 도구를 활성화하세요."),
+             icon=":material/warning:")
 
 # ── 초기 메뉴 ─────────────────────────────────────────────
 # 탭 → Material Symbols 아이콘 이름 (내비·메뉴·제목 공통, 무채색 통일, 2026-07-10)
@@ -1353,7 +1354,8 @@ def _wiki_model_radio(key: str) -> tuple[str, str]:
               if llm.has_key(p)
               for m in info["models"]]
     if not _avail:
-        st.warning(t("사용 가능한 AI 없음 — ⚙️ 설정 탭에서 API 키를 입력하세요."))
+        st.warning(t("사용 가능한 AI 없음 — :material/settings: 설정 탭에서 API 키를 입력하세요."),
+                   icon=":material/warning:")
         return llm.wiki_provider_model()
     _wp, _wm = llm.wiki_provider_model()
     _labels = [f"{llm.PROVIDERS[p]['label']} · {m}" for p, m in _avail]
@@ -1907,7 +1909,8 @@ if _active_view == "3_translate":
     )
 
     if not _tr_eng3:
-        st.warning(t("사용 가능한 AI 없음 — ⚙️ 설정 탭에서 API 키를 입력하세요."))
+        st.warning(t("사용 가능한 AI 없음 — :material/settings: 설정 탭에서 API 키를 입력하세요."),
+                   icon=":material/warning:")
     else:
         _settings_ai_note()
 
@@ -2035,7 +2038,8 @@ if _active_view == "4_summary":
 
     _prov_ok4 = any(llm.has_key(p) for p in llm.PROVIDERS)
     if not _prov_ok4:
-        st.warning(t("요약 API 없음 — ⚙️ 설정 탭에서 키를 입력하세요."))
+        st.warning(t("요약 API 없음 — :material/settings: 설정 탭에서 키를 입력하세요."),
+                   icon=":material/warning:")
     else:
         _settings_ai_note()
 
@@ -2273,7 +2277,8 @@ if _active_view == "5_wiki":
 
     _wiki_prov_ok5 = any(llm.has_key(p) for p in llm.PROVIDERS)
     if not _wiki_prov_ok5:
-        st.warning(t("Wiki 생성 API 없음 — ⚙️ 설정 탭에서 키를 입력하세요."))
+        st.warning(t("Wiki 생성 API 없음 — :material/settings: 설정 탭에서 키를 입력하세요."),
+                   icon=":material/warning:")
     else:
         _settings_ai_note()
 

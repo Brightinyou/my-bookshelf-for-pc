@@ -567,4 +567,13 @@ _EN.update({
         "Enabling an AI API or CLI tool sends part or all of the document to an external AI service. ",
     "**My Bookshelf** · © 2026 저작자 — 개인·비상업 연구 보조 용도. ":
         "**My Bookshelf** · © 2026 the author — for personal, non-commercial research use. ",
+    # AI 없음 경고 (아이콘 모노톤화, 2026-07-10)
+    "사용 가능한 AI가 없습니다 — :material/settings: 설정 탭에서 API 키를 입력하거나 CLI 구독 도구를 활성화하세요.":
+        "No AI available — enter an API key or enable a CLI tool in the :material/settings: Settings tab.",
+    "사용 가능한 AI 없음 — :material/settings: 설정 탭에서 API 키를 입력하세요.":
+        "No AI available — enter an API key in the :material/settings: Settings tab.",
+    "요약 API 없음 — :material/settings: 설정 탭에서 키를 입력하세요.":
+        "No summary API — enter a key in the :material/settings: Settings tab.",
+    "Wiki 생성 API 없음 — :material/settings: 설정 탭에서 키를 입력하세요.":
+        "No Wiki API — enter a key in the :material/settings: Settings tab.",
 })
