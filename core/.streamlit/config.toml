@@ -6,5 +6,6 @@ toolbarMode = "minimal"
 gatherUsageStats = false
 
 [theme]
-# 무채색(블랙&화이트) 강조색 — 체크박스는 검은 박스+흰 체크, primary 버튼은 검정 (2026-07-10)
+# 항상 라이트(흰 배경·검은 글씨) 고정 + 무채색(B&W) 강조색 (2026-07-10)
+base = "light"
 primaryColor = "#111827"

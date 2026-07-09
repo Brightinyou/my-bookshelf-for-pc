@@ -101,7 +101,9 @@ def _start_streamlit(port: int) -> subprocess.Popen | None:
         # 개발자 툴바 숨김 → 'Clear caches' 등 개발 단축키·메뉴 제거 (2026-07-10)
         "--client.toolbarMode",
         "minimal",
-        # 무채색(B&W) 강조색 — 체크박스 검은 박스, primary 버튼 검정
+        # 항상 라이트(흰 배경·검은 글씨) + 무채색(B&W) 강조색
+        "--theme.base",
+        "light",
         "--theme.primaryColor",
         "#111827",
     ]

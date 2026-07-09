@@ -1390,7 +1390,7 @@ def _settings_engine_id() -> str:
 
 def _settings_ai_note() -> None:
     """AI 모델은 설정에서만 고른다는 안내 + 현재 선택 표시 (탭 공통)."""
-    st.caption(t("🤖 AI 모델은 ⚙️ 설정에서 선택합니다 · 현재: ") + _settings_ai_label())
+    st.caption(":material/smart_toy: " + t("AI 모델은 설정에서 선택합니다 · 현재: ") + _settings_ai_label())
 
 
 _loading_step("화면 구성 중…", "탭과 UI를 초기화하고 있습니다")
@@ -2512,9 +2512,9 @@ if _active_view == "settings":
             "출판·제출·인용·대외 배포 전에는 반드시 원문과 결과물을 직접 대조해 검토하세요."
         ))
 
-    # 🧠 위키 생성 모델 (공급자/모델)
+    # 위키 생성 모델 (공급자/모델) — 모노톤 AI 아이콘
     _wp, _wm = llm.wiki_provider_model()
-    st.markdown(f"**🧠 위키 생성 모델** — 현재: `{_wp} · {_wm}`")
+    st.markdown(f":material/smart_toy: **위키 생성 모델** — 현재: `{_wp} · {_wm}`")
     _avail = [(p, m) for p, info in llm.PROVIDERS.items() if llm.has_key(p) for m in info["models"]]
     if _avail:
         _labels = [f"{llm.PROVIDERS[p]['label']} · {m}" for p, m in _avail]
@@ -2530,7 +2530,7 @@ if _active_view == "settings":
     st.divider()
 
     # 🖥 CLI 구독 도구 — API 등록보다 앞(우선) · Claude/Codex 컴팩트 토글 (2026-07-10)
-    st.markdown(t("### AI 구독 (CLI)"))
+    st.markdown(t("### :material/hub: AI 구독 (CLI)"))
     st.caption(t("API 키 없이 구독으로 사용 — 설치·로그인 후 켜세요. AI 키 등록보다 우선합니다."))
     _cc1, _cc2 = st.columns(2)
     with _cc1:
@@ -2560,7 +2560,7 @@ if _active_view == "settings":
     st.divider()
 
     # 🔑 API 등록 (CLI 공급자 제외)
-    st.markdown("### 🔑 API 등록")
+    st.markdown(t("### :material/key: API 키 등록"))
     _cli_provs = {"claude_cli", "codex_cli"}
     for _prov, _info in llm.PROVIDERS.items():
         if _prov in _cli_provs:
@@ -2591,7 +2591,7 @@ if _active_view == "settings":
             st.caption(f"모델: {', '.join(_info['models'])}")
 
     st.divider()
-    st.markdown("### 📓 옵시디언(Obsidian) 보관함 설정")
+    st.markdown(t("### :material/book_2: 옵시디언(Obsidian) 보관함 설정"))
     st.caption(
         f"현재: `{_current_wiki_dir()}` — 생성된 위키 노트가 여기 저장되고, "
         "Wiki 목록 탭의 [옵시디언에서 위키 보관함(Vault) 열기]도 이 폴더를 엽니다."
