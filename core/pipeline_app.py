@@ -815,10 +815,15 @@ _avail_cli_providers = [llm.PROVIDERS[p]["label"] for p in llm.CLI_PROVIDERS if 
 _avail_ai_providers = _avail_api_providers + _avail_cli_providers
 _wiki_key_ok = bool(_avail_ai_providers)
 wg_ok = wiki_generator_running()
+# CLI 구독은 설치·활성된 도구명을 짧게 표시(Claude/Codex), API 키는 개수 (2026-07-10)
+_CLI_SHORT = {"claude_cli": "Claude", "codex_cli": "Codex"}
+_avail_cli_short = [_CLI_SHORT.get(p, llm.PROVIDERS[p]["label"])
+                    for p in llm.CLI_PROVIDERS if llm.has_key(p)]
 _status_spacer, col_s1, col_s2, col_s3, col_s4 = st.columns([2.8, 1.1, 1.1, 1.1, 1.1])
-col_s1.metric(t("API 키"), tf("%d개", len(_avail_api_providers)) if _avail_api_providers else t("❌ 없음"))
-col_s2.metric(t("CLI 구독"), tf("%d개", len(_avail_cli_providers)) if _avail_cli_providers else t("없음"))
-col_s3.metric(t("위키 생성기"), t("🔄 생성 중") if wg_ok else t("대기"))
+# CLI 구독을 우선(왼쪽)에, API 키를 다음에 배치
+col_s1.metric(t("AI 구독(CLI)"), ", ".join(_avail_cli_short) if _avail_cli_short else t("✕ 없음"))
+col_s2.metric(t("AI API 키"), tf("%d개", len(_avail_api_providers)) if _avail_api_providers else t("✕ 없음"))
+col_s3.metric(t("위키 생성기"), t("생성 중") if wg_ok else t("대기"))
 col_s4.metric(t("Wiki 완성"), sum(1 for _ in WIKI_DIR.rglob("*.md")))
 if not _avail_ai_providers:
     st.error(t("⚠️ 사용 가능한 AI가 없습니다 — ⚙️ 설정 탭에서 API 키를 입력하거나 CLI 구독 도구를 활성화하세요."))
