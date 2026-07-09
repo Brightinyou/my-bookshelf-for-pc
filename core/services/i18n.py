@@ -576,4 +576,9 @@ _EN.update({
         "No summary API — enter a key in the :material/settings: Settings tab.",
     "Wiki 생성 API 없음 — :material/settings: 설정 탭에서 키를 입력하세요.":
         "No Wiki API — enter a key in the :material/settings: Settings tab.",
+    # 설정 · 위키 생성 모델 (2026-07-10)
+    "위키 생성 모델": "Wiki model",
+    "현재": "current",
+    "번역과 별개로, 위키 노트 생성에 쓸 모델입니다. 구조화 출력은 공급자별로 자동 처리됩니다.":
+        "The model used to generate Wiki notes (separate from translation). Structured output is handled per provider.",
 })

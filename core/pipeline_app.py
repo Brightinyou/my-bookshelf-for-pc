@@ -2510,7 +2510,8 @@ if _active_view == "settings":
 
     # 위키 생성 모델 (공급자/모델) — 모노톤 AI 아이콘
     _wp, _wm = llm.wiki_provider_model()
-    st.markdown(f":material/smart_toy: **위키 생성 모델** — 현재: `{_wp} · {_wm}`")
+    _wp_label = llm.PROVIDERS.get(_wp, {}).get("label", _wp)
+    st.markdown(f":material/smart_toy: **{t('위키 생성 모델')}** — {t('현재')}: `{_wp_label} · {_wm}`")
     _avail = [(p, m) for p, info in llm.PROVIDERS.items() if llm.has_key(p) for m in info["models"]]
     if _avail:
         _labels = [f"{llm.PROVIDERS[p]['label']} · {m}" for p, m in _avail]
@@ -2522,7 +2523,7 @@ if _active_view == "settings":
             llm.set_wiki_model(_p, _m); st.success(f"위키 모델 = {_p} · {_m}"); st.rerun()
     else:
         st.info(t("사용 가능한 API 키나 활성화된 CLI가 없습니다. 아래에서 API 키를 입력하거나 CLI 사용을 켜세요."))
-    st.caption("번역과 별개로, 위키 노트 생성에 쓸 모델입니다. 구조화 출력은 공급자별로 자동 처리됩니다.")
+    st.caption(t("번역과 별개로, 위키 노트 생성에 쓸 모델입니다. 구조화 출력은 공급자별로 자동 처리됩니다."))
     st.divider()
 
     # 🖥 CLI 구독 도구 — API 등록보다 앞(우선) · Claude/Codex 컴팩트 토글 (2026-07-10)

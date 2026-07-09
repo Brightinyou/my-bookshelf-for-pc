@@ -38,7 +38,7 @@ PROVIDERS: dict[str, dict] = {
         "hint": "sk-ant-…",
     },
     "claude_cli": {
-        "label": "Claude CLI (구독)",
+        "label": "Claude CLI",
         "models": ["claude-sonnet-4-6", "claude-opus-4-8"],
         "hint": "",
     },
