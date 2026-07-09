@@ -446,31 +446,8 @@ _icon_path = _find_app_icon("icon_32x32.png")
 _page_icon = str(_icon_path) if _icon_path else "📚"
 st.set_page_config(page_title="My Bookshelf", page_icon=_page_icon, layout="wide")
 
-# Cmd/Ctrl+C(복사)가 Streamlit 내장 'Clear caches' 단축키를 트리거하지 않도록 차단.
-# window 캡처 단계에서 먼저 가로채 전파를 멈춘다(기본 복사 동작은 유지). (2026-07-09)
-try:
-    import streamlit.components.v1 as _components  # noqa: E402
-    _components.html(
-        """
-        <script>
-        (function () {
-          try {
-            var win = window.parent || window;
-            if (win.__cacheHotkeyPatched) return;
-            win.__cacheHotkeyPatched = true;
-            win.addEventListener('keydown', function (e) {
-              if ((e.metaKey || e.ctrlKey) && (e.key === 'c' || e.key === 'C')) {
-                e.stopPropagation();
-              }
-            }, true);
-          } catch (err) {}
-        })();
-        </script>
-        """,
-        height=0,
-    )
-except Exception:
-    pass
+# Cmd/Ctrl+C(복사) 시 뜨던 'Clear caches' 개발자 대화상자는 client.toolbarMode="minimal"
+# (.streamlit/config.toml + 실행 플래그)로 개발자 툴바·단축키를 끄면서 제거된다. (2026-07-10)
 
 if "ui_font_scale" not in st.session_state:
     st.session_state["ui_font_scale"] = 1.0
@@ -767,6 +744,49 @@ textarea,
     margin-right: 0.15em;
     vertical-align: middle;
 }
+/* 파일 업로드 영역 강조 — 실제 투입 지점이 눈에 띄도록 (2026-07-10) */
+[data-testid="stFileUploaderDropzone"] {
+    border: 2px dashed #111827 !important;
+    background: #f4f5f7 !important;
+    border-radius: 12px !important;
+    padding: 1.1rem !important;
+}
+[data-testid="stFileUploaderDropzone"]:hover {
+    background: #eceef1 !important;
+    border-color: #000 !important;
+}
+[data-testid="stFileUploaderDropzone"] [data-testid="stFileUploaderDropzoneInstructions"] svg {
+    color: #111827 !important; fill: #111827 !important;
+}
+@media (prefers-color-scheme: dark) {
+  [data-testid="stFileUploaderDropzone"] {
+      border-color: #e5e7eb !important; background: rgba(255,255,255,0.04) !important;
+  }
+}
+/* 체크박스 무채색 — 검은 네모 박스 안 체크 (초록 강조색 제거, 2026-07-10) */
+[data-testid="stCheckbox"] input:checked + div,
+[data-baseweb="checkbox"] input:checked + span,
+[data-baseweb="checkbox"] input:checked ~ div {
+    background-color: #111827 !important;
+    border-color: #111827 !important;
+}
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] > label > div:first-child {
+    border-radius: 4px !important;
+    border-color: #6b7280 !important;
+}
+/* 버튼 아이콘 무채색 고정 */
+.stButton button [data-testid="stIconMaterial"],
+.stFormSubmitButton button [data-testid="stIconMaterial"] { color: inherit !important; }
+/* 커스텀 HTML(내비·메뉴)용 Material Symbols 아이콘 — 이모지 대신 무채색 통일 (2026-07-10) */
+.msr {
+    font-family: 'Material Symbols Rounded';
+    font-weight: normal; font-style: normal;
+    font-size: 1.05em; line-height: 1;
+    letter-spacing: normal; text-transform: none; white-space: nowrap;
+    vertical-align: -0.15em; margin-right: 0.35em;
+    font-feature-settings: 'liga'; -webkit-font-feature-settings: 'liga';
+    -webkit-font-smoothing: antialiased;
+}
 </style>
 """.replace("__MB_FONT_SCALE__", str(_ui_font_scale)), unsafe_allow_html=True)
 
@@ -804,14 +824,19 @@ if not _avail_ai_providers:
     st.error(t("⚠️ 사용 가능한 AI가 없습니다 — ⚙️ 설정 탭에서 API 키를 입력하거나 CLI 구독 도구를 활성화하세요."))
 
 # ── 초기 메뉴 ─────────────────────────────────────────────
+# 탭 → Material Symbols 아이콘 이름 (내비·메뉴·제목 공통, 무채색 통일, 2026-07-10)
+_STAGE_ICONS = {
+    "menu": "grid_view", "1_txt": "description", "2_split": "content_cut",
+    "3_translate": "translate", "4_summary": "summarize", "5_wiki": "menu_book",
+    "settings": "settings", "all_run": "rocket_launch",
+}
 TASKS = [
-    ("1_txt", "📄 텍스트 변환", "PDF/TXT를 텍스트로 변환 · 업로드 대기 → 변환 TXT"),
-    ("2_split", "📂 챕터 분할", "책 TXT를 챕터 단위로 분리 · 변환 TXT → chapters"),
-    ("3_translate", "🌐 영문번역", "챕터를 한국어로 번역 · chapters → 번역본(_ko.txt)"),
-    ("4_summary", "📝 문서요약", "챕터별 요약 노트 생성 · chapters → 요약(_wiki.md)"),
-    ("5_wiki", "📖 위키반영", "요약을 Obsidian 노트로 저장 · 요약(_wiki.md) → 보관함(Vault)"),
-    ("settings", "⚙️ 설정", "API 키와 위키 생성 모델 설정"),
-    ("all_run", "🚀 전체 실행", "텍스트 변환 → 챕터 분할 → 번역 → 요약 → Wiki를 한 번에 실행"),
+    ("1_txt", "텍스트 변환", "PDF/TXT를 텍스트로 변환 · 업로드 대기 → 변환 TXT"),
+    ("2_split", "챕터 분할", "책 TXT를 챕터 단위로 분리 · 변환 TXT → chapters"),
+    ("3_translate", "영문번역", "챕터를 한국어로 번역 · chapters → 번역본(_ko.txt)"),
+    ("4_summary", "문서요약", "챕터별 요약 노트 생성 · chapters → 요약(_wiki.md)"),
+    ("5_wiki", "위키반영", "요약을 Obsidian 노트로 저장 · 요약(_wiki.md) → 보관함(Vault)"),
+    ("settings", "설정", "API 키와 위키 생성 모델 설정"),
 ]
 
 _active_view = st.session_state.get("active_view")
@@ -858,9 +883,10 @@ if not _active_view:
     ))
     for _tid, _title, _desc in TASKS:
         _clicked = st.query_params.get("view") == _tid
+        _mico = f'<span class="msr" style="font-size:1.2rem">{_STAGE_ICONS.get(_tid, "")}</span>'
         st.markdown(
             f'<a class="menu-card" href="?view={_tid}" target="_self">'
-            f'<span class="menu-title">{t(_title)}</span>'
+            f'<span class="menu-title">{_mico}{t(_title)}</span>'
             f'<span class="menu-desc">{t(_desc)}</span>'
             f'</a>',
             unsafe_allow_html=True,
@@ -868,37 +894,36 @@ if not _active_view:
         if _clicked:
             st.session_state["active_view"] = _tid
             st.query_params.clear()
-            if _tid == "all_run":
-                st.session_state["ocr_mode"] = t("🚀 전체 실행 (TXT변환→장별분할→번역(영어문서인 경우)→Wiki)")
             st.rerun()
     _loading_ph.empty()
     st.session_state["_app_loaded"] = True
     st.stop()
 
 _STAGE_TASKS = [
-    ("menu", "🧭 메뉴"),
-    ("1_txt", "📄 텍스트 변환"),
-    ("2_split", "📂 챕터 분할"),
-    ("3_translate", "🌐 영문번역"),
-    ("4_summary", "📝 문서요약"),
-    ("5_wiki", "📖 위키반영"),
-    ("settings", "⚙️ 설정"),
+    ("menu", "메뉴"),
+    ("1_txt", "텍스트 변환"),
+    ("2_split", "챕터 분할"),
+    ("3_translate", "영문번역"),
+    ("4_summary", "문서요약"),
+    ("5_wiki", "위키반영"),
+    ("settings", "설정"),
 ]
 # 처리 중(잠금)에는 탭 이동 링크를 비활성 텍스트로 렌더 — 작업 이탈 방지 (2026-07-09)
 _run_lock = st.session_state.get("_run_lock")
 _nav_cols = st.columns(len(_STAGE_TASKS))
 for _col, (_tid, _label) in zip(_nav_cols, _STAGE_TASKS):
     _active_cls = " active" if _active_view == _tid else ""
+    _ico = f'<span class="msr">{_STAGE_ICONS.get(_tid, "")}</span>'
     with _col:
         if _run_lock:
             st.markdown(
                 f'<span class="stage-nav-link{_active_cls}" '
-                f'style="opacity:0.4;pointer-events:none;cursor:not-allowed">{t(_label)}</span>',
+                f'style="opacity:0.4;pointer-events:none;cursor:not-allowed">{_ico}{t(_label)}</span>',
                 unsafe_allow_html=True,
             )
         else:
             st.markdown(
-                f'<a class="stage-nav-link{_active_cls}" href="?view={_tid}" target="_self">{t(_label)}</a>',
+                f'<a class="stage-nav-link{_active_cls}" href="?view={_tid}" target="_self">{_ico}{t(_label)}</a>',
                 unsafe_allow_html=True,
             )
 if st.query_params.get("view") in {tid for tid, _ in _STAGE_TASKS}:
@@ -1369,7 +1394,7 @@ _loading_step("화면 구성 중…", "탭과 UI를 초기화하고 있습니다
 if _active_view in {"1_txt", "all_run"}:
     _pdf_dir1 = cfg.PDF_DIR
     _stage_flow_panel(
-        "📄 텍스트 변환",
+        ":material/description: 텍스트 변환",
         "PDF의 텍스트 레이어를 추출해 TXT로 저장합니다 (OCR 변환된 문서만 가능).",
         [
             ("① 처리전 · 업로드 대기", UPLOAD_TMP,
@@ -1600,7 +1625,7 @@ if _active_view == "2_split":
     _ch_root2f = cfg.CHAPTERS_DIR
     _n_books2f = len([d for d in _ch_root2f.iterdir() if d.is_dir()]) if _ch_root2f.exists() else 0
     _stage_flow_panel(
-        "📂 챕터 분할",
+        ":material/content_cut: 챕터 분할",
         "책 TXT를 챕터(Chapter) 단위 파일로 분리해 책별 폴더에 저장합니다.",
         [
             ("① 처리전 · 변환 TXT", cfg.TXT_DIR,
@@ -1876,7 +1901,7 @@ if _active_view == "3_translate":
     _src_n3f, _ko_n3f, _ = _chapter_counts()
     _ch_root3f = cfg.CHAPTERS_DIR
     _stage_flow_panel(
-        "🌐 영문번역",
+        ":material/translate: 영문번역",
         "챕터 TXT를 한국어로 번역해 같은 폴더에 `_ko.txt`로 저장합니다.",
         [
             ("① 처리전 · 원문 챕터", _ch_root3f, tf("%d개", _src_n3f)),
@@ -2002,7 +2027,7 @@ if _active_view == "4_summary":
     _src_n4f, _ko_n4f, _json_n4f = _chapter_counts()
     _ch_root4f = cfg.CHAPTERS_DIR
     _stage_flow_panel(
-        "📝 문서요약",
+        ":material/summarize: 문서요약",
         "챕터 TXT(번역본 우선)로 요약을 생성해 같은 폴더에 `_wiki.md`로 저장합니다.",
         [
             ("① 처리전 · 챕터 (번역본 우선)", _ch_root4f,
@@ -2214,7 +2239,7 @@ if _active_view == "5_wiki":
     _vault5f = _current_wiki_dir()
     _n_notes5f = sum(1 for _ in _vault5f.rglob("*.md")) if _vault5f.exists() else 0
     _stage_flow_panel(
-        "📖 위키반영",
+        ":material/menu_book: 위키반영",
         "챕터 요약(_wiki.md)들을 합쳐 Obsidian 보관함(Vault)에 위키 노트로 저장합니다.",
         [
             ("① 처리전 · 요약 (_wiki.md)", _ch_root5f, tf("%d개", _json_n5f)),
@@ -2404,14 +2429,25 @@ if _active_view == "5_wiki":
     if _single_pend5:
         st.divider()
         st.markdown(tf("#### 단일 TXT → Wiki (%d권 · 챕터 분할 없음)", len(_single_pend5)))
-        st.caption(t("전체 TXT를 Gemini에 넣어 백그라운드로 단일 위키 노트 생성"))
+        st.caption(t("아직 위키로 만들지 않은 단일 TXT입니다. 위키로 만들거나, 필요 없으면 원본 TXT를 삭제할 수 있습니다."))
         _sel5s = _checklist(_single_pend5, "wiki5s", height=200)
-        if st.button(tf("선택 단일 Wiki (%d권)", len(_sel5s)), icon=":material/play_arrow:", key="wiki5s_run",
-                     use_container_width=True, type="primary", disabled=len(_sel5s)==0):
+        _s5c1, _s5c2 = st.columns(2)
+        _run5s = _s5c1.button(tf("Wiki 생성 (%d권)", len(_sel5s)), icon=":material/play_arrow:", key="wiki5s_run",
+                     use_container_width=True, type="primary", disabled=len(_sel5s)==0)
+        _del5s = _s5c2.button(tf("삭제 (%d권)", len(_sel5s)), icon=":material/delete:", key="wiki5s_del",
+                     use_container_width=True, disabled=len(_sel5s)==0)
+        if _run5s and _sel5s:
             for _wo5s in _sel5s:
                 _ok5s = trigger_gemini_wiki(_wo5s["txt"])
                 (st.success if _ok5s else st.error)(
                     f"{'✅ 백그라운드 시작' if _ok5s else '❌ 실패'}: {_wo5s['stem']}")
+            st.rerun()
+        if _del5s and _sel5s:
+            for _wo5s in _sel5s:
+                try:
+                    Path(_wo5s["txt"]).unlink(missing_ok=True)
+                except Exception:
+                    pass
             st.rerun()
 
     # Wiki 완료 목록
@@ -2488,54 +2524,34 @@ if _active_view == "settings":
     st.caption("번역과 별개로, 위키 노트 생성에 쓸 모델입니다. 구조화 출력은 공급자별로 자동 처리됩니다.")
     st.divider()
 
-    # 🖥 CLI 구독 도구 — API 등록보다 앞에 배치 (2026-07-09)
-    st.markdown("### 🖥 CLI 구독 도구")
-    st.caption(t("API 키 없이 구독으로 사용 — 설치·로그인 후 활성화하세요."))
+    # 🖥 CLI 구독 도구 — API 등록보다 앞(우선) · Claude/Codex 컴팩트 토글 (2026-07-10)
+    st.markdown(t("### AI 구독 (CLI)"))
+    st.caption(t("API 키 없이 구독으로 사용 — 설치·로그인 후 켜세요. AI 키 등록보다 우선합니다."))
     _cc1, _cc2 = st.columns(2)
     with _cc1:
-        st.markdown("**Claude CLI**")
         _claude_installed = llm.claude_cli_installed()
         _claude_enabled = bool(llm.get_pref("use_claude_cli", False))
         if _claude_installed:
-            st.success(f"설치됨\n`{llm.claude_cli_path()}`")
-            _new_enabled_label = st.radio(
-                "Claude 구독 CLI",
-                ["비활성", "활성"],
-                index=1 if _claude_enabled else 0,
-                key="set_use_claude_cli",
-                horizontal=True,
-                help="Claude 구독을 사용 중이고 CLI 로그인이 되어 있을 때만 켜세요.",
-            )
-            _new_enabled = _new_enabled_label == "활성"
+            _new_enabled = st.toggle("Claude", value=_claude_enabled, key="set_use_claude_cli",
+                                     help=f"설치됨: {llm.claude_cli_path()} · Claude 구독 로그인 시 켜세요")
             if _new_enabled != _claude_enabled:
                 llm.set_claude_cli_enabled(_new_enabled)
                 st.rerun()
-            if not _claude_enabled:
-                st.caption("현재 비활성화됨 — API 키 방식 Claude와는 별개입니다.")
         else:
-            st.info("미설치. `npm install -g @anthropic-ai/claude-code`")
+            st.toggle("Claude", value=False, disabled=True, key="set_use_claude_cli", help="미설치")
+            st.caption("미설치 · `npm i -g @anthropic-ai/claude-code`")
     with _cc2:
-        st.markdown("**Codex CLI**")
         _codex_installed = llm.codex_cli_installed()
         _codex_enabled = bool(llm.get_pref("use_codex_cli", False))
         if _codex_installed:
-            st.success(f"설치됨\n`{llm.codex_cli_path()}`")
-            _new_codex_enabled_label = st.radio(
-                "Codex CLI",
-                ["비활성", "활성"],
-                index=1 if _codex_enabled else 0,
-                key="set_use_codex_cli",
-                horizontal=True,
-                help="ChatGPT 계정 또는 API 키로 Codex CLI 로그인이 되어 있을 때만 켜세요.",
-            )
-            _new_codex_enabled = _new_codex_enabled_label == "활성"
+            _new_codex_enabled = st.toggle("Codex", value=_codex_enabled, key="set_use_codex_cli",
+                                           help=f"설치됨: {llm.codex_cli_path()} · ChatGPT 로그인 시 켜세요")
             if _new_codex_enabled != _codex_enabled:
                 llm.set_codex_cli_enabled(_new_codex_enabled)
                 st.rerun()
-            if not _codex_enabled:
-                st.caption("현재 비활성화됨 — OpenAI API 키 방식과는 별개입니다.")
         else:
-            st.info("미설치. `npm install -g @openai/codex`")
+            st.toggle("Codex", value=False, disabled=True, key="set_use_codex_cli", help="미설치")
+            st.caption("미설치 · `npm i -g @openai/codex`")
     st.divider()
 
     # 🔑 API 등록 (CLI 공급자 제외)
