@@ -259,15 +259,19 @@ def find_overview_file(ws_name: str, stem: str) -> Path | None:
 
 
 def load_overview_file(path: Path) -> dict | None:
-    """_overview.md → {"category","summary","intro"}. 실패 시 None."""
+    """_overview.md → {"category","author","summary","intro"}. 실패 시 None."""
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
         m = _re.search(r"(?m)^category:\s*(.+)$", text[:400])
         category = m.group(1).strip() if m else "기타"
+        ma = _re.search(r"(?m)^author:\s*(.+)$", text[:400])
+        mm = _re.search(r"(?m)^model:\s*(.+)$", text[:400])
         summary, intro = parse_summary_md(text)
         if not (summary or intro):
             return None
-        return {"category": category, "summary": summary, "intro": intro}
+        return {"category": category, "summary": summary, "intro": intro,
+                "author": ma.group(1).strip() if ma else "",
+                "model": mm.group(1).strip() if mm else ""}
     except Exception:
         return None
 

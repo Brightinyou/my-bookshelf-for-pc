@@ -11,8 +11,8 @@ import config as cfg
 import llm_providers as llm
 
 from services.chapters import (
-    chapters_dir, find_overview_file, list_summary_files, load_overview_file,
-    load_summary_file, summarize_book_overview,
+    _author_from_stem, chapters_dir, find_overview_file, list_summary_files,
+    load_overview_file, load_summary_file, summarize_book_overview,
 )
 from services.common import append_log, open_path
 
@@ -69,6 +69,62 @@ def trigger_wiki_generation(wiki_target: str | None = None) -> int:
     except Exception as e:
         append_log(f"ERROR: gemini_wiki --all Popen 실패 ({type(e).__name__}) {str(e)[:200]}")
     return 0
+
+
+# ── 기존 노트 형식 개선 (note_retrofit.py — 2026-07-09) ─────────
+NOTE_RETROFIT = Path(__file__).resolve().parent.parent / "note_retrofit.py"
+
+
+def note_retrofit_running() -> bool:
+    try:
+        import psutil
+        return any(
+            "note_retrofit.py" in " ".join(p.info.get("cmdline") or [])
+            for p in psutil.process_iter(["cmdline"])
+        )
+    except Exception:
+        return False
+
+
+def note_retrofit_stats(wiki_target: str | None = None) -> dict:
+    """보관함 노트 스캔 — {"done": 개선완료, "pending": 대상, "excluded": 제외}."""
+    import note_retrofit as _nr
+    wdir = Path(wiki_target).expanduser() if (wiki_target or "").strip() else WIKI_DIR
+    done = pending = excluded = 0
+    for f in _nr.list_candidates(wdir):
+        try:
+            text = f.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            excluded += 1
+            continue
+        r = _nr.classify(text, f.stem)
+        if r is None:
+            pending += 1
+        elif r.startswith("건너뜀"):
+            done += 1
+        else:
+            excluded += 1
+    return {"done": done, "pending": pending, "excluded": excluded}
+
+
+def trigger_note_retrofit(wiki_target: str | None = None) -> bool:
+    """노트 형식 개선 배치를 앱 프로세스 권한으로 백그라운드 실행 (재개 안전)."""
+    if note_retrofit_running():
+        return False
+    env = _wiki_env(wiki_target)
+    wdir = Path(env.get("MYBOOKSHELF_WIKI_DIR", str(WIKI_DIR)))
+    log_path = wdir / "_retrofit.log"
+    try:
+        subprocess.Popen(
+            [cfg.PYTHON, "-u", str(NOTE_RETROFIT)],
+            stdout=open(log_path, "a", encoding="utf-8"), stderr=subprocess.STDOUT,
+            env=env, start_new_session=True,
+        )
+        append_log(f"노트 형식 개선 배치 트리거 → {wdir}")
+        return True
+    except Exception as e:
+        append_log(f"ERROR: note_retrofit Popen 실패 ({type(e).__name__}) {str(e)[:200]}")
+        return False
 
 
 def trigger_gemini_wiki(txt_path: Path, wiki_target: str | None = None) -> bool:
@@ -291,8 +347,10 @@ def build_wiki_from_chapter_summaries(ws_name: str, stem: str, wiki_dir: Path | 
     cat  = ov.get("category", "기타")
     intro = ov.get("intro", "")
     summ  = ov.get("summary", "")
+    author = (ov.get("author") or "").strip() or _author_from_stem(stem)
     today = __import__("datetime").date.today().isoformat()
-    prov, model = llm.wiki_provider_model()
+    # 전체요약을 만든 실제 모델을 이어받는다 (LLM 무호출 반영 시 'default' 방지)
+    model = (ov.get("model") or "").strip() or llm.effective_wiki_model()
     _wdir = wiki_dir or WIKI_DIR
     # 챕터 노트는 책 이름 하위폴더에 저장
     _book_folder = _wdir / _re.sub(r'[/\\:*?"<>|]', '_', stem).strip()
@@ -308,6 +366,10 @@ def build_wiki_from_chapter_summaries(ws_name: str, stem: str, wiki_dir: Path | 
         "---", f"title: {stem}", f"category: {cat}",
         f"tags: {tags_str}",
         f"source: {stem}.txt",
+    ]
+    if author:
+        lines.append(f"author: {author}")
+    lines += [
         f"model: {model}", f"generated: {today}", "---", "",
         f"# {stem}", "", intro, "", f"**요약:** {summ}", "",
     ]
