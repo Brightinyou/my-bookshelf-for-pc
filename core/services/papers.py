@@ -142,7 +142,7 @@ def translate_downloaded_paper(source_file: Path, engine: str, progress_cb=None)
         pdf_dir = cfg.PDF_DIR
         pdf_dir.mkdir(parents=True, exist_ok=True)
         if source_file.suffix.lower() == ".pdf":
-            txt_path, _md, err = pdf_to_txt(source_file)
+            txt_path, _md, err, _note = pdf_to_txt(source_file)
             if not txt_path:
                 return False, f"PDF 텍스트 추출 실패: {err}"
             final_pdf = pdf_dir / source_file.name
@@ -171,7 +171,7 @@ def prepare_downloaded_paper_source(source_file: Path) -> tuple[bool, Path | Non
         pdf_out_dir.mkdir(parents=True, exist_ok=True)
         final_pdf: Path | None = None
         if source_file.suffix.lower() == ".pdf":
-            txt_path, _md, err = pdf_to_txt(source_file)
+            txt_path, _md, err, _note = pdf_to_txt(source_file)
             if not txt_path:
                 return False, None, None, f"PDF 텍스트 추출 실패: {err}"
             final_pdf = pdf_out_dir / source_file.name

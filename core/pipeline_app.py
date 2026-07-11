@@ -47,6 +47,7 @@ from services.pipeline_queue import (
     queue_add, queue_clear, queue_list, queue_remove,
 )
 from services.convert import _do_ocr_only, pdf_to_txt
+from services import updater
 from services.translate import (
     _needs_translation, _paragraph_already_target, _split_paragraphs_robust,
     _translate_paragraph, _translation_is_valid, build_translate_system,
@@ -705,6 +706,92 @@ def _clear_stage_completion() -> None:
     st.session_state.pop("_stage_completion", None)
 
 
+def _set_ocr_notice(names: list[str]) -> None:
+    st.session_state["_ocr_notice"] = list(names)
+
+
+def _render_ocr_notice() -> None:
+    """이미지 전용(스캔) 문서 안내 팝업 — TXT 분리 전 OCR 선행 필요."""
+    names = st.session_state.get("_ocr_notice")
+    if not names:
+        return
+
+    def _render_body():
+        st.warning(t("OCR 사전 처리가 필요합니다"))
+        st.write(t("다음 문서는 이미지로만 되어 있어, TXT 분리를 위해서는 OCR 사전 처리 작업이 필요합니다:"))
+        for _n in names:
+            st.write(f"• {_n}")
+        if st.button(t("닫기"), icon=":material/close:", key="ocr_notice_close",
+                     use_container_width=True, type="primary"):
+            st.session_state.pop("_ocr_notice", None)
+            st.rerun()
+
+    if hasattr(st, "dialog"):
+        @st.dialog(t("OCR 필요"))
+        def _ocr_notice_dialog():
+            _render_body()
+        _ocr_notice_dialog()
+    else:
+        with st.container(border=True):
+            _render_body()
+
+
+def _do_update(info: dict) -> None:
+    """다운로드(진행바) → 검증 → 헬퍼 실행/앱 종료. 실패 시 A(안내형) 폴백 안내."""
+    st.info(t("설치 파일을 내려받는 중입니다…"))
+    _bar = st.progress(0.0)
+    _path, _err = updater.download_installer(
+        info.get("asset_url", ""), progress_cb=lambda f: _bar.progress(f))
+    if not _path:
+        st.error(t("자동 업데이트 실패") + f": {_err}")
+        st.warning(t("아래 '브라우저로 받기'로 직접 내려받아 설치해 주세요."))
+        return
+    _bar.progress(1.0)
+    st.success(t("다운로드 완료 — 앱을 닫고 업데이트를 설치합니다. 잠시 후 자동으로 다시 열립니다."))
+    if updater.launch_helper_and_exit(_path):
+        st.stop()
+    else:
+        st.error(t("업데이트 실행에 실패했습니다."))
+        st.warning(t("아래 '브라우저로 받기'로 직접 내려받아 설치해 주세요."))
+
+
+def _render_update_notice() -> None:
+    """새 버전 감지 시 반자동 업데이트 팝업 (Windows). 실패는 모두 안내형으로 폴백."""
+    if sys.platform != "win32":
+        return
+    if "_update_info" not in st.session_state:
+        st.session_state["_update_info"] = updater.check_for_update() or {}
+    info = st.session_state.get("_update_info") or {}
+    if not info.get("available") or st.session_state.get("_update_dismissed"):
+        return
+
+    def _render_body():
+        st.write(tf("새 버전 **%s** 이(가) 나왔습니다. (현재 %s)", info["latest"], info["current"]))
+        if info.get("notes"):
+            with st.expander(t("변경 내용 보기")):
+                st.markdown(info["notes"][:1500])
+        st.caption(t("업데이트하면 앱이 닫혔다가 자동으로 다시 열립니다."))
+        _c1, _c2, _c3 = st.columns(3)
+        if _c1.button(t("지금 업데이트"), type="primary", use_container_width=True, key="upd_now"):
+            _do_update(info)
+        if _c2.button(t("브라우저로 받기"), use_container_width=True, key="upd_browser"):
+            updater.open_release_page(info.get("page_url", ""))
+            st.session_state["_update_dismissed"] = True
+            st.rerun()
+        if _c3.button(t("나중에"), use_container_width=True, key="upd_later"):
+            st.session_state["_update_dismissed"] = True
+            st.rerun()
+
+    if hasattr(st, "dialog"):
+        @st.dialog(t("업데이트 사용 가능"))
+        def _update_dialog():
+            _render_body()
+        _update_dialog()
+    else:
+        with st.container(border=True):
+            _render_body()
+
+
 def _render_stage_completion_notice() -> None:
     payload = st.session_state.get("_stage_completion")
     if not payload:
@@ -981,6 +1068,8 @@ def _current_wiki_dir() -> Path:
 
 
 _render_stage_completion_notice()
+_render_ocr_notice()
+_render_update_notice()
 
 
 def _checklist_keys(items: list[dict], prefix: str) -> list[str]:
@@ -1228,23 +1317,40 @@ if _active_view in {"1_txt", "all_run"}:
         if _to_run1:
             _prog1 = st.progress(0.0)
             _done_txt_paths1: list[Path] = []
+            _ocr_needed1: list[str] = []
+            _notes1: list[str] = []
             for _i1, _uf1 in enumerate(_to_run1, 1):
                 with st.status(f"텍스트 변환 [{_i1}/{len(_to_run1)}]: {_uf1.name}", expanded=False):
                     _r1 = _do_ocr_only(_uf1, _ws1, fast=_fast1)
                 if _r1["ok"] and _r1.get("txt_path"):
                     _done_txt_paths1.append(Path(_r1["txt_path"]))
-                (st.success if _r1["ok"] else st.error)(
-                    f"{'✅' if _r1['ok'] else '❌'} {_uf1.name}" +
-                    (f" → `{Path(_r1['txt_path']).name}`" if _r1["ok"] else f": {_r1['error']}")
-                )
+                    _note1 = _r1.get("note") or ""
+                    st.success(f"✅ {_uf1.name} → `{Path(_r1['txt_path']).name}`"
+                               + (f" — ⚠️ {_note1}" if _note1 else ""))
+                    if _note1:
+                        _notes1.append(f"{_uf1.name}: {_note1}")
+                elif _r1.get("needs_ocr"):
+                    _ocr_needed1.append(_uf1.name)
+                    st.warning(f"🖼️ {_uf1.name}: {_r1['error']}")
+                else:
+                    st.error(f"❌ {_uf1.name}: {_r1['error']}")
                 _prog1.progress(_i1 / len(_to_run1))
             if _done_txt_paths1:
+                _msg1 = tf("%d개 파일 처리를 마쳤습니다. 다음 단계에서 장별 분할을 진행하세요.", len(_done_txt_paths1))
+                if _notes1:
+                    _msg1 += "\n\n" + t("⚠️ 일부 문서는 처리 중 특이사항이 있었습니다 (자동 보정됨):") \
+                             + "\n\n" + "\n".join(f"- {x}" for x in _notes1)
+                if _ocr_needed1:
+                    _msg1 += "\n\n" + tf("⚠️ 다음 %d개 문서는 이미지로만 되어 있어 OCR 사전 처리가 필요합니다: %s",
+                                         len(_ocr_needed1), ", ".join(_ocr_needed1))
                 _set_stage_completion(
                     t("1-TXT변환 완료"),
-                    tf("%d개 파일 처리를 마쳤습니다. 다음 단계에서 장별 분할을 진행하세요.", len(_done_txt_paths1)),
+                    _msg1,
                     next_stage="2_split",
                     open_target=_stage_folder("1_txt"),
                 )
+            elif _ocr_needed1:
+                _set_ocr_notice(_ocr_needed1)
             st.session_state.pop("_ocr_queued", None)  # 처리 완료 후 큐 초기화
             st.rerun()
     else:

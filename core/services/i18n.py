@@ -214,6 +214,29 @@ _EN: dict[str, str] = {
     "1-TXT변환 완료": "Text conversion finished",
     "%d개 파일 처리를 마쳤습니다. 다음 단계에서 장별 분할을 진행하세요.":
         "Processed %d file(s). Continue with chapter splitting in the next step.",
+    "⚠️ 일부 문서는 처리 중 특이사항이 있었습니다 (자동 보정됨):":
+        "⚠️ Some documents had issues during processing (auto-corrected):",
+    "업데이트 사용 가능": "Update available",
+    "새 버전 **%s** 이(가) 나왔습니다. (현재 %s)": "A new version **%s** is available. (current %s)",
+    "변경 내용 보기": "View changes",
+    "업데이트하면 앱이 닫혔다가 자동으로 다시 열립니다.":
+        "The app will close and reopen automatically after updating.",
+    "지금 업데이트": "Update now",
+    "브라우저로 받기": "Download in browser",
+    "나중에": "Later",
+    "설치 파일을 내려받는 중입니다…": "Downloading the installer…",
+    "자동 업데이트 실패": "Automatic update failed",
+    "아래 '브라우저로 받기'로 직접 내려받아 설치해 주세요.":
+        "Please download and install manually via 'Download in browser' below.",
+    "다운로드 완료 — 앱을 닫고 업데이트를 설치합니다. 잠시 후 자동으로 다시 열립니다.":
+        "Download complete — closing the app to install. It will reopen automatically shortly.",
+    "업데이트 실행에 실패했습니다.": "Failed to start the update.",
+    "OCR 필요": "OCR required",
+    "OCR 사전 처리가 필요합니다": "OCR preprocessing required",
+    "다음 문서는 이미지로만 되어 있어, TXT 분리를 위해서는 OCR 사전 처리 작업이 필요합니다:":
+        "These documents are image-only. OCR preprocessing is required before text extraction:",
+    "⚠️ 다음 %d개 문서는 이미지로만 되어 있어 OCR 사전 처리가 필요합니다: %s":
+        "⚠️ %d document(s) are image-only and need OCR preprocessing first: %s",
     "💡 다음 단계: **📂 장분할 앱**으로 이동하세요": "💡 Next: go to **📂 Chapter Splitter**",
 
     # ── 2: 장분할 ────────────────────────────────────────

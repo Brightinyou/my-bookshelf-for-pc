@@ -35,8 +35,11 @@ PDF/TXT  →  Text conversion  →  Chapter split  →  Translation (English doc
 
 ### Windows
 
-1. Download `Setup.exe` from the [latest release](https://github.com/Brightinyou/my-bookshelf-for-pc/releases/latest).
-2. If SmartScreen warns, choose **More info → Run** (expected for an unsigned personal build).
+1. Get the installer from the [latest release](https://github.com/Brightinyou/my-bookshelf-for-pc/releases/latest).
+   - **Chrome**: download `Setup.exe` directly.
+   - **Edge / Internet Explorer**: `.exe` downloads may be blocked. In that case download **`MyBookshelf-Setup.zip`** from the same release, **extract it**, and run the `Setup.exe` inside. (Or, in Edge's download notice, click `⋯` → **Keep** → **Keep anyway** to unblock the .exe.)
+2. **⚠️ "Unknown publisher" warning** — this is an **unsigned** personal build (no code-signing certificate), so Windows SmartScreen may show a blue **"Windows protected your PC — Unknown publisher"** screen. It is not malware; the build simply isn't signed.
+   → Click **More info**, then the **Run anyway** button that appears, to proceed with installation.
 3. Pick the **install language (Korean/English)** — it becomes the app's default language.
 4. Package download takes a few minutes; the app launches automatically, and afterwards opens from the **My Bookshelf** icon (desktop / Start menu).
 
