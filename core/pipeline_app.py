@@ -1551,51 +1551,84 @@ if _active_view == "2_split":
     if _split_short2:
         st.divider()
         st.markdown(tf("### ⚠️ 짧은 문서 확인 (%d권)", len(_split_short2)))
-        with st.container(border=True):
-            st.caption(t("짧은 문서는 챕터로 나누기 애매합니다. 챕터로 분할하거나, 통째로 다음 단계(영문→영문번역·한글→문서요약)로 보낼 수 있습니다."))
-            for _sh2 in _split_short2:
-                _sc1, _sc2, _sc3, _sc4 = st.columns([4, 1, 1.4, 1.4])
-                _sc1.markdown(f"**{_sh2['label']}**")
-                _sc2.caption(_sh2["meta"])
-                if _sc3.button(t("분할 처리"), icon=":material/play_arrow:", key=f"short_split_yes_{_sh2['key']}",
-                               use_container_width=True):
-                    _sn2, _serr2, _ = split_book_to_chapters(_sh2["obj"]["ws"], _sh2["obj"]["stem"], allow_short=True)
-                    if _serr2:
-                        st.warning(f"⚠️ {_sh2['key']}: {_serr2}")
-                    else:
-                        st.success(f"✅ {_sh2['key']} → {_sn2}개 챕터")
-                        queue_remove("tab2_ready", [_sh2["obj"]["stem"]])
-                        _ch_dir2 = chapters_dir(_sh2["obj"]["ws"], _sh2["obj"]["stem"])
-                        _new_chs2 = [str(f.relative_to(cfg.BASE_DIR))
-                                     for f in sorted(_ch_dir2.glob("??_*.txt"))
-                                     if not f.stem.endswith(("_ko", "_wiki"))]
-                        if _new_chs2:
-                            if _route_translate(_sh2["obj"]["stem"]):
-                                queue_add("tab3_ready", _new_chs2)
-                            else:
-                                queue_add("tab4_ready", _new_chs2)
-                            _archive_split_source(_sh2["obj"]["stem"])
-                        st.rerun()
-                if _sc4.button(t("다음단계로 이동"), icon=":material/arrow_forward:", key=f"short_split_keep_{_sh2['key']}",
-                               use_container_width=True, type="primary"):
-                    _one_path2, _ = _write_single_chapter_from_text(_sh2["obj"]["ws"], _sh2["obj"]["stem"], _sh2["text"])
-                    queue_remove("tab2_ready", [_sh2["obj"]["stem"]])
-                    _new_chs2 = [str(f.relative_to(cfg.BASE_DIR))
-                                 for f in sorted(_one_path2.parent.glob("??_*.txt"))
-                                 if not f.stem.endswith(("_ko", "_wiki"))]
-                    _next_stage2s = "3_translate" if _route_translate(_sh2["obj"]["stem"]) else "4_summary"
-                    if _new_chs2:
-                        queue_add("tab3_ready" if _next_stage2s == "3_translate" else "tab4_ready", _new_chs2)
-                        _archive_split_source(_sh2["obj"]["stem"])
-                    _set_stage_completion(
-                        t("2-단일장 저장 완료"),
-                        tf("%s 을(를) 단일장으로 저장했습니다.", _sh2["label"])
-                        + (" " + t("영문 문서 → 영문번역") if _next_stage2s == "3_translate"
-                           else " " + t("한글 문서 → 문서요약")),
-                        next_stage=_next_stage2s,
-                        open_target=_stage_folder("2_split"),
-                    )
-                    st.rerun()
+        st.caption(t("짧은 문서는 챕터로 나누기 애매합니다. 각 문서를 '보기'로 확인한 뒤, 아래에서 분할 처리·다음 단계 이동·삭제를 선택하세요."))
+        _sel_short2 = _checklist(_split_short2, "shortsplit2", height=240, viewable=True)
+        _shc1, _shc2, _shc3 = st.columns(3)
+        _sh_split2 = _shc1.button(tf("분할 처리 (%d권)", len(_sel_short2)), icon=":material/play_arrow:",
+                                  key="shortsplit2_split", use_container_width=True, disabled=len(_sel_short2) == 0)
+        _sh_next2 = _shc2.button(tf("다음단계로 이동 (%d권)", len(_sel_short2)), icon=":material/arrow_forward:",
+                                 key="shortsplit2_next", type="primary", use_container_width=True, disabled=len(_sel_short2) == 0,
+                                 help=t("분할 없이 단일장으로 저장하고 영문은 영문번역, 한글은 문서요약으로 이동"))
+        _sh_del2 = _shc3.button(tf("삭제 (%d권)", len(_sel_short2)), icon=":material/delete:",
+                                key="shortsplit2_del", use_container_width=True, disabled=len(_sel_short2) == 0)
+
+        if _sh_split2 and _sel_short2:
+            _short_done2 = 0
+            for _o2 in _sel_short2:
+                _sn2, _serr2, _ = split_book_to_chapters(_o2["ws"], _o2["stem"], allow_short=True)
+                if _serr2:
+                    st.warning(f"⚠️ {_o2['stem']}: {_serr2}")
+                    continue
+                queue_remove("tab2_ready", [_o2["stem"]])
+                _ch_dir2 = chapters_dir(_o2["ws"], _o2["stem"])
+                _new_chs2 = [str(f.relative_to(cfg.BASE_DIR))
+                             for f in sorted(_ch_dir2.glob("??_*.txt"))
+                             if not f.stem.endswith(("_ko", "_wiki"))]
+                if _new_chs2:
+                    queue_add("tab3_ready" if _route_translate(_o2["stem"]) else "tab4_ready", _new_chs2)
+                    _archive_split_source(_o2["stem"])
+                    _short_done2 += 1
+            if _short_done2:
+                st.success(tf("%d권을 챕터로 분할했습니다.", _short_done2))
+            st.rerun()
+
+        if _sh_next2 and _sel_short2:
+            _short_moved2 = 0
+            _short_last_stage2 = "4_summary"
+            for _o2 in _sel_short2:
+                _txp2 = cfg.TXT_DIR / (_o2["stem"] + ".txt")
+                if not _txp2.exists():
+                    _txp2 = cfg.TXT_DIR / (_o2["stem"] + ".md")
+                _src2 = _txp2.read_text(encoding="utf-8", errors="ignore") if _txp2.exists() else ""
+                if not _src2.strip():
+                    continue
+                _one_path2, _ = _write_single_chapter_from_text(_o2["ws"], _o2["stem"], _src2)
+                queue_remove("tab2_ready", [_o2["stem"]])
+                _new_chs2 = [str(f.relative_to(cfg.BASE_DIR))
+                             for f in sorted(_one_path2.parent.glob("??_*.txt"))
+                             if not f.stem.endswith(("_ko", "_wiki"))]
+                _stage2 = "3_translate" if _route_translate(_o2["stem"]) else "4_summary"
+                if _new_chs2:
+                    queue_add("tab3_ready" if _stage2 == "3_translate" else "tab4_ready", _new_chs2)
+                    _archive_split_source(_o2["stem"])
+                    _short_moved2 += 1
+                    _short_last_stage2 = _stage2
+            if _short_moved2:
+                _set_stage_completion(
+                    t("2-단일장 저장 완료"),
+                    tf("%d건을 단일장으로 저장해 다음 단계로 보냈습니다.", _short_moved2),
+                    next_stage=_short_last_stage2,
+                    open_target=_stage_folder("2_split"),
+                )
+            st.rerun()
+
+        if _sh_del2 and _sel_short2:
+            _short_del2 = 0
+            for _o2 in _sel_short2:
+                _removed_any = False
+                for _ext2 in (".txt", ".md"):
+                    _f2 = cfg.TXT_DIR / (_o2["stem"] + _ext2)
+                    try:
+                        if _f2.exists():
+                            _f2.unlink()
+                            _removed_any = True
+                    except Exception:
+                        pass
+                queue_remove("tab2_ready", [_o2["stem"]])
+                if _removed_any:
+                    _short_del2 += 1
+            st.success(tf("%d개 문서를 삭제했습니다.", _short_del2))
+            st.rerun()
 
     # 장 구조 미감지 — 단일장 저장 선택지 (2026-07-03)
     _nosplit2 = st.session_state.get("split2_nosplit", [])
@@ -2292,6 +2325,24 @@ if _active_view == "settings":
         set_lang(_lang_new)
         st.rerun()
     st.divider()
+
+    # ── 업데이트 ──────────────────────────────────────────
+    st.markdown("#### " + t("업데이트"))
+    _upc1, _upc2 = st.columns([2, 1])
+    _upc1.caption(tf("현재 버전: %s", APP_VERSION))
+    if _upc2.button(t("업데이트 확인"), icon=":material/system_update:", key="settings_check_update",
+                    use_container_width=True):
+        _upd_info = updater.check_for_update()
+        if _upd_info:
+            st.session_state["_update_info"] = _upd_info
+            st.session_state.pop("_update_dismissed", None)
+            st.rerun()
+        elif sys.platform != "win32":
+            st.info(t("앱 내 업데이트는 Windows에서만 지원됩니다."))
+        else:
+            st.success(t("최신 버전을 사용 중입니다."))
+    st.divider()
+
     st.caption(t(
         "API 키는 이 화면에서 직접 저장한 값만 사용합니다. "
         "저장 키는 `~/.config/mybookshelf/keys.json`에만 보관되며 저장소에 올라가지 않습니다."
