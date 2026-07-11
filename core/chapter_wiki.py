@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path.home() / ".local/bin"))
 import config as cfg
 import gemini_wiki as gw   # nfc, rebuild_citations, make_filename, OUT_DIR, get_key
 import llm_providers as llm
+import source_metadata as smeta
 
 DONE_DIR = cfg.DONE_DIR
 MAX_CHAPTERS = 30
@@ -622,6 +623,8 @@ OVERVIEW_PROMPT = """다음은 책 『{book}』를 장별로 요약한 것입니
 [출력] JSON only:
 {{ "category":"신학자|교회|윤리|AI개념|사회학 중 하나",
    "author":"저자 이름(장 요약에서 확인될 때만. 확실치 않으면 빈 문자열)",
+   "published_date":"장 요약에서 명시적으로 확인되는 출판일/발행일. YYYY-MM-DD 또는 YYYY. 확실치 않으면 빈 문자열",
+   "publisher":"장 요약에서 명시적으로 확인되는 출판사/발행처. 확실치 않으면 빈 문자열",
    "summary":"책 전체 2~3문장 요약",
    "intro":"(저자의 핵심 주장과 책 전체 논지를 4~6문장으로. 머리말 '## 책 개요' 없이 본문만)",
    "keywords":"책 전체 핵심 개념 5~8개. 한 줄에 하나씩 '#키워드 — 개념 해설 1~2문장' 형식(줄바꿈 \\n 구분). 키워드는 공백 없는 한국어, 원어는 해설 쪽에" }}
@@ -655,11 +658,21 @@ def _chap_filename(idx, title):
 
 LINK_HEADER = "## 📑 챕터 심층 노트"
 
-def chapter_note_md(book, stem, s, cat):
+def _source_frontmatter(ov=None, source_meta=None) -> str:
+    ov = ov or {}
+    source_meta = source_meta or {}
+    return smeta.frontmatter_lines({
+        "published": gw.nfc(ov.get("published_date", "")),
+        "publisher": gw.nfc(ov.get("publisher", "")),
+        **source_meta,
+    })
+
+def chapter_note_md(book, stem, s, cat, ov=None, source_meta=None):
     today = datetime.date.today().isoformat()
     fm = ("---\n" f"title: {s['title']}\n" f"book: {book}\n" f"chapter: {s['idx']}\n"
           f"category: {cat}\n" f"summary: {s['summary']}\n"
-          f"model: {llm.wiki_provider_model()[1]}\n" f"generated: {today}\n" "---\n\n")
+          + _source_frontmatter(ov, source_meta)
+          + f"model: {llm.wiki_provider_model()[1]}\n" f"generated: {today}\n" "---\n\n")
     src = gw.make_filename(stem)[:-3]
     return (fm + f"# {s['idx']:02d}. {s['title']}\n\n" + s["body"].strip()
             + f"\n\n## 출처\n- 책 허브: [[{src}]]\n")
@@ -682,20 +695,22 @@ def append_or_replace_links(a_path, stem, block):
         text = text.rstrip() + "\n\n" + block
     a_path.write_text(text, encoding="utf-8")
 
-def hub_a_note(book, stem, cat, ov, items):
+def hub_a_note(book, stem, cat, ov, items, source_meta=None):
     today = datetime.date.today().isoformat()
     fm = ("---\n" f"title: {book}\n" f"category: {cat}\n"
           f"summary: {gw.nfc(ov.get('summary',''))}\n"
-          f"model: {llm.wiki_provider_model()[1]}\n" f"generated: {today}\n" "mode: chapter(A+B)\n" "---\n\n")
+          + _source_frontmatter(ov, source_meta)
+          + f"model: {llm.wiki_provider_model()[1]}\n" f"generated: {today}\n" "mode: chapter(A+B)\n" "---\n\n")
     intro = gw.nfc(ov.get("intro", "")).strip()
     return fm + f"# {book}\n\n## 책 개요\n{intro}\n\n" + build_links_block(stem, items)
 
-def inline_a_note(book, cat, ov, sections):
+def inline_a_note(book, cat, ov, sections, source_meta=None):
     """기본 A: 한 노트에 책 개요 + 각 장을 풍성한 ## 섹션으로 인라인."""
     today = datetime.date.today().isoformat()
     fm = ("---\n" f"title: {book}\n" f"category: {cat}\n"
           f"summary: {gw.nfc(ov.get('summary',''))}\n"
-          f"model: {llm.wiki_provider_model()[1]}\n" f"generated: {today}\n" "mode: chapter(A)\n" "---\n\n")
+          + _source_frontmatter(ov, source_meta)
+          + f"model: {llm.wiki_provider_model()[1]}\n" f"generated: {today}\n" "mode: chapter(A)\n" "---\n\n")
     parts = [fm + f"# {book}\n", "## 책 개요", gw.nfc(ov.get("intro", "")).strip(), ""]
     for s in sections:
         parts.append(f"## {s['idx']:02d}. {s['title']}")
@@ -752,11 +767,12 @@ def process_book(stem, mode="auto"):
                          "summary": gw.nfc(d.get("summary", "")), "body": gw.nfc(d.get("body", ""))})
     ov = generate_overview(book, sections)
     cat = (ov.get("category") or "기타").split("|")[0].strip()
+    source_meta = smeta.pdf_dates_for_txt(txt) if txt else {}
     out_cat = gw.OUT_DIR / cat
     out_cat.mkdir(parents=True, exist_ok=True)
     a_path = out_cat / gw.make_filename(book)
     if mode == "A":
-        a_path.write_text(inline_a_note(book, cat, ov, sections), encoding="utf-8")
+        a_path.write_text(inline_a_note(book, cat, ov, sections, source_meta), encoding="utf-8")
         return {"mode": "A", "chapters": len(sections), "cat": cat, "a": str(a_path)}
     # full / add → 장별 B 노트
     bookdir = out_cat / book
@@ -764,14 +780,14 @@ def process_book(stem, mode="auto"):
     items = []
     for s in sections:
         fn = _chap_filename(s["idx"], s["title"])
-        (bookdir / fn).write_text(chapter_note_md(book, book, s, cat), encoding="utf-8")
+        (bookdir / fn).write_text(chapter_note_md(book, book, s, cat, ov, source_meta), encoding="utf-8")
         items.append((s["idx"], s["title"], fn, s["summary"]))
     if mode == "add":
         if not a_path.exists():
             raise RuntimeError(f"A 노트 없음: {a_path} (먼저 A 생성)")
         append_or_replace_links(a_path, book, build_links_block(book, items))
         return {"mode": "add", "chapters": len(sections), "cat": cat, "a": str(a_path), "b": len(items)}
-    a_path.write_text(hub_a_note(book, book, cat, ov, items), encoding="utf-8")
+    a_path.write_text(hub_a_note(book, book, cat, ov, items, source_meta), encoding="utf-8")
     return {"mode": "full", "chapters": len(sections), "cat": cat, "a": str(a_path), "b": len(items)}
 
 
