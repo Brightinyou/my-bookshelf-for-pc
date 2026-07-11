@@ -103,85 +103,100 @@ def _adaptive_space_gap(rows, mw):
     return min(mw * 0.45, max(mw * 0.1, med * 0.5))
 
 
-def _detect_boundaries(w, gl):
-    """열 사이 세로 빈 띠(거터)들의 중심 x 목록. N단 지원. (공백 제외)"""
-    real = [c for c in gl if not c[4]]
-    if len(real) < 40:
+def _cluster(positions, tol):
+    """가까운 위치들을 묶어 (중심x, 개수) 목록으로."""
+    if not positions:
         return []
-    BIN = 4
-    nb = int(w // BIN) + 2
-    cov = [0] * nb
-    for x0, _y, x1, _c, _s in real:
-        for k in range(int(x0 // BIN), int(x1 // BIN) + 1):
-            if 0 <= k < nb:
-                cov[k] += 1
-    peak = max(cov) or 1
-    occ = [k for k in range(nb) if cov[k] > peak * 0.02]
-    if not occ:
-        return []
-    xL, xR = occ[0], occ[-1]
-    thr = peak * 0.10
-    MIN_W = 3                              # 최소 ~12pt 폭
-    bounds, k = [], xL + 1
-    while k < xR:
-        if cov[k] <= thr:
-            s = k
-            while k < xR and cov[k] <= thr:
-                k += 1
-            if (k - s) >= MIN_W:
-                bounds.append((s + k) / 2 * BIN)
+    positions = sorted(positions)
+    groups, cur = [], [positions[0]]
+    for p in positions[1:]:
+        if p - cur[-1] <= tol:
+            cur.append(p)
         else:
-            k += 1
-    return bounds
+            groups.append(cur); cur = [p]
+    groups.append(cur)
+    return [(statistics.median(g), len(g)) for g in groups]
 
 
 def _reading_order(page):
+    """페이지 → 읽기순서 텍스트.
+    전체폭(제목·초록)과 2단 본문이 한 페이지에 섞여도, 페이지 전역이 아니라
+    '여러 행이 공유하는 넓은 세로 간격'으로 거터를 찾아 그 행들만 컬럼 분리한다.
+    세로 간격이 크면 문단 경계로 보고 빈 줄을 넣어 문단 구조를 보존한다."""
     w, h, gl, mh, mw = _glyphs(page)
     if not gl:
         return ""
-    bounds = _detect_boundaries(w, gl)
     rows = _group_rows(gl, mh * 0.5)
-    # 공백 임계값은 이 페이지의 실제 간격 분포에서 적응형으로 추정(폰트 무관).
     space_gap = _adaptive_space_gap(rows, mw)
-    ncol = len(bounds) + 1
+    col_gap = max(mw * 2.5, space_gap * 3, 10.0)   # 컬럼 사이 거터로 볼 최소 간격
+
+    # 1) 각 행의 '넓은 간격'(거터 후보) 중심 x 수집 (전체폭 행은 대부분 후보 없음)
+    row_reals, cands = [], []
+    for row in rows:
+        reals = sorted([c for c in row if not c[4]], key=lambda c: c[0])
+        row_reals.append((row, reals))
+        for a, b in zip(reals, reals[1:]):
+            if (b[0] - a[2]) >= col_gap and w * 0.15 < (a[2] + b[0]) / 2 < w * 0.85:
+                cands.append((a[2] + b[0]) / 2)
+
+    # 2) 여러 행이 공유하는 위치만 거터로 채택 (전체폭 행의 우연한 간격 배제)
+    min_support = max(3, len(rows) // 8)
+    boundaries = sorted(cx for cx, n in _cluster(cands, mw * 4) if n >= min_support)
+
+    ncol = len(boundaries) + 1
     cols = [[] for _ in range(ncol)]
+    col_lasty = [None] * ncol
     out = []
+    out_lasty = None                        # 전체폭/단일 컬럼 흐름의 마지막 y
+    para_gap = mh * 1.8                      # 이보다 세로 간격이 크면 문단 경계
 
     def col_of(x):
         i = 0
-        while i < len(bounds) and x >= bounds[i]:
+        while i < len(boundaries) and x >= boundaries[i]:
             i += 1
         return i
 
     def flush():
-        if any(cols):
-            for c in cols:
+        nonlocal out_lasty
+        for i, c in enumerate(cols):
+            if any(s.strip() for s in c):
                 out.extend(c); out.append("")
-                c.clear()
+            c.clear()
+            col_lasty[i] = None
+        out_lasty = None
 
-    for row in rows:
-        row.sort(key=lambda c: c[0])
-        real = [c for c in row if not c[4]]
-        if not real:
+    def emit_full(text, ytop):
+        nonlocal out_lasty
+        if out_lasty is not None and (ytop - out_lasty) > para_gap:
+            out.append("")                  # 문단 경계
+        out.append(text)
+        out_lasty = ytop
+
+    for row, reals in row_reals:
+        if not reals:
             continue
-        if not bounds:
-            out.append(_text(row, space_gap)); continue
-        # 이 행이 어떤 경계를 '틈 없이' 가로지르면 전체폭으로 간주
-        fullwidth = False
-        for b in bounds:
-            lefts = [c[2] for c in real if c[2] <= b]
-            rights = [c[0] for c in real if c[0] >= b]
-            if lefts and rights and (min(rights) - max(lefts)) < mh * 1.5:
-                fullwidth = True
+        ytop = min(c[1] for c in reals)
+        if not boundaries:
+            emit_full(_text(row, space_gap), ytop); continue
+        # 어떤 거터를 '틈 없이' 가로지르면 전체폭 행(제목·초록 등) → 통째로
+        crosses = False
+        for b in boundaries:
+            l = [c[2] for c in reals if c[2] <= b]
+            r = [c[0] for c in reals if c[0] >= b]
+            if l and r and (min(r) - max(l)) < col_gap:
+                crosses = True
                 break
-        if fullwidth:
-            flush(); out.append(_text(row, space_gap)); continue
-        # 열별로 분배
+        if crosses:
+            flush(); emit_full(_text(row, space_gap), ytop); continue
+        # 열별 분배 (+ 세로 간격이 크면 문단 경계 삽입)
         buckets = {}
         for c in row:
             buckets.setdefault(col_of((c[0] + c[2]) / 2), []).append(c)
         for ci in sorted(buckets):
+            if col_lasty[ci] is not None and (ytop - col_lasty[ci]) > para_gap:
+                cols[ci].append("")
             cols[ci].append(_text(buckets[ci], space_gap))
+            col_lasty[ci] = ytop
     flush()
     return "\n".join(out)
 

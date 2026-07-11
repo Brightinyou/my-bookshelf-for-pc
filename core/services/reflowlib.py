@@ -26,19 +26,21 @@ def strip_page_furniture(pages):
     freq = Counter(l.strip() for l in flat if l.strip())
 
     out = []
+    seen = set()   # 반복 콘텐츠 줄은 '첫 등장만' 유지 → 제목/저자가 러닝헤더로도
+                   # 반복될 때, 첫 페이지의 진짜 제목은 살리고 이후 헤더만 제거한다.
     for l in flat:
         s = l.strip()
         if not s:
             out.append("")
             continue
-        if s in repeated:
-            continue
-        if re.fullmatch(r"\d{1,4}", s):                 # 단독 쪽번호
-            continue
-        if len(s) < 90 and freq[s] >= 3:                # 반복 러닝헤더 조각
+        if re.fullmatch(r"\d{1,4}", s):                 # 단독 쪽번호 → 항상 제거
             continue
         if _is_vertical_noise(s):                       # 세로(회전) 텍스트 흔적
             continue
+        if (s in repeated) or (len(s) < 90 and freq[s] >= 3):
+            if s in seen:
+                continue                                # 두 번째 이후 = 러닝헤더/꼬리말
+            seen.add(s)                                 # 첫 등장 = 실제 콘텐츠로 유지
         out.append(l)
     return out
 
