@@ -214,6 +214,40 @@ _EN: dict[str, str] = {
     "1-TXT변환 완료": "Text conversion finished",
     "%d개 파일 처리를 마쳤습니다. 다음 단계에서 장별 분할을 진행하세요.":
         "Processed %d file(s). Continue with chapter splitting in the next step.",
+    "⚠️ 일부 문서는 처리 중 특이사항이 있었습니다 (자동 보정됨):":
+        "⚠️ Some documents had issues during processing (auto-corrected):",
+    "업데이트": "Updates",
+    "현재 버전: %s": "Current version: %s",
+    "업데이트 확인": "Check for updates",
+    "최신 버전을 사용 중입니다.": "You are on the latest version.",
+    "앱 내 업데이트는 Windows에서만 지원됩니다.": "In-app updates are supported on Windows only.",
+    "짧은 문서는 챕터로 나누기 애매합니다. 각 문서를 '보기'로 확인한 뒤, 아래에서 분할 처리·다음 단계 이동·삭제를 선택하세요.":
+        "Short documents are hard to split into chapters. Preview each with 'View', then choose Split / Move to next / Delete below.",
+    "삭제 (%d권)": "Delete (%d)",
+    "%d권을 챕터로 분할했습니다.": "Split %d document(s) into chapters.",
+    "%d건을 단일장으로 저장해 다음 단계로 보냈습니다.": "Saved %d document(s) as a single chapter and sent to the next step.",
+    "%d개 문서를 삭제했습니다.": "Deleted %d document(s).",
+    "업데이트 사용 가능": "Update available",
+    "새 버전 **%s** 이(가) 나왔습니다. (현재 %s)": "A new version **%s** is available. (current %s)",
+    "변경 내용 보기": "View changes",
+    "업데이트하면 앱이 닫혔다가 자동으로 다시 열립니다.":
+        "The app will close and reopen automatically after updating.",
+    "지금 업데이트": "Update now",
+    "브라우저로 받기": "Download in browser",
+    "나중에": "Later",
+    "설치 파일을 내려받는 중입니다…": "Downloading the installer…",
+    "자동 업데이트 실패": "Automatic update failed",
+    "아래 '브라우저로 받기'로 직접 내려받아 설치해 주세요.":
+        "Please download and install manually via 'Download in browser' below.",
+    "다운로드 완료 — 앱을 닫고 업데이트를 설치합니다. 잠시 후 자동으로 다시 열립니다.":
+        "Download complete — closing the app to install. It will reopen automatically shortly.",
+    "업데이트 실행에 실패했습니다.": "Failed to start the update.",
+    "OCR 필요": "OCR required",
+    "OCR 사전 처리가 필요합니다": "OCR preprocessing required",
+    "다음 문서는 이미지로만 되어 있어, TXT 분리를 위해서는 OCR 사전 처리 작업이 필요합니다:":
+        "These documents are image-only. OCR preprocessing is required before text extraction:",
+    "⚠️ 다음 %d개 문서는 이미지로만 되어 있어 OCR 사전 처리가 필요합니다: %s":
+        "⚠️ %d document(s) are image-only and need OCR preprocessing first: %s",
     "💡 다음 단계: **📂 장분할 앱**으로 이동하세요": "💡 Next: go to **📂 Chapter Splitter**",
 
     # ── 2: 장분할 ────────────────────────────────────────
@@ -273,6 +307,8 @@ _EN: dict[str, str] = {
     "➕ 수동으로 추가 (기존 챕터에서 선택)": "➕ Add manually (from existing chapters)",
     "책/챕터 이름 검색": "Search book/chapter",
     "➕ 선택 항목 큐에 추가 (%d개)": "➕ Add selected to queue (%d)",
+    "단락 %d/%d · 재사용 %d · API 호출 %d · 번역 %d · 보존 %d · 제외 %d · 실패 %d":
+        "Paragraph %d/%d · reused %d · API calls %d · translated %d · preserved %d · dropped %d · failed %d",
     "3-영문번역 완료": "Translation finished",
     "%d개 챕터 번역을 마쳤습니다. 다음 단계에서 요약 MD를 생성하세요.":
         "Translated %d chapter(s). Generate summaries in the next step.",
@@ -326,6 +362,11 @@ _EN: dict[str, str] = {
     "Wiki 생성 API 없음 — ⚙️ 설정 탭에서 키를 입력하세요.":
         "No wiki-generation API — enter a key in ⚙️ Settings.",
     "#### 챕터 요약 → Wiki (%d권 대기)": "#### Summaries → Wiki (%d waiting)",
+    "#### 새 요약 있음 · 기존 Wiki 갱신 확인 (%d권)": "#### New summaries · Confirm existing Wiki updates (%d)",
+    "기존 Wiki가 있습니다. 명시적으로 선택한 책만 새 요약으로 다시 반영합니다. 선택하지 않은 책은 기존 노트를 유지합니다.":
+        "An existing Wiki was found. Only explicitly selected books will be updated with the new summaries; unselected books keep their existing notes.",
+    "다시 반영 (%d권)": "Publish again (%d)",
+    "이번 갱신 건너뛰기 (%d권)": "Skip this update (%d)",
     "**책 제목**": "**Book title**",
     "챕터": "chapters",
     "%d/%d챕터 요약됨": "%d/%d chapters summarized",

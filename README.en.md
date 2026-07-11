@@ -1,6 +1,6 @@
 # My Bookshelf
 
-**A personal research tool that turns PDF/TXT documents into Obsidian Wiki notes** — Text conversion → Chapter split → (for English docs) Korean translation → Summaries → Obsidian Wiki, all in one flow.
+**A personal research tool that turns PDF/TXT documents into Obsidian Wiki notes** — Text conversion → Chapter split → Summaries → Obsidian Wiki, all in one flow.
 
 > 🇰🇷 한국어 설명서: [README.md](README.md)
 
@@ -35,8 +35,11 @@ PDF/TXT  →  Text conversion  →  Chapter split  →  Translation (English doc
 
 ### Windows
 
-1. Download `Setup.exe` from the [latest release](https://github.com/Brightinyou/my-bookshelf-for-pc/releases/latest).
-2. If SmartScreen warns, choose **More info → Run** (expected for an unsigned personal build).
+1. Get the installer from the [latest release](https://github.com/Brightinyou/my-bookshelf-for-pc/releases/latest).
+   - **Chrome**: download `Setup.exe` directly.
+   - **Edge / Internet Explorer**: `.exe` downloads may be blocked. In that case download **`MyBookshelf-Setup.zip`** from the same release, **extract it**, and run the `Setup.exe` inside. (Or, in Edge's download notice, click `⋯` → **Keep** → **Keep anyway** to unblock the .exe.)
+2. **⚠️ "Unknown publisher" warning** — this is an **unsigned** personal build (no code-signing certificate), so Windows SmartScreen may show a blue **"Windows protected your PC — Unknown publisher"** screen. It is not malware; the build simply isn't signed.
+   → Click **More info**, then the **Run anyway** button that appears, to proceed with installation.
 3. Pick the **install language (Korean/English)** — it becomes the app's default language.
 4. Package download takes a few minutes; the app launches automatically, and afterwards opens from the **My Bookshelf** icon (desktop / Start menu).
 
@@ -74,16 +77,11 @@ Switch stages from the top menu. Every upload area accepts **file picker or drag
 - **[Split]** — split into chapters. **[Move to next step]** — if no split is needed, send the whole document onward (EN → Translation, KO → Summaries).
 - Short documents are handled separately under "Short documents".
 
-### ③ 🌐 Translation
-- Translates chapters into Korean, saved as `_ko.txt`.
-- Uploaded TXT is added to the **translation queue**; translation starts only when you press **[▶ Start]**.
-- **This stage is hidden in the English UI** — English users have no need to translate English into English (see §6).
-
-### ④ 📝 Summaries
+### ③ 📝 Summaries
 - Creates per-chapter summary notes (`_wiki.md`) — author, key summary, overview, key quotes, key keywords (with explanations).
 - Select queued items and press **[▶ Start]**.
 
-### ⑤ 📖 Wiki
+### ④ 📖 Wiki
 - Merges summaries into a **hub note + per-chapter notes** in the Obsidian vault.
 - Use **[Select all]/[Clear]** in the queue, then **[▶ Start]**.
 

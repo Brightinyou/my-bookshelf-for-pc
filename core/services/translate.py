@@ -32,11 +32,11 @@ def _ko_ratio(text: str) -> float:
 
 
 _TRANSLATION_REFUSAL_PHRASES = (
-    "번역할 학술 문단을 아직 받지 못했습니다",
-    "번역하실 텍스트",
-    "텍스트를 붙여넣어",
-    "원문을 제공",
-    "본문을 보내",
+    "\ubc88\uc5ed\ud560 \ud559\uc220 \ubb38\ub2e8\uc744 \uc544\uc9c1 \ubc1b\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4",
+    "\ubc88\uc5ed\ud558\uc2e4 \ud14d\uc2a4\ud2b8",
+    "\ud14d\uc2a4\ud2b8\ub97c \ubd99\uc5ec\ub123\uc5b4",
+    "\uc6d0\ubb38\uc744 \uc81c\uacf5",
+    "\ubcf8\ubb38\uc744 \ubcf4\ub0b4",
 )
 
 _TRANSLATION_REFUSAL_RE = _re.compile(

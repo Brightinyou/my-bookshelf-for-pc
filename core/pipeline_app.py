@@ -47,6 +47,7 @@ from services.pipeline_queue import (
     queue_add, queue_clear, queue_list, queue_remove,
 )
 from services.convert import _do_ocr_only, pdf_to_txt
+from services import updater
 from services.translate import (
     _needs_translation, _paragraph_already_target, _split_paragraphs_robust,
     _translate_paragraph, _translation_is_valid, build_translate_system,
@@ -705,6 +706,92 @@ def _clear_stage_completion() -> None:
     st.session_state.pop("_stage_completion", None)
 
 
+def _set_ocr_notice(names: list[str]) -> None:
+    st.session_state["_ocr_notice"] = list(names)
+
+
+def _render_ocr_notice() -> None:
+    """이미지 전용(스캔) 문서 안내 팝업 — TXT 분리 전 OCR 선행 필요."""
+    names = st.session_state.get("_ocr_notice")
+    if not names:
+        return
+
+    def _render_body():
+        st.warning(t("OCR 사전 처리가 필요합니다"))
+        st.write(t("다음 문서는 이미지로만 되어 있어, TXT 분리를 위해서는 OCR 사전 처리 작업이 필요합니다:"))
+        for _n in names:
+            st.write(f"• {_n}")
+        if st.button(t("닫기"), icon=":material/close:", key="ocr_notice_close",
+                     use_container_width=True, type="primary"):
+            st.session_state.pop("_ocr_notice", None)
+            st.rerun()
+
+    if hasattr(st, "dialog"):
+        @st.dialog(t("OCR 필요"))
+        def _ocr_notice_dialog():
+            _render_body()
+        _ocr_notice_dialog()
+    else:
+        with st.container(border=True):
+            _render_body()
+
+
+def _do_update(info: dict) -> None:
+    """다운로드(진행바) → 검증 → 헬퍼 실행/앱 종료. 실패 시 A(안내형) 폴백 안내."""
+    st.info(t("설치 파일을 내려받는 중입니다…"))
+    _bar = st.progress(0.0)
+    _path, _err = updater.download_installer(
+        info.get("asset_url", ""), progress_cb=lambda f: _bar.progress(f))
+    if not _path:
+        st.error(t("자동 업데이트 실패") + f": {_err}")
+        st.warning(t("아래 '브라우저로 받기'로 직접 내려받아 설치해 주세요."))
+        return
+    _bar.progress(1.0)
+    st.success(t("다운로드 완료 — 앱을 닫고 업데이트를 설치합니다. 잠시 후 자동으로 다시 열립니다."))
+    if updater.launch_helper_and_exit(_path):
+        st.stop()
+    else:
+        st.error(t("업데이트 실행에 실패했습니다."))
+        st.warning(t("아래 '브라우저로 받기'로 직접 내려받아 설치해 주세요."))
+
+
+def _render_update_notice() -> None:
+    """새 버전 감지 시 반자동 업데이트 팝업 (Windows). 실패는 모두 안내형으로 폴백."""
+    if sys.platform != "win32":
+        return
+    if "_update_info" not in st.session_state:
+        st.session_state["_update_info"] = updater.check_for_update() or {}
+    info = st.session_state.get("_update_info") or {}
+    if not info.get("available") or st.session_state.get("_update_dismissed"):
+        return
+
+    def _render_body():
+        st.write(tf("새 버전 **%s** 이(가) 나왔습니다. (현재 %s)", info["latest"], info["current"]))
+        if info.get("notes"):
+            with st.expander(t("변경 내용 보기")):
+                st.markdown(info["notes"][:1500])
+        st.caption(t("업데이트하면 앱이 닫혔다가 자동으로 다시 열립니다."))
+        _c1, _c2, _c3 = st.columns(3)
+        if _c1.button(t("지금 업데이트"), type="primary", use_container_width=True, key="upd_now"):
+            _do_update(info)
+        if _c2.button(t("브라우저로 받기"), use_container_width=True, key="upd_browser"):
+            updater.open_release_page(info.get("page_url", ""))
+            st.session_state["_update_dismissed"] = True
+            st.rerun()
+        if _c3.button(t("나중에"), use_container_width=True, key="upd_later"):
+            st.session_state["_update_dismissed"] = True
+            st.rerun()
+
+    if hasattr(st, "dialog"):
+        @st.dialog(t("업데이트 사용 가능"))
+        def _update_dialog():
+            _render_body()
+        _update_dialog()
+    else:
+        with st.container(border=True):
+            _render_body()
+
+
 def _render_stage_completion_notice() -> None:
     payload = st.session_state.get("_stage_completion")
     if not payload:
@@ -920,11 +1007,12 @@ def _run_start(tab: str, work: list) -> None:
 
 def _run_finish(tab: str) -> None:
     st.session_state[f"{tab}_running"] = False
+    st.session_state.pop(f"{tab}_status_place", None)
     if st.session_state.get("_run_lock") == tab:
         st.session_state.pop("_run_lock", None)
 
 
-def _run_panel(tab: str, title: str, process_one, on_done=None) -> None:
+def _run_panel(tab: str, title: str, process_one, on_done=None, item_progress_text=None) -> None:
     """처리 화면 렌더 + 항목 1개 처리 + rerun. process_one(item)->(ok, msg 문자열).
     on_done(): 큐 소진 시 1회 실행(전체요약 등 후처리)."""
     queue = list(st.session_state.get(f"{tab}_queue", []))
@@ -954,7 +1042,21 @@ def _run_panel(tab: str, title: str, process_one, on_done=None) -> None:
 
     _item = queue[0]
     try:
-        _ok, _msg = process_one(_item)
+        if item_progress_text:
+            _item_progress = st.progress(0.0)
+
+            def _progress_cb(done, total, translated, preserved, dropped, failed, resumed, api_calls):
+                fraction = min(max(done / total, 0.0), 1.0) if total else 0.0
+                _item_progress.progress(
+                    fraction,
+                    text=item_progress_text(
+                        done, total, translated, preserved, dropped, failed, resumed, api_calls
+                    ),
+                )
+
+            _ok, _msg = process_one(_item, _progress_cb)
+        else:
+            _ok, _msg = process_one(_item)
     except Exception as _e:
         _ok, _msg = False, f"{type(_e).__name__}: {str(_e)[:150]}"
     log.append(f"{'✅' if _ok else '❌'} {_msg}")
@@ -981,6 +1083,8 @@ def _current_wiki_dir() -> Path:
 
 
 _render_stage_completion_notice()
+_render_ocr_notice()
+_render_update_notice()
 
 
 def _checklist_keys(items: list[dict], prefix: str) -> list[str]:
@@ -1228,23 +1332,40 @@ if _active_view in {"1_txt", "all_run"}:
         if _to_run1:
             _prog1 = st.progress(0.0)
             _done_txt_paths1: list[Path] = []
+            _ocr_needed1: list[str] = []
+            _notes1: list[str] = []
             for _i1, _uf1 in enumerate(_to_run1, 1):
                 with st.status(f"텍스트 변환 [{_i1}/{len(_to_run1)}]: {_uf1.name}", expanded=False):
                     _r1 = _do_ocr_only(_uf1, _ws1, fast=_fast1)
                 if _r1["ok"] and _r1.get("txt_path"):
                     _done_txt_paths1.append(Path(_r1["txt_path"]))
-                (st.success if _r1["ok"] else st.error)(
-                    f"{'✅' if _r1['ok'] else '❌'} {_uf1.name}" +
-                    (f" → `{Path(_r1['txt_path']).name}`" if _r1["ok"] else f": {_r1['error']}")
-                )
+                    _note1 = _r1.get("note") or ""
+                    st.success(f"✅ {_uf1.name} → `{Path(_r1['txt_path']).name}`"
+                               + (f" — ⚠️ {_note1}" if _note1 else ""))
+                    if _note1:
+                        _notes1.append(f"{_uf1.name}: {_note1}")
+                elif _r1.get("needs_ocr"):
+                    _ocr_needed1.append(_uf1.name)
+                    st.warning(f"🖼️ {_uf1.name}: {_r1['error']}")
+                else:
+                    st.error(f"❌ {_uf1.name}: {_r1['error']}")
                 _prog1.progress(_i1 / len(_to_run1))
             if _done_txt_paths1:
+                _msg1 = tf("%d개 파일 처리를 마쳤습니다. 다음 단계에서 장별 분할을 진행하세요.", len(_done_txt_paths1))
+                if _notes1:
+                    _msg1 += "\n\n" + t("⚠️ 일부 문서는 처리 중 특이사항이 있었습니다 (자동 보정됨):") \
+                             + "\n\n" + "\n".join(f"- {x}" for x in _notes1)
+                if _ocr_needed1:
+                    _msg1 += "\n\n" + tf("⚠️ 다음 %d개 문서는 이미지로만 되어 있어 OCR 사전 처리가 필요합니다: %s",
+                                         len(_ocr_needed1), ", ".join(_ocr_needed1))
                 _set_stage_completion(
                     t("1-TXT변환 완료"),
-                    tf("%d개 파일 처리를 마쳤습니다. 다음 단계에서 장별 분할을 진행하세요.", len(_done_txt_paths1)),
+                    _msg1,
                     next_stage="2_split",
                     open_target=_stage_folder("1_txt"),
                 )
+            elif _ocr_needed1:
+                _set_ocr_notice(_ocr_needed1)
             st.session_state.pop("_ocr_queued", None)  # 처리 완료 후 큐 초기화
             st.rerun()
     else:
@@ -1316,10 +1437,6 @@ if _active_view == "2_split":
             next_stage="3_translate" if _any_en else "4_summary",
             open_target=_stage_folder("2_split"),
         )
-
-    if _run_active("split2"):
-        _run_panel("split2", "챕터 분할 처리 중", _proc_split2, on_done=_split2_on_done)
-        st.stop()
 
     _ch_root2f = cfg.CHAPTERS_DIR
     _n_books2f = len([d for d in _ch_root2f.iterdir() if d.is_dir()]) if _ch_root2f.exists() else 0
@@ -1442,54 +1559,91 @@ if _active_view == "2_split":
         else:
             st.info(t("분할 대기 없음 — 📄 텍스트 변환에서 TXT를 먼저 생성하거나 아래에서 수동 추가하세요"))
 
+    if _run_active("split2"):
+        _run_panel("split2", "챕터 분할 처리 중", _proc_split2, on_done=_split2_on_done)
+        st.stop()
+
     if _split_short2:
         st.divider()
         st.markdown(tf("### ⚠️ 짧은 문서 확인 (%d권)", len(_split_short2)))
-        with st.container(border=True):
-            st.caption(t("짧은 문서는 챕터로 나누기 애매합니다. 챕터로 분할하거나, 통째로 다음 단계(영문→영문번역·한글→문서요약)로 보낼 수 있습니다."))
-            for _sh2 in _split_short2:
-                _sc1, _sc2, _sc3, _sc4 = st.columns([4, 1, 1.4, 1.4])
-                _sc1.markdown(f"**{_sh2['label']}**")
-                _sc2.caption(_sh2["meta"])
-                if _sc3.button(t("분할 처리"), icon=":material/play_arrow:", key=f"short_split_yes_{_sh2['key']}",
-                               use_container_width=True):
-                    _sn2, _serr2, _ = split_book_to_chapters(_sh2["obj"]["ws"], _sh2["obj"]["stem"], allow_short=True)
-                    if _serr2:
-                        st.warning(f"⚠️ {_sh2['key']}: {_serr2}")
-                    else:
-                        st.success(f"✅ {_sh2['key']} → {_sn2}개 챕터")
-                        queue_remove("tab2_ready", [_sh2["obj"]["stem"]])
-                        _ch_dir2 = chapters_dir(_sh2["obj"]["ws"], _sh2["obj"]["stem"])
-                        _new_chs2 = [str(f.relative_to(cfg.BASE_DIR))
-                                     for f in sorted(_ch_dir2.glob("??_*.txt"))
-                                     if not f.stem.endswith(("_ko", "_wiki"))]
-                        if _new_chs2:
-                            if _route_translate(_sh2["obj"]["stem"]):
-                                queue_add("tab3_ready", _new_chs2)
-                            else:
-                                queue_add("tab4_ready", _new_chs2)
-                            _archive_split_source(_sh2["obj"]["stem"])
-                        st.rerun()
-                if _sc4.button(t("다음단계로 이동"), icon=":material/arrow_forward:", key=f"short_split_keep_{_sh2['key']}",
-                               use_container_width=True, type="primary"):
-                    _one_path2, _ = _write_single_chapter_from_text(_sh2["obj"]["ws"], _sh2["obj"]["stem"], _sh2["text"])
-                    queue_remove("tab2_ready", [_sh2["obj"]["stem"]])
-                    _new_chs2 = [str(f.relative_to(cfg.BASE_DIR))
-                                 for f in sorted(_one_path2.parent.glob("??_*.txt"))
-                                 if not f.stem.endswith(("_ko", "_wiki"))]
-                    _next_stage2s = "3_translate" if _route_translate(_sh2["obj"]["stem"]) else "4_summary"
-                    if _new_chs2:
-                        queue_add("tab3_ready" if _next_stage2s == "3_translate" else "tab4_ready", _new_chs2)
-                        _archive_split_source(_sh2["obj"]["stem"])
-                    _set_stage_completion(
-                        t("2-단일장 저장 완료"),
-                        tf("%s 을(를) 단일장으로 저장했습니다.", _sh2["label"])
-                        + (" " + t("영문 문서 → 영문번역") if _next_stage2s == "3_translate"
-                           else " " + t("한글 문서 → 문서요약")),
-                        next_stage=_next_stage2s,
-                        open_target=_stage_folder("2_split"),
-                    )
-                    st.rerun()
+        st.caption(t("짧은 문서는 챕터로 나누기 애매합니다. 각 문서를 '보기'로 확인한 뒤, 아래에서 분할 처리·다음 단계 이동·삭제를 선택하세요."))
+        _sel_short2 = _checklist(_split_short2, "shortsplit2", height=240, viewable=True)
+        _shc1, _shc2, _shc3 = st.columns(3)
+        _sh_split2 = _shc1.button(tf("분할 처리 (%d권)", len(_sel_short2)), icon=":material/play_arrow:",
+                                  key="shortsplit2_split", use_container_width=True, disabled=len(_sel_short2) == 0)
+        _sh_next2 = _shc2.button(tf("다음단계로 이동 (%d권)", len(_sel_short2)), icon=":material/arrow_forward:",
+                                 key="shortsplit2_next", type="primary", use_container_width=True, disabled=len(_sel_short2) == 0,
+                                 help=t("분할 없이 단일장으로 저장하고 영문은 영문번역, 한글은 문서요약으로 이동"))
+        _sh_del2 = _shc3.button(tf("삭제 (%d권)", len(_sel_short2)), icon=":material/delete:",
+                                key="shortsplit2_del", use_container_width=True, disabled=len(_sel_short2) == 0)
+
+        if _sh_split2 and _sel_short2:
+            _short_done2 = 0
+            for _o2 in _sel_short2:
+                _sn2, _serr2, _ = split_book_to_chapters(_o2["ws"], _o2["stem"], allow_short=True)
+                if _serr2:
+                    st.warning(f"⚠️ {_o2['stem']}: {_serr2}")
+                    continue
+                queue_remove("tab2_ready", [_o2["stem"]])
+                _ch_dir2 = chapters_dir(_o2["ws"], _o2["stem"])
+                _new_chs2 = [str(f.relative_to(cfg.BASE_DIR))
+                             for f in sorted(_ch_dir2.glob("??_*.txt"))
+                             if not f.stem.endswith(("_ko", "_wiki"))]
+                if _new_chs2:
+                    queue_add("tab3_ready" if _route_translate(_o2["stem"]) else "tab4_ready", _new_chs2)
+                    _archive_split_source(_o2["stem"])
+                    _short_done2 += 1
+            if _short_done2:
+                st.success(tf("%d권을 챕터로 분할했습니다.", _short_done2))
+            st.rerun()
+
+        if _sh_next2 and _sel_short2:
+            _short_moved2 = 0
+            _short_last_stage2 = "4_summary"
+            for _o2 in _sel_short2:
+                _txp2 = cfg.TXT_DIR / (_o2["stem"] + ".txt")
+                if not _txp2.exists():
+                    _txp2 = cfg.TXT_DIR / (_o2["stem"] + ".md")
+                _src2 = _txp2.read_text(encoding="utf-8", errors="ignore") if _txp2.exists() else ""
+                if not _src2.strip():
+                    continue
+                _one_path2, _ = _write_single_chapter_from_text(_o2["ws"], _o2["stem"], _src2)
+                queue_remove("tab2_ready", [_o2["stem"]])
+                _new_chs2 = [str(f.relative_to(cfg.BASE_DIR))
+                             for f in sorted(_one_path2.parent.glob("??_*.txt"))
+                             if not f.stem.endswith(("_ko", "_wiki"))]
+                _stage2 = "3_translate" if _route_translate(_o2["stem"]) else "4_summary"
+                if _new_chs2:
+                    queue_add("tab3_ready" if _stage2 == "3_translate" else "tab4_ready", _new_chs2)
+                    _archive_split_source(_o2["stem"])
+                    _short_moved2 += 1
+                    _short_last_stage2 = _stage2
+            if _short_moved2:
+                _set_stage_completion(
+                    t("2-단일장 저장 완료"),
+                    tf("%d건을 단일장으로 저장해 다음 단계로 보냈습니다.", _short_moved2),
+                    next_stage=_short_last_stage2,
+                    open_target=_stage_folder("2_split"),
+                )
+            st.rerun()
+
+        if _sh_del2 and _sel_short2:
+            _short_del2 = 0
+            for _o2 in _sel_short2:
+                _removed_any = False
+                for _ext2 in (".txt", ".md"):
+                    _f2 = cfg.TXT_DIR / (_o2["stem"] + _ext2)
+                    try:
+                        if _f2.exists():
+                            _f2.unlink()
+                            _removed_any = True
+                    except Exception:
+                        pass
+                queue_remove("tab2_ready", [_o2["stem"]])
+                if _removed_any:
+                    _short_del2 += 1
+            st.success(tf("%d개 문서를 삭제했습니다.", _short_del2))
+            st.rerun()
 
     # 장 구조 미감지 — 단일장 저장 선택지 (2026-07-03)
     _nosplit2 = st.session_state.get("split2_nosplit", [])
@@ -1576,11 +1730,11 @@ if _active_view == "2_split":
 if _active_view == "3_translate":
     _tr_eng3 = _settings_engine_id()
 
-    def _proc_translate3(rel):
+    def _proc_translate3(rel, progress_cb=None):
         _cf = cfg.BASE_DIR / rel
         if not _cf.exists():
             return False, f"{Path(rel).name}: 파일 없음"
-        _ok, _msg = translate_one_chapter(_cf, _tr_eng3)
+        _ok, _msg = translate_one_chapter(_cf, _tr_eng3, progress_cb=progress_cb)
         if _ok:
             queue_remove("tab3_ready", [rel])
             queue_add("tab4_ready", [rel])
@@ -1593,10 +1747,6 @@ if _active_view == "3_translate":
             next_stage="4_summary",
             open_target=_stage_folder("3_translate"),
         )
-
-    if _run_active("tr3"):
-        _run_panel("tr3", "영문번역 처리 중", _proc_translate3, on_done=_tr3_on_done)
-        st.stop()
 
     _src_n3f, _ko_n3f, _ = _chapter_counts()
     _ch_root3f = cfg.CHAPTERS_DIR
@@ -1684,6 +1834,19 @@ if _active_view == "3_translate":
         else:
             st.info(t("번역 대기 없음 — 📂 챕터 분할에서 챕터를 먼저 분리하세요"))
 
+        if _run_active("tr3"):
+            _run_panel(
+                "tr3",
+                "영문번역 처리 중",
+                _proc_translate3,
+                on_done=_tr3_on_done,
+                item_progress_text=lambda done, total, translated, preserved, dropped, failed, resumed, api_calls: tf(
+                    "단락 %d/%d · 재사용 %d · API 호출 %d · 번역 %d · 보존 %d · 제외 %d · 실패 %d",
+                    done, total, resumed, api_calls, translated, preserved, dropped, failed,
+                ),
+            )
+            st.stop()
+
     st.info(t("💡 다음 단계: **📝 문서요약**으로 이동하세요"))
 
 
@@ -1720,10 +1883,6 @@ if _active_view == "4_summary":
             next_stage="5_wiki",
             open_target=_stage_folder("4_summary"),
         )
-
-    if _run_active("summ4"):
-        _run_panel("summ4", "문서요약 처리 중", _proc_summary4, on_done=_summ4_on_done)
-        st.stop()
 
     _src_n4f, _ko_n4f, _json_n4f = _chapter_counts()
     _ch_root4f = cfg.CHAPTERS_DIR
@@ -1842,6 +2001,10 @@ if _active_view == "4_summary":
         else:
             st.info(t("요약 대기 없음 — 🌐 영문번역 처리 후 자동 등록되거나 위에서 TXT를 직접 업로드하세요"))
 
+        if _run_active("summ4"):
+            _run_panel("summ4", "문서요약 처리 중", _proc_summary4, on_done=_summ4_on_done)
+            st.stop()
+
         if _sum_failed4:
             st.markdown(tf("#### 요약 실패 (%d개)", len(_sum_failed4)))
             _fail_sel4 = _checklist(_sum_failed4, "summ4_failed", height=180)
@@ -1932,10 +2095,6 @@ if _active_view == "5_wiki":
             open_target=_stage_folder("5_wiki"),
         )
 
-    if _run_active("wiki5"):
-        _run_panel("wiki5", "위키반영 처리 중", _proc_wiki5, on_done=_wiki5_on_done)
-        st.stop()
-
     _, _, _json_n5f = _chapter_counts()
     _ch_root5f = cfg.CHAPTERS_DIR
     _vault5f = _current_wiki_dir()
@@ -1990,7 +2149,7 @@ if _active_view == "5_wiki":
     # ── 챕터 요약 → Wiki (큐 기반) ───────────────────────────
     _q5_stems = queue_list("tab5_ready")   # Tab4가 등록한 책 stem
     _wiki_pend5: list[dict] = []
-    _wiki_done5_list: list[dict] = []
+    _wiki_refresh5: list[dict] = []
     for _stem5 in _q5_stems:
         _ch5 = chapters_dir(DEFAULT_WS, _stem5)
         _jsons5 = list_summary_files(_ch5)
@@ -2001,16 +2160,17 @@ if _active_view == "5_wiki":
         _ch_names5 = [_re.sub(r'^\d+_', '', f.stem) for f in sorted(_ch5.glob("??_*.txt"))
                       if not f.stem.endswith(("_ko","_wiki"))] if _ch5.exists() else []
         _has_ov5 = find_overview_file(DEFAULT_WS, _stem5) is not None
+        _wiki_item5 = {
+            "key": _stem5,
+            "label": _stem5,
+            "meta": _ratio5 + " · " + (t("전체요약 ✓") if _has_ov5 else t("전체요약 — (반영 시 자동 생성)")),
+            "obj": {"ws": DEFAULT_WS, "stem": _stem5},
+            "ch_names": _ch_names5,
+        }
         if _stem5 in _wiki_stems5:
-            _wiki_done5_list.append({"stem": _stem5, "n": len(_jsons5), "total": _total5})
+            _wiki_refresh5.append(_wiki_item5)
         else:
-            _wiki_pend5.append({
-                "key": _stem5,
-                "label": _stem5,
-                "meta": _ratio5 + " · " + (t("전체요약 ✓") if _has_ov5 else t("전체요약 — (반영 시 자동 생성)")),
-                "obj": {"ws": DEFAULT_WS, "stem": _stem5},
-                "ch_names": _ch_names5,
-            })
+            _wiki_pend5.append(_wiki_item5)
 
     # 챕터 요약 → Wiki
     st.markdown(tf("#### 챕터 요약 → Wiki (%d권 대기)", len(_wiki_pend5)))
@@ -2082,9 +2242,45 @@ if _active_view == "5_wiki":
             queue_remove("tab5_ready", [_o5["stem"] for _o5 in _sel5])
             st.rerun()
         if _rs5 and _sel5:
+            st.session_state["wiki5_status_place"] = "pending"
             _run_start("wiki5", [_o5["stem"] for _o5 in _sel5])
-    else:
+    elif not _wiki_refresh5:
         st.info(t("Wiki 대기 없음 — 📝 문서요약에서 요약 완료 후 자동 등록되거나 아래에서 수동 추가하세요"))
+
+    if _run_active("wiki5") and st.session_state.get("wiki5_status_place") != "refresh":
+        _run_panel("wiki5", "위키반영 처리 중", _proc_wiki5, on_done=_wiki5_on_done)
+        st.stop()
+
+    if _wiki_refresh5:
+        st.divider()
+        st.markdown(tf("#### 새 요약 있음 · 기존 Wiki 갱신 확인 (%d권)", len(_wiki_refresh5)))
+        st.warning(
+            t("기존 Wiki가 있습니다. 명시적으로 선택한 책만 새 요약으로 다시 반영합니다. 선택하지 않은 책은 기존 노트를 유지합니다."),
+            icon=":material/warning:",
+        )
+        _refresh_sel5 = _checklist(_wiki_refresh5, "wiki5_refresh", height=240, viewable=True)
+        _refresh_stems5 = [_o5["stem"] for _o5 in _refresh_sel5]
+        _wr5c1, _wr5c2 = st.columns(2)
+        _refresh_run5 = _wr5c1.button(
+            tf("다시 반영 (%d권)", len(_refresh_stems5)),
+            icon=":material/refresh:", key="wiki5_refresh_run", use_container_width=True,
+            type="primary", disabled=len(_refresh_stems5) == 0,
+        )
+        _refresh_skip5 = _wr5c2.button(
+            tf("이번 갱신 건너뛰기 (%d권)", len(_refresh_stems5)),
+            icon=":material/skip_next:", key="wiki5_refresh_skip", use_container_width=True,
+            disabled=len(_refresh_stems5) == 0,
+        )
+        if _refresh_skip5 and _refresh_stems5:
+            queue_remove("tab5_ready", _refresh_stems5)
+            st.rerun()
+        if _refresh_run5 and _refresh_stems5:
+            st.session_state["wiki5_status_place"] = "refresh"
+            _run_start("wiki5", _refresh_stems5)
+
+    if _run_active("wiki5"):
+        _run_panel("wiki5", "위키반영 처리 중", _proc_wiki5, on_done=_wiki5_on_done)
+        st.stop()
 
     # 수동 추가 expander (책 단위)
     with st.expander(t("➕ 수동으로 추가 (요약 완료된 책에서 선택)")):
@@ -2186,6 +2382,24 @@ if _active_view == "settings":
         set_lang(_lang_new)
         st.rerun()
     st.divider()
+
+    # ── 업데이트 ──────────────────────────────────────────
+    st.markdown("#### " + t("업데이트"))
+    _upc1, _upc2 = st.columns([2, 1])
+    _upc1.caption(tf("현재 버전: %s", APP_VERSION))
+    if _upc2.button(t("업데이트 확인"), icon=":material/system_update:", key="settings_check_update",
+                    use_container_width=True):
+        _upd_info = updater.check_for_update()
+        if _upd_info:
+            st.session_state["_update_info"] = _upd_info
+            st.session_state.pop("_update_dismissed", None)
+            st.rerun()
+        elif sys.platform != "win32":
+            st.info(t("앱 내 업데이트는 Windows에서만 지원됩니다."))
+        else:
+            st.success(t("최신 버전을 사용 중입니다."))
+    st.divider()
+
     st.caption(t(
         "API 키는 이 화면에서 직접 저장한 값만 사용합니다. "
         "저장 키는 `~/.config/mybookshelf/keys.json`에만 보관되며 저장소에 올라가지 않습니다."
