@@ -1007,11 +1007,12 @@ def _run_start(tab: str, work: list) -> None:
 
 def _run_finish(tab: str) -> None:
     st.session_state[f"{tab}_running"] = False
+    st.session_state.pop(f"{tab}_status_place", None)
     if st.session_state.get("_run_lock") == tab:
         st.session_state.pop("_run_lock", None)
 
 
-def _run_panel(tab: str, title: str, process_one, on_done=None) -> None:
+def _run_panel(tab: str, title: str, process_one, on_done=None, item_progress_text=None) -> None:
     """처리 화면 렌더 + 항목 1개 처리 + rerun. process_one(item)->(ok, msg 문자열).
     on_done(): 큐 소진 시 1회 실행(전체요약 등 후처리)."""
     queue = list(st.session_state.get(f"{tab}_queue", []))
@@ -1041,7 +1042,21 @@ def _run_panel(tab: str, title: str, process_one, on_done=None) -> None:
 
     _item = queue[0]
     try:
-        _ok, _msg = process_one(_item)
+        if item_progress_text:
+            _item_progress = st.progress(0.0)
+
+            def _progress_cb(done, total, translated, preserved, dropped, failed, resumed, api_calls):
+                fraction = min(max(done / total, 0.0), 1.0) if total else 0.0
+                _item_progress.progress(
+                    fraction,
+                    text=item_progress_text(
+                        done, total, translated, preserved, dropped, failed, resumed, api_calls
+                    ),
+                )
+
+            _ok, _msg = process_one(_item, _progress_cb)
+        else:
+            _ok, _msg = process_one(_item)
     except Exception as _e:
         _ok, _msg = False, f"{type(_e).__name__}: {str(_e)[:150]}"
     log.append(f"{'✅' if _ok else '❌'} {_msg}")
@@ -1423,10 +1438,6 @@ if _active_view == "2_split":
             open_target=_stage_folder("2_split"),
         )
 
-    if _run_active("split2"):
-        _run_panel("split2", "챕터 분할 처리 중", _proc_split2, on_done=_split2_on_done)
-        st.stop()
-
     _ch_root2f = cfg.CHAPTERS_DIR
     _n_books2f = len([d for d in _ch_root2f.iterdir() if d.is_dir()]) if _ch_root2f.exists() else 0
     _stage_flow_panel(
@@ -1547,6 +1558,10 @@ if _active_view == "2_split":
             st.warning(t("⚠️ 짧은 문서가 감지되었습니다. 아래 '짧은 문서 확인'에서 분할 처리 또는 다음단계로 이동을 선택하세요."))
         else:
             st.info(t("분할 대기 없음 — 📄 텍스트 변환에서 TXT를 먼저 생성하거나 아래에서 수동 추가하세요"))
+
+    if _run_active("split2"):
+        _run_panel("split2", "챕터 분할 처리 중", _proc_split2, on_done=_split2_on_done)
+        st.stop()
 
     if _split_short2:
         st.divider()
@@ -1715,11 +1730,11 @@ if _active_view == "2_split":
 if _active_view == "3_translate":
     _tr_eng3 = _settings_engine_id()
 
-    def _proc_translate3(rel):
+    def _proc_translate3(rel, progress_cb=None):
         _cf = cfg.BASE_DIR / rel
         if not _cf.exists():
             return False, f"{Path(rel).name}: 파일 없음"
-        _ok, _msg = translate_one_chapter(_cf, _tr_eng3)
+        _ok, _msg = translate_one_chapter(_cf, _tr_eng3, progress_cb=progress_cb)
         if _ok:
             queue_remove("tab3_ready", [rel])
             queue_add("tab4_ready", [rel])
@@ -1732,10 +1747,6 @@ if _active_view == "3_translate":
             next_stage="4_summary",
             open_target=_stage_folder("3_translate"),
         )
-
-    if _run_active("tr3"):
-        _run_panel("tr3", "영문번역 처리 중", _proc_translate3, on_done=_tr3_on_done)
-        st.stop()
 
     _src_n3f, _ko_n3f, _ = _chapter_counts()
     _ch_root3f = cfg.CHAPTERS_DIR
@@ -1823,6 +1834,19 @@ if _active_view == "3_translate":
         else:
             st.info(t("번역 대기 없음 — 📂 챕터 분할에서 챕터를 먼저 분리하세요"))
 
+        if _run_active("tr3"):
+            _run_panel(
+                "tr3",
+                "영문번역 처리 중",
+                _proc_translate3,
+                on_done=_tr3_on_done,
+                item_progress_text=lambda done, total, translated, preserved, dropped, failed, resumed, api_calls: tf(
+                    "단락 %d/%d · 재사용 %d · API 호출 %d · 번역 %d · 보존 %d · 제외 %d · 실패 %d",
+                    done, total, resumed, api_calls, translated, preserved, dropped, failed,
+                ),
+            )
+            st.stop()
+
     st.info(t("💡 다음 단계: **📝 문서요약**으로 이동하세요"))
 
 
@@ -1859,10 +1883,6 @@ if _active_view == "4_summary":
             next_stage="5_wiki",
             open_target=_stage_folder("4_summary"),
         )
-
-    if _run_active("summ4"):
-        _run_panel("summ4", "문서요약 처리 중", _proc_summary4, on_done=_summ4_on_done)
-        st.stop()
 
     _src_n4f, _ko_n4f, _json_n4f = _chapter_counts()
     _ch_root4f = cfg.CHAPTERS_DIR
@@ -1981,6 +2001,10 @@ if _active_view == "4_summary":
         else:
             st.info(t("요약 대기 없음 — 🌐 영문번역 처리 후 자동 등록되거나 위에서 TXT를 직접 업로드하세요"))
 
+        if _run_active("summ4"):
+            _run_panel("summ4", "문서요약 처리 중", _proc_summary4, on_done=_summ4_on_done)
+            st.stop()
+
         if _sum_failed4:
             st.markdown(tf("#### 요약 실패 (%d개)", len(_sum_failed4)))
             _fail_sel4 = _checklist(_sum_failed4, "summ4_failed", height=180)
@@ -2071,10 +2095,6 @@ if _active_view == "5_wiki":
             open_target=_stage_folder("5_wiki"),
         )
 
-    if _run_active("wiki5"):
-        _run_panel("wiki5", "위키반영 처리 중", _proc_wiki5, on_done=_wiki5_on_done)
-        st.stop()
-
     _, _, _json_n5f = _chapter_counts()
     _ch_root5f = cfg.CHAPTERS_DIR
     _vault5f = _current_wiki_dir()
@@ -2129,7 +2149,7 @@ if _active_view == "5_wiki":
     # ── 챕터 요약 → Wiki (큐 기반) ───────────────────────────
     _q5_stems = queue_list("tab5_ready")   # Tab4가 등록한 책 stem
     _wiki_pend5: list[dict] = []
-    _wiki_done5_list: list[dict] = []
+    _wiki_refresh5: list[dict] = []
     for _stem5 in _q5_stems:
         _ch5 = chapters_dir(DEFAULT_WS, _stem5)
         _jsons5 = list_summary_files(_ch5)
@@ -2140,16 +2160,17 @@ if _active_view == "5_wiki":
         _ch_names5 = [_re.sub(r'^\d+_', '', f.stem) for f in sorted(_ch5.glob("??_*.txt"))
                       if not f.stem.endswith(("_ko","_wiki"))] if _ch5.exists() else []
         _has_ov5 = find_overview_file(DEFAULT_WS, _stem5) is not None
+        _wiki_item5 = {
+            "key": _stem5,
+            "label": _stem5,
+            "meta": _ratio5 + " · " + (t("전체요약 ✓") if _has_ov5 else t("전체요약 — (반영 시 자동 생성)")),
+            "obj": {"ws": DEFAULT_WS, "stem": _stem5},
+            "ch_names": _ch_names5,
+        }
         if _stem5 in _wiki_stems5:
-            _wiki_done5_list.append({"stem": _stem5, "n": len(_jsons5), "total": _total5})
+            _wiki_refresh5.append(_wiki_item5)
         else:
-            _wiki_pend5.append({
-                "key": _stem5,
-                "label": _stem5,
-                "meta": _ratio5 + " · " + (t("전체요약 ✓") if _has_ov5 else t("전체요약 — (반영 시 자동 생성)")),
-                "obj": {"ws": DEFAULT_WS, "stem": _stem5},
-                "ch_names": _ch_names5,
-            })
+            _wiki_pend5.append(_wiki_item5)
 
     # 챕터 요약 → Wiki
     st.markdown(tf("#### 챕터 요약 → Wiki (%d권 대기)", len(_wiki_pend5)))
@@ -2221,9 +2242,45 @@ if _active_view == "5_wiki":
             queue_remove("tab5_ready", [_o5["stem"] for _o5 in _sel5])
             st.rerun()
         if _rs5 and _sel5:
+            st.session_state["wiki5_status_place"] = "pending"
             _run_start("wiki5", [_o5["stem"] for _o5 in _sel5])
-    else:
+    elif not _wiki_refresh5:
         st.info(t("Wiki 대기 없음 — 📝 문서요약에서 요약 완료 후 자동 등록되거나 아래에서 수동 추가하세요"))
+
+    if _run_active("wiki5") and st.session_state.get("wiki5_status_place") != "refresh":
+        _run_panel("wiki5", "위키반영 처리 중", _proc_wiki5, on_done=_wiki5_on_done)
+        st.stop()
+
+    if _wiki_refresh5:
+        st.divider()
+        st.markdown(tf("#### 새 요약 있음 · 기존 Wiki 갱신 확인 (%d권)", len(_wiki_refresh5)))
+        st.warning(
+            t("기존 Wiki가 있습니다. 명시적으로 선택한 책만 새 요약으로 다시 반영합니다. 선택하지 않은 책은 기존 노트를 유지합니다."),
+            icon=":material/warning:",
+        )
+        _refresh_sel5 = _checklist(_wiki_refresh5, "wiki5_refresh", height=240, viewable=True)
+        _refresh_stems5 = [_o5["stem"] for _o5 in _refresh_sel5]
+        _wr5c1, _wr5c2 = st.columns(2)
+        _refresh_run5 = _wr5c1.button(
+            tf("다시 반영 (%d권)", len(_refresh_stems5)),
+            icon=":material/refresh:", key="wiki5_refresh_run", use_container_width=True,
+            type="primary", disabled=len(_refresh_stems5) == 0,
+        )
+        _refresh_skip5 = _wr5c2.button(
+            tf("이번 갱신 건너뛰기 (%d권)", len(_refresh_stems5)),
+            icon=":material/skip_next:", key="wiki5_refresh_skip", use_container_width=True,
+            disabled=len(_refresh_stems5) == 0,
+        )
+        if _refresh_skip5 and _refresh_stems5:
+            queue_remove("tab5_ready", _refresh_stems5)
+            st.rerun()
+        if _refresh_run5 and _refresh_stems5:
+            st.session_state["wiki5_status_place"] = "refresh"
+            _run_start("wiki5", _refresh_stems5)
+
+    if _run_active("wiki5"):
+        _run_panel("wiki5", "위키반영 처리 중", _proc_wiki5, on_done=_wiki5_on_done)
+        st.stop()
 
     # 수동 추가 expander (책 단위)
     with st.expander(t("➕ 수동으로 추가 (요약 완료된 책에서 선택)")):

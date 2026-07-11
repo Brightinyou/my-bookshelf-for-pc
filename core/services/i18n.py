@@ -307,6 +307,8 @@ _EN: dict[str, str] = {
     "➕ 수동으로 추가 (기존 챕터에서 선택)": "➕ Add manually (from existing chapters)",
     "책/챕터 이름 검색": "Search book/chapter",
     "➕ 선택 항목 큐에 추가 (%d개)": "➕ Add selected to queue (%d)",
+    "단락 %d/%d · 재사용 %d · API 호출 %d · 번역 %d · 보존 %d · 제외 %d · 실패 %d":
+        "Paragraph %d/%d · reused %d · API calls %d · translated %d · preserved %d · dropped %d · failed %d",
     "3-영문번역 완료": "Translation finished",
     "%d개 챕터 번역을 마쳤습니다. 다음 단계에서 요약 MD를 생성하세요.":
         "Translated %d chapter(s). Generate summaries in the next step.",
@@ -360,6 +362,11 @@ _EN: dict[str, str] = {
     "Wiki 생성 API 없음 — ⚙️ 설정 탭에서 키를 입력하세요.":
         "No wiki-generation API — enter a key in ⚙️ Settings.",
     "#### 챕터 요약 → Wiki (%d권 대기)": "#### Summaries → Wiki (%d waiting)",
+    "#### 새 요약 있음 · 기존 Wiki 갱신 확인 (%d권)": "#### New summaries · Confirm existing Wiki updates (%d)",
+    "기존 Wiki가 있습니다. 명시적으로 선택한 책만 새 요약으로 다시 반영합니다. 선택하지 않은 책은 기존 노트를 유지합니다.":
+        "An existing Wiki was found. Only explicitly selected books will be updated with the new summaries; unselected books keep their existing notes.",
+    "다시 반영 (%d권)": "Publish again (%d)",
+    "이번 갱신 건너뛰기 (%d권)": "Skip this update (%d)",
     "**책 제목**": "**Book title**",
     "챕터": "chapters",
     "%d/%d챕터 요약됨": "%d/%d chapters summarized",
