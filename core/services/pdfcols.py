@@ -13,10 +13,14 @@ from services import reflowlib
 
 
 def _kind(ch):
-    """'drop'=버림(제어/개행), 'space'=공백, ''=실제 글자."""
+    """'drop'=버림(제어/개행), 'space'=공백, 'broken'=폰트 미매핑 글리프, ''=실제 글자."""
+    if ch in ("￾", "￿"):
+        # 폰트가 유니코드로 매핑 못한 글리프. 이 문서에선 줄끝 하이픈, 다른
+        # 문서에선 공백으로도 쓰인다 → 위치(줄끝/중간)로 _text에서 해석한다.
+        return "broken"
     if ch in ("\r", "\n", "\t") or unicodedata.category(ch)[0] == "C":
         return "drop"
-    if ch == " " or ch == "￾" or unicodedata.category(ch)[0] == "Z":
+    if ch == " " or unicodedata.category(ch)[0] == "Z":
         return "space"
     return ""
 
@@ -46,7 +50,7 @@ def _glyphs(page):
             continue
         is_sp = (k == "space")
         gl.append((x0, (y0 + y1) / 2, x1, " " if is_sp else ch, is_sp))
-        if not is_sp:
+        if not is_sp and k != "broken":     # 미매핑 글리프는 자폭/높이 통계에서 제외
             heights.append(y1 - y0); widths.append(x1 - x0)
     mh = statistics.median(heights) if heights else 10
     mw = statistics.median(widths) if widths else 6
@@ -69,12 +73,24 @@ def _group_rows(gl, tol):
 
 
 def _text(chars, space_gap):
-    """실제 공백 문자 + x간격(보조)으로 띄어쓰기 복원."""
+    """실제 공백 문자 + x간격(보조)으로 띄어쓰기 복원.
+    미매핑 글리프(￾)는 줄 끝이면 하이픈(-), 줄 중간이면 공백으로 해석한다."""
     chars = sorted(chars, key=lambda c: c[0])
+    n = len(chars)
     out, prev_x1, pending = [], None, False
-    for x0, _y, x1, ch, is_sp in chars:
+    for idx, (x0, _y, x1, ch, is_sp) in enumerate(chars):
         if is_sp:
             pending = True
+            prev_x1 = x1 if prev_x1 is None else max(prev_x1, x1)
+            continue
+        if ch in ("￾", "￿"):
+            more = any((not chars[j][4]) and chars[j][3] not in ("￾", "￿")
+                       for j in range(idx + 1, n))
+            if more:
+                pending = True                 # 줄 중간 → 공백
+            elif out and out[-1].isascii() and out[-1].isalpha():
+                out.append("-")                # 줄 끝 + 라틴 문자 뒤 → 영어 단어 분철
+            # 그 외(한글 등) 줄 끝 → 아무것도 안 함(줄바꿈은 reflow가 공백으로 이음)
             prev_x1 = x1 if prev_x1 is None else max(prev_x1, x1)
             continue
         if prev_x1 is not None and (pending or (x0 - prev_x1) > space_gap):
