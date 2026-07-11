@@ -112,22 +112,31 @@ def download_installer(asset_url: str, progress_cb=None) -> tuple[Path | None, s
 _HELPER_PS1 = r"""
 param([string]$Root, [string]$Setup, [string]$Relaunch)
 $ErrorActionPreference = 'SilentlyContinue'
+$Log = Join-Path $env:TEMP 'mybookshelf_update.log'
+function Log($m) { "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $m" | Out-File -FilePath $Log -Append -Encoding utf8 }
+Log "helper start (Root=$Root)"
 function AppProcs {
   Get-CimInstance Win32_Process | Where-Object {
     $_.ExecutablePath -and $_.ExecutablePath.ToLower().StartsWith($Root.ToLower()) -and $_.Name -match 'python'
   }
 }
-# 1) 앱(설치 폴더의 python) 종료 대기 — 파일 잠금 해제 목적
-$deadline = (Get-Date).AddSeconds(25)
-while ((Get-Date) -lt $deadline -and (AppProcs)) { Start-Sleep -Milliseconds 400 }
+# 1) 앱(설치 폴더의 python) 종료 대기 — 파일 잠금 해제 목적 (짧게)
+$deadline = (Get-Date).AddSeconds(10)
+while ((Get-Date) -lt $deadline -and (AppProcs)) { Start-Sleep -Milliseconds 300 }
 # 2) 백업: 남아 있으면 강제 종료
-foreach ($p in AppProcs) { try { Stop-Process -Id $p.ProcessId -Force } catch {} }
+foreach ($p in AppProcs) { try { Log "force-kill $($p.ProcessId)"; Stop-Process -Id $p.ProcessId -Force } catch {} }
 Start-Sleep -Seconds 2
-# 3) 설치 (per-user, UAC 없음; /SILENT = 진행바만, 클릭 불필요)
-try { Start-Process -FilePath $Setup -ArgumentList '/SILENT','/NORESTART' -Wait } catch {}
+# 3) 설치 (per-user, UAC 없음; /SILENT = 진행바 표시, 클릭 불필요)
+Log "install start: $Setup"
+try {
+  $pr = Start-Process -FilePath $Setup -ArgumentList '/SILENT','/NORESTART' -PassThru -Wait
+  Log "install exit code: $($pr.ExitCode)"
+} catch { Log "install error: $_" }
 Start-Sleep -Seconds 1
 # 4) 재실행
-if (Test-Path $Relaunch) { Start-Process -FilePath $Relaunch }
+if (Test-Path $Relaunch) { Log "relaunch: $Relaunch"; Start-Process -FilePath $Relaunch }
+else { Log "relaunch target missing: $Relaunch" }
+Log "helper done"
 """
 
 
@@ -138,7 +147,7 @@ def _write_helper() -> Path:
 
 
 def launch_helper_and_exit(installer_path: Path) -> bool:
-    """대기/설치/재실행 헬퍼를 분리 실행하고 앱을 종료한다.
+    """대기/설치/재실행 헬퍼를 백그라운드로 실행하고 앱을 종료한다.
     성공 시 곧 프로세스가 종료된다. 실행 자체가 실패하면 False(→ 호출부는 A로 폴백)."""
     root = _app_root()
     relaunch = root / "MyBookshelf.exe"
@@ -146,13 +155,17 @@ def launch_helper_and_exit(installer_path: Path) -> bool:
         relaunch = root / "start-app.vbs"
     try:
         helper = _write_helper()
-        DETACHED = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED|NEW_GROUP|NO_WINDOW
+        # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP.
+        # ⚠ DETACHED_PROCESS(0x08)는 pythonw(무콘솔)에서 프로세스 생성을 막으므로 쓰지 않는다.
+        # 부모가 죽어도 자식은 Windows 기본상 살아남는다.
+        flags = 0x08000000 | 0x00000200
         subprocess.Popen(
             ["powershell", "-NoProfile", "-WindowStyle", "Hidden",
              "-ExecutionPolicy", "Bypass", "-File", str(helper),
              "-Root", str(root), "-Setup", str(installer_path), "-Relaunch", str(relaunch)],
-            creationflags=DETACHED, close_fds=True,
+            creationflags=flags, close_fds=True,
         )
+        append_log(f"업데이트 헬퍼 실행: {installer_path.name}")
     except Exception as e:
         append_log(f"업데이트 헬퍼 실행 실패: {type(e).__name__} {str(e)[:80]}")
         return False
