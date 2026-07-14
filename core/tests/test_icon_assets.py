@@ -38,6 +38,21 @@ class IconAssetTests(unittest.TestCase):
             },
         )
 
+    def test_windows_icon_uses_dib_frames_for_explorer_compatibility(self):
+        data = ICON_PATH.read_bytes()
+        _, _, count = struct.unpack_from("<HHH", data)
+
+        for index in range(count):
+            entry_offset = 6 + index * 16
+            image_size, image_offset = struct.unpack_from(
+                "<II", data, entry_offset + 8
+            )
+            self.assertGreater(image_size, 0)
+            self.assertIn(
+                struct.unpack_from("<I", data, image_offset)[0],
+                {40, 108, 124},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
