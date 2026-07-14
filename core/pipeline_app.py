@@ -2481,7 +2481,7 @@ if _active_view == "settings":
         _cur = llm.masked(_prov)
         _api_label = ("✅ " + t("저장됨") + " " + _cur) if _cur else t("미설정")
         with st.expander(f"{_info['label']}  —  {_api_label}",
-                         expanded=not bool(_cur)):
+                         expanded=False):
             with st.form(f"keyform_{_prov}", clear_on_submit=True):
                 _newk = st.text_input(f"{_info['label']} API 키", type="password",
                                       placeholder=_info["hint"], key=f"keyin_{_prov}")
