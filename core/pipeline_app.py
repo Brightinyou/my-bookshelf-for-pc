@@ -693,12 +693,13 @@ def _goto_view(view_id: str) -> None:
 
 
 def _set_stage_completion(title: str, message: str, next_stage: str | None = None,
-                          open_target: Path | None = None) -> None:
+                          open_target: Path | None = None, kind: str = "success") -> None:
     st.session_state["_stage_completion"] = {
         "title": title,
         "message": message,
         "next_stage": next_stage,
         "open_target": str(open_target) if open_target else "",
+        "kind": kind,  # "success"|"warning" — 일부 실패 시 완료로 오인되지 않도록 (2026-07-23)
     }
 
 
@@ -798,7 +799,7 @@ def _render_stage_completion_notice() -> None:
         return
 
     def _render_body():
-        st.success(payload["title"])
+        (st.warning if payload.get("kind") == "warning" else st.success)(payload["title"])
         st.write(payload["message"])
         c1, c2, c3 = st.columns(3)
         if payload.get("next_stage"):
@@ -1413,6 +1414,10 @@ if _active_view == "2_split":
         _ws, _stem = obj["ws"], obj["stem"]
         _sn, _serr, _smode = split_book_to_chapters(_ws, _stem)
         if _serr:
+            if _smode == "single":  # 장 구조 감지 실패 — 아래 '장 구조 미감지'에서 선택하게 함
+                _pend_ns2 = st.session_state.get("split2_nosplit", [])
+                if _stem not in _pend_ns2:
+                    st.session_state["split2_nosplit"] = _pend_ns2 + [_stem]
             return False, f"{_stem}: {_serr}"
         _cdir = chapters_dir(_ws, _stem)
         _new = [str(f.relative_to(cfg.BASE_DIR)) for f in sorted(_cdir.glob("??_*.txt"))
@@ -1430,6 +1435,22 @@ if _active_view == "2_split":
 
     def _split2_on_done():
         _any_en = st.session_state.pop("split2_any_en", False)
+        _log2 = st.session_state.get("split2_log", [])
+        _fails2 = [ln[2:].strip() for ln in _log2 if ln.startswith("❌")]
+        _oks2 = [ln[2:].strip() for ln in _log2 if ln.startswith("✅")]
+        if _fails2:
+            # 일부/전부 실패 — 무조건 성공으로 뜨던 배너가 실제 결과와 어긋나던 문제 수정 (2026-07-23)
+            _msg2 = (tf("%d권 분할 완료.", len(_oks2)) if _oks2 else t("분할된 책이 없습니다.")) + "\n\n" \
+                    + tf("⚠️ %d권 분할 실패 — 대기 목록에 그대로 남아있습니다:", len(_fails2)) + "\n" \
+                    + "\n".join(f"- {m}" for m in _fails2)
+            _set_stage_completion(
+                t("2-챕터 분할 결과") if _oks2 else t("2-챕터 분할 실패"),
+                _msg2,
+                next_stage=("3_translate" if _any_en else "4_summary") if _oks2 else None,
+                open_target=_stage_folder("2_split"),
+                kind="warning",
+            )
+            return
         _set_stage_completion(
             t("2-챕터 분할 완료"),
             t("분할을 마쳤습니다.")
@@ -1650,7 +1671,7 @@ if _active_view == "2_split":
     if _nosplit2:
         st.divider()
         st.markdown(tf("#### 장 구조 미감지 (%d권)", len(_nosplit2)))
-        st.caption(t("장 헤딩을 찾지 못한 문서입니다. 통째로 번역·요약하려면 단일장으로 저장하세요."))
+        st.caption(t("장 헤딩을 찾지 못해 분할에 실패한 문서입니다. 통째로 번역·요약하려면 단일장(단권요약)으로 저장하거나, 진행하지 않으려면 삭제하세요."))
         for _ns2 in list(_nosplit2):
             _nc1, _nc2, _nc3 = st.columns([4, 1.6, 0.7])
             _nc1.markdown(f"**{_ns2}**")
@@ -1672,8 +1693,15 @@ if _active_view == "2_split":
                     st.rerun()
                 else:
                     st.error(f"❌ {_ns2}: {_smsg2b}")
-            if _nc3.button("", icon=":material/close:", key=f"nosplit_dismiss_{_ns2}", help="목록에서 제거"):
+            if _nc3.button("", icon=":material/delete:", key=f"nosplit_del_{_ns2}", help="진행하지 않고 삭제"):
+                for _ext2 in (".txt", ".md"):
+                    try:
+                        (cfg.TXT_DIR / (_ns2 + _ext2)).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                queue_remove("tab2_ready", [_ns2])
                 st.session_state["split2_nosplit"] = [x for x in _nosplit2 if x != _ns2]
+                st.success(tf("%s 삭제 완료", _ns2))
                 st.rerun()
 
     # 수동 추가 expander
@@ -1741,6 +1769,21 @@ if _active_view == "3_translate":
         return _ok, f"{_cf.name}: {str(_msg)[:80]}"
 
     def _tr3_on_done():
+        _log3 = st.session_state.get("tr3_log", [])
+        _fails3 = [ln[2:].strip() for ln in _log3 if ln.startswith("❌")]
+        _oks3 = [ln[2:].strip() for ln in _log3 if ln.startswith("✅")]
+        if _fails3:
+            _msg3 = (tf("%d개 번역 완료.", len(_oks3)) if _oks3 else t("번역된 챕터가 없습니다.")) + "\n\n" \
+                    + tf("⚠️ %d개 번역 실패 — 대기 목록에 그대로 남아있습니다:", len(_fails3)) + "\n" \
+                    + "\n".join(f"- {m}" for m in _fails3)
+            _set_stage_completion(
+                t("3-영문번역 결과") if _oks3 else t("3-영문번역 실패"),
+                _msg3,
+                next_stage="4_summary" if _oks3 else None,
+                open_target=_stage_folder("3_translate"),
+                kind="warning",
+            )
+            return
         _set_stage_completion(
             t("3-영문번역 완료"),
             t("번역을 마쳤습니다. 다음 단계에서 요약을 생성하세요."),
@@ -1877,6 +1920,21 @@ if _active_view == "4_summary":
             except Exception:
                 pass
         st.session_state.pop("summ4_touched", None)
+        _log4 = st.session_state.get("summ4_log", [])
+        _fails4 = [ln[2:].strip() for ln in _log4 if ln.startswith("❌")]
+        _oks4 = [ln[2:].strip() for ln in _log4 if ln.startswith("✅")]
+        if _fails4:
+            _msg4 = (tf("%d개 요약 완료.", len(_oks4)) if _oks4 else t("요약된 챕터가 없습니다.")) + "\n\n" \
+                    + tf("⚠️ %d개 요약 실패 — 아래 '요약 실패' 목록에서 재시도하세요:", len(_fails4)) + "\n" \
+                    + "\n".join(f"- {m}" for m in _fails4)
+            _set_stage_completion(
+                t("4-문서요약 결과") if _oks4 else t("4-문서요약 실패"),
+                _msg4,
+                next_stage="5_wiki" if _oks4 else None,
+                open_target=_stage_folder("4_summary"),
+                kind="warning",
+            )
+            return
         _set_stage_completion(
             t("4-문서요약 완료"),
             t("요약을 마쳤습니다. 다음 단계에서 Wiki 반영을 진행하세요."),
@@ -2088,6 +2146,21 @@ if _active_view == "5_wiki":
         return _ok, f"{stem}: {Path(_msg).name if _ok else str(_msg)[:70]}{_tail}"
 
     def _wiki5_on_done():
+        _log5 = st.session_state.get("wiki5_log", [])
+        _fails5 = [ln[2:].strip() for ln in _log5 if ln.startswith("❌")]
+        _oks5 = [ln[2:].strip() for ln in _log5 if ln.startswith("✅")]
+        if _fails5:
+            _msg5 = (tf("%d권 Wiki 반영 완료.", len(_oks5)) if _oks5 else t("Wiki 반영된 책이 없습니다.")) + "\n\n" \
+                    + tf("⚠️ %d권 Wiki 반영 실패 — 대기 목록에 그대로 남아있습니다:", len(_fails5)) + "\n" \
+                    + "\n".join(f"- {m}" for m in _fails5)
+            _set_stage_completion(
+                t("5-Wiki 반영 결과") if _oks5 else t("5-Wiki 반영 실패"),
+                _msg5,
+                next_stage=None,
+                open_target=_stage_folder("5_wiki"),
+                kind="warning",
+            )
+            return
         _set_stage_completion(
             t("5-Wiki 반영 완료"),
             t("Wiki 반영을 마쳤습니다."),

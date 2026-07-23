@@ -175,14 +175,41 @@ def main() -> int:
             return
         try:
             import ctypes
+            from ctypes import wintypes
 
-            hwnd = ctypes.windll.user32.FindWindowW(None, APP_TITLE)
+            # ctypes의 기본 restype/argtypes는 c_int(32비트)라서 64비트 HWND/HICON
+            # 포인터가 잘려 WM_SETICON에 쓰레기 값이 전달되던 문제 수정 (2026-07-23).
+            user32 = ctypes.windll.user32
+            user32.FindWindowW.restype = wintypes.HWND
+            user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+            user32.LoadImageW.restype = wintypes.HICON
+            user32.LoadImageW.argtypes = [
+                wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+                ctypes.c_int, ctypes.c_int, wintypes.UINT,
+            ]
+            user32.SendMessageW.restype = ctypes.c_void_p
+            user32.SendMessageW.argtypes = [
+                wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+            ]
+
+            LR_LOADFROMFILE, LR_DEFAULTSIZE = 0x10, 0x40
+            WM_SETICON = 0x0080
+            ICON_SMALL, ICON_BIG = 0, 1
+
+            hwnd = None
+            for _ in range(20):  # pywebview가 창 제목을 늦게 붙이는 경우 대비 재시도
+                hwnd = user32.FindWindowW(None, APP_TITLE)
+                if hwnd:
+                    break
+                time.sleep(0.25)
             if not hwnd:
                 return
-            hicon = ctypes.windll.user32.LoadImageW(None, icon, 1, 0, 0, 0x10 | 0x40)
-            if hicon:
-                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, hicon)
-                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, hicon)
+            h_big = user32.LoadImageW(None, icon, 1, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
+            h_small = user32.LoadImageW(None, icon, 1, 16, 16, LR_LOADFROMFILE)
+            if h_big:
+                user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_big)
+            if h_small:
+                user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_small)
         except Exception:
             pass
 
