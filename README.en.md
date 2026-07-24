@@ -52,7 +52,7 @@ This app is a **personal build without Apple signing/notarization**, so the firs
 
 #### Step 4 — First-run setup (automatic)
 
-The first launch **auto-installs** the Python environment and packages (**5-20 min** depending on your network; the window may show "preparing"). When done, the native app window appears. Later launches open in seconds.
+The first launch **auto-installs** the Python environment and packages (**5–20 min** depending on your network; the window may show "preparing"). When done, the native app window appears. Later launches open in seconds.
 
 > Requires Python 3.10+. If missing, install from [python.org](https://www.python.org/downloads/).
 > If setup seems stuck, check the log: `~/Library/Application Support/MyBookshelf/app.log`
@@ -106,7 +106,7 @@ Switch stages from the top menu. Every upload area accepts **file picker or drag
 ### ③ 📝 Summaries
 - Creates per-chapter summary notes (`_wiki.md`) — author, key summary, overview, key quotes, key keywords (with explanations).
 - Summaries are written as **direct statements of the content**, not "the author says …".
-- **Length control**: in the Settings tab or the collapsible **"Adjust summary length"** here, set the summary body to **5-40 % of the source** (15 % default). Higher values make longer notes and increase **output tokens / API cost** (input tokens for the source stay the same). Short chapters keep a minimum length.
+- **Length control**: in the Settings tab or the collapsible **"Adjust summary length"** here, set the summary body to **5–40 % of the source** (15 % default). Higher values make longer notes and increase **output tokens / API cost** (input tokens for the source stay the same). Short chapters keep a minimum length.
 - Select queued items and press **[▶ Start]**.
 
 ### ④ 📖 Output (Wiki · Create DOCX)
