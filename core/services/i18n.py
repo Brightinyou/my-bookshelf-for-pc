@@ -647,4 +647,45 @@ _EN.update({
     "장별로 요약된 「%s」 문서를 옵시디언 위키에 반영할까요?":
         "Reflect the chapter-summarized \"%s\" into the Obsidian wiki?",
     "요약된 %d권을 옵시디언 위키에 반영할까요?": "Reflect %d summarized books into the Obsidian wiki?",
+    # 옵시디언 미사용 → Word(.docx) 내보내기 (Phase 2, 2026-07-24)
+    "옵시디언 위키 사용": "Use Obsidian wiki",
+    "끄면 옵시디언 대신 편집 가능한 Word(.docx) 문서로 내보냅니다.":
+        "When off, exports an editable Word (.docx) document instead of Obsidian.",
+    "Word 문서는 여기에 저장됩니다: `%s`": "Word documents are saved here: `%s`",
+    "5-Word 문서 내보내기 완료": "5 - Word export complete",
+    "Word(.docx) 문서로 내보냈습니다.": "Exported as a Word (.docx) document.",
+    "Word 문서 내보내는 중": "Exporting Word document",
+    ":material/description: Word 문서 내보내기": ":material/description: Word export",
+    "챕터 요약을 합쳐 편집 가능한 Word(.docx) 문서로 내보냅니다 (옵시디언 미사용).":
+        "Merges chapter summaries into an editable Word (.docx) document (no Obsidian).",
+    "② 처리후 · Word 문서(DOCX)": "② After · Word document (DOCX)",
+    "DOCX 생성": "Create DOCX",
+    "요약을 편집 가능한 Word(.docx) 문서로 저장": "Save summaries as an editable Word (.docx) document",
+    # 두 출력 토글(옵시디언 + DOCX, 둘 다 가능) (2026-07-24)
+    "위키+DOCX": "Wiki + DOCX",
+    "출력 선택": "Select output",
+    "출력 미선택": "No output selected",
+    "요약을 Obsidian 위키와 Word(.docx) 문서 둘 다로 저장": "Save summaries as both an Obsidian wiki and a Word (.docx) document",
+    "출력 방식(위키/DOCX)을 하나 이상 선택하세요": "Select at least one output (Wiki / DOCX)",
+    "5-출력 완료": "5 - Output complete",
+    "완료: %s": "Done: %s",
+    "출력 생성 중": "Generating output",
+    "② 처리후 · 위키+DOCX": "② After · Wiki + DOCX",
+    "위키 %d · DOCX %d": "Wiki %d · DOCX %d",
+    "DOCX 문서 생성": "Create DOCX document",
+    "Obsidian 보관함에 위키 노트로 저장합니다.": "Saves as wiki notes in the Obsidian vault.",
+    "편집 가능한 Word(.docx) 문서로 저장합니다.": "Saves as an editable Word (.docx) document.",
+    "출력 방식을 하나 이상 선택하세요 (위키 또는 DOCX).": "Select at least one output (Wiki or DOCX).",
+    "PDF → TXT변환 → 장별 분할 → 영문번역 → 요약생성 → %s":
+        "PDF → Text → Chapter split → Translation → Summaries → %s",
+    "요약된 「%s」을(를) %s(으)로 저장할까요?": "Save the summarized \"%s\" as %s?",
+    "요약된 %d권을 %s(으)로 저장할까요?": "Save %d summarized books as %s?",
+    "요약된 문서를 %s(으)로 저장할까요?": "Save the summarized document as %s?",
+    "「%s」이(가) 이미 위키에 있습니다. 방금 요약으로 갱신해 %s(으)로 저장할까요?":
+        "\"%s\" is already in the wiki. Update with the new summary and save as %s?",
+    "요약한 %d권을 %s(으)로 저장할까요? (일부는 기존 위키 갱신)":
+        "Save %d summarized books as %s? (some update existing wiki notes)",
+    "요약한 「%s」을(를) Word(.docx) 문서로 내보낼까요?": "Export the summarized \"%s\" as a Word (.docx) document?",
+    "요약된 %d권을 Word(.docx) 문서로 내보낼까요?": "Export %d summarized books as Word (.docx) documents?",
+    "요약된 문서를 Word(.docx) 문서로 내보낼까요?": "Export the summarized document as a Word (.docx) file?",
 })

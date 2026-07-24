@@ -65,6 +65,35 @@ def _port_in_use(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
+def _kill_stale_servers() -> None:
+    """이전 실행에서 남은 My Bookshelf 서버(streamlit pipeline_app.py)를 종료한다.
+
+    앱을 강제 종료하거나 다시 열 때 옛 스트림릿이 포트를 잡은 채 붙어 있어
+    창이 옛 서버에 연결되거나 좀비 프로세스가 쌓이던 문제를 근본 차단한다.
+    실행 시 항상 이전 서버를 정리하고 최신 정본으로 새로 띄운다 (단일 실행, 2026-07-24).
+    """
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-CimInstance Win32_Process | "
+                 "Where-Object { $_.CommandLine -like '*streamlit*pipeline_app.py*' } | "
+                 "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
+                capture_output=True,
+                creationflags=0x08000000,
+            )
+        else:
+            subprocess.run(["pkill", "-f", "streamlit run.*pipeline_app.py"],
+                           capture_output=True)
+    except Exception:
+        pass
+    # 포트(8501)가 풀릴 때까지 최대 ~6초 대기 — 새 서버가 같은 포트를 잡도록
+    for _ in range(20):
+        if not _port_in_use(DEFAULT_PORT):
+            break
+        time.sleep(0.3)
+
+
 def _find_free_port(start: int = DEFAULT_PORT) -> int:
     for p in range(start, start + 50):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -128,6 +157,9 @@ def main() -> int:
             "pywebview is not installed.",
             "Run setup.bat again or reinstall My Bookshelf.",
         )
+
+    # 이전 실행에서 남은 서버를 먼저 정리한다 (좀비 방지·항상 최신 로드, 2026-07-24)
+    _kill_stale_servers()
 
     try:
         port = _find_free_port(DEFAULT_PORT)
