@@ -376,6 +376,12 @@ def build_wiki_from_chapter_summaries(ws_name: str, stem: str, wiki_dir: Path | 
     ]
     if author:
         lines.append(f"author: {author}")
+    _published = (ov.get("published_date") or "").strip()
+    _publisher = (ov.get("publisher") or "").strip()
+    if _published:
+        lines.append(f"published: {_published}")
+    if _publisher:
+        lines.append(f'publisher: "{_publisher.replace(chr(34), chr(39))}"')
     lines += [
         f"model: {model}", f"generated: {today}", "---", "",
         f"# {stem}", "", intro, "", f"**요약:** {summ}", "",

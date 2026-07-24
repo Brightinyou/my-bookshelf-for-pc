@@ -632,8 +632,9 @@ if st.query_params.get("view") in {tid for tid, _ in _STAGE_TASKS}:
             st.session_state.pop("active_view", None)
         else:
             st.session_state["active_view"] = _view
-        st.query_params.clear()
-        st.rerun()
+    # 탭을 누를 때마다(같은 탭 재클릭 포함) 쿼리를 비우고 rerun → 매번 큐·파일 상태를 새로 읽음
+    st.query_params.clear()
+    st.rerun()
 
 with st.expander(t("📁 저장 위치"), expanded=False):
     _loc_rows = [
@@ -692,15 +693,30 @@ def _goto_view(view_id: str) -> None:
     st.rerun()
 
 
+_NEXT_TAB = {"2_split": "split2", "3_translate": "tr3", "4_summary": "summ4", "5_wiki": "wiki5"}
+
 def _set_stage_completion(title: str, message: str, next_stage: str | None = None,
-                          open_target: Path | None = None, kind: str = "success") -> None:
+                          open_target: Path | None = None, kind: str = "success",
+                          question: str | None = None, next_items: list | None = None) -> None:
     st.session_state["_stage_completion"] = {
         "title": title,
         "message": message,
         "next_stage": next_stage,
+        "next_tab": _NEXT_TAB.get(next_stage or ""),
+        "question": question,
+        # 방금 처리한 책 stem 목록 — [예] 자동 실행 시 '이 책들만' 다음 단계 처리
+        "next_items": [_nfc(x) for x in (next_items or [])],
         "open_target": str(open_target) if open_target else "",
         "kind": kind,  # "success"|"warning" — 일부 실패 시 완료로 오인되지 않도록 (2026-07-23)
     }
+
+
+def _track_flow_book(stem: str) -> None:
+    """현재 처리 중인 책을 기록 — on_done이 다음 단계 대상(next_items)으로 넘긴다."""
+    lst = st.session_state.setdefault("_flow_books", [])
+    _s = _nfc(stem)
+    if _s not in lst:
+        lst.append(_s)
 
 
 def _clear_stage_completion() -> None:
@@ -794,6 +810,11 @@ def _render_update_notice() -> None:
 
 
 def _render_stage_completion_notice() -> None:
+    # 처리 중(자동 실행 포함)에는 완료 팝업을 띄우지 않는다 — 진행바·중단 버튼을 가리지
+    # 않도록. 실행 시작 시 닫히고, 처리가 끝나면(_run_lock 해제 + on_done이 payload 설정)
+    # 다음 렌더에서 다시 뜬다. (2026-07-24)
+    if st.session_state.get("_run_lock"):
+        return
     payload = st.session_state.get("_stage_completion")
     if not payload:
         return
@@ -801,6 +822,27 @@ def _render_stage_completion_notice() -> None:
     def _render_body():
         (st.warning if payload.get("kind") == "warning" else st.success)(payload["title"])
         st.write(payload["message"])
+        _q = payload.get("question")
+        _nb = payload.get("next_stage")
+        _nt = payload.get("next_tab")
+        if _q and _nb and _nt:
+            # 대화형: 질문 + [예, 바로 진행](다음 단계 자동 실행) / [직접 화면에서 선택](이동만)
+            st.markdown(f"### {_q}")
+            d1, d2 = st.columns(2)
+            if d1.button(t("예, 바로 진행"), icon=":material/play_arrow:", key="stage_yes",
+                         use_container_width=True, type="primary"):
+                st.session_state["_autostart_tab"] = _nt
+                st.session_state["_autostart_items"] = list(payload.get("next_items") or [])
+                _clear_stage_completion()
+                _goto_view(_nb)
+            if d2.button(t("직접 화면에서 선택"), icon=":material/tune:", key="stage_manual",
+                         use_container_width=True):
+                _clear_stage_completion()
+                _goto_view(_nb)
+            if st.button(t("닫기"), icon=":material/close:", key="stage_close2", use_container_width=True):
+                _clear_stage_completion()
+                st.rerun()
+            return
         c1, c2, c3 = st.columns(3)
         if payload.get("next_stage"):
             if c1.button(t("다음 단계"), icon=":material/arrow_forward:", key="stage_done_next", use_container_width=True, type="primary"):
@@ -1300,9 +1342,13 @@ if _active_view in {"1_txt", "all_run"}:
 
     st.divider()
 
-    # 처리 대기 목록 (UPLOAD_TMP)
+    # 처리 대기 목록 (UPLOAD_TMP) — 이미 변환된(TXT 존재) 원본은 제외해 잔재가 대기에
+    # 계속 뜨는 문제 방지(변환 실패로 TXT 없는 것은 그대로 남아 재시도 가능). (2026-07-24)
+    _converted_stems1 = {_nfc(p.stem) for p in cfg.TXT_DIR.rglob("*.txt")} if cfg.TXT_DIR.exists() else set()
     _pending_all1 = sorted(
-        [f for f in UPLOAD_TMP.glob("*") if f.is_file() and f.suffix.lower() in {".pdf",".txt",".md"}]
+        [f for f in UPLOAD_TMP.glob("*")
+         if f.is_file() and f.suffix.lower() in {".pdf", ".txt", ".md"}
+         and _nfc(f.stem) not in _converted_stems1]
         if UPLOAD_TMP.exists() else [],
         key=lambda f: f.stat().st_mtime, reverse=True,
     )
@@ -1364,6 +1410,8 @@ if _active_view in {"1_txt", "all_run"}:
                     _msg1,
                     next_stage="2_split",
                     open_target=_stage_folder("1_txt"),
+                    question=t("이어서 장별로 분할할까요?"),
+                    next_items=[_nfc(p.stem) for p in _done_txt_paths1],
                 )
             elif _ocr_needed1:
                 _set_ocr_notice(_ocr_needed1)
@@ -1431,10 +1479,12 @@ if _active_view == "2_split":
         else:
             queue_add("tab4_ready", _new)
         _archive_split_source(_stem)
+        _track_flow_book(_stem)
         return True, f"{_stem} → {len(_new)}챕터 ({t(SPLIT_MODE_LABELS.get(_smode, _smode))})"
 
     def _split2_on_done():
         _any_en = st.session_state.pop("split2_any_en", False)
+        _items2 = st.session_state.pop("_flow_books", [])
         _log2 = st.session_state.get("split2_log", [])
         _fails2 = [ln[2:].strip() for ln in _log2 if ln.startswith("❌")]
         _oks2 = [ln[2:].strip() for ln in _log2 if ln.startswith("✅")]
@@ -1457,10 +1507,16 @@ if _active_view == "2_split":
             + (" " + t("영문 책 → 영문번역") if _any_en else " " + t("한글 책 → 문서요약")),
             next_stage="3_translate" if _any_en else "4_summary",
             open_target=_stage_folder("2_split"),
+            question=t("이어서 영문번역을 진행할까요?") if _any_en else t("이어서 장별 요약을 진행할까요?"),
+            next_items=_items2,
         )
 
     _ch_root2f = cfg.CHAPTERS_DIR
     _n_books2f = len([d for d in _ch_root2f.iterdir() if d.is_dir()]) if _ch_root2f.exists() else 0
+    # 처리 중이면 최상단에서 진행 화면만 렌더(다른 위젯 건너뜀) — 대화형/수동 공통
+    if _run_active("split2"):
+        _run_panel("split2", "챕터 분할 처리 중", _proc_split2, on_done=_split2_on_done)
+        st.stop()
     _stage_flow_panel(
         ":material/content_cut: 챕터 분할",
         "책 TXT를 챕터(Chapter) 단위 파일로 분리해 책별 폴더에 저장합니다.",
@@ -1552,10 +1608,12 @@ if _active_view == "2_split":
             _completed2 = 0
             _queued_translate2 = 0
             _queued_summary2 = 0
+            _done_stems2 = []
             for _s2 in _sel2:
                 _ok2, _detail2, _new_chs2 = _save_book_as_single_chapter(_s2["ws"], _s2["stem"])
                 if _ok2 and _new_chs2:
                     _completed2 += 1
+                    _done_stems2.append(_s2["stem"])
                     if _route_translate(_s2["stem"]):
                         _queued_translate2 += 1
                     else:
@@ -1570,6 +1628,8 @@ if _active_view == "2_split":
                     + (" " + t("영문 → 영문번역") if _queued_translate2 else " " + t("한글 → 문서요약")),
                     next_stage=_next_stage2,
                     open_target=_stage_folder("2_split"),
+                    question=t("이어서 영문번역을 진행할까요?") if _queued_translate2 else t("이어서 장별 요약을 진행할까요?"),
+                    next_items=_done_stems2,
                 )
                 st.rerun()
         if _rs2 and _sel2:
@@ -1580,9 +1640,12 @@ if _active_view == "2_split":
         else:
             st.info(t("분할 대기 없음 — 📄 텍스트 변환에서 TXT를 먼저 생성하거나 아래에서 수동 추가하세요"))
 
-    if _run_active("split2"):
-        _run_panel("split2", "챕터 분할 처리 중", _proc_split2, on_done=_split2_on_done)
-        st.stop()
+    if st.session_state.get("_autostart_tab") == "split2" and not _run_active("split2"):
+        st.session_state.pop("_autostart_tab", None)
+        _items = {_nfc(x) for x in st.session_state.pop("_autostart_items", [])}
+        _work = [_it["obj"] for _it in _split_pend2 if _nfc(_it["obj"]["stem"]) in _items]
+        if _work:
+            _run_start("split2", _work)
 
     if _split_short2:
         st.divider()
@@ -1766,9 +1829,11 @@ if _active_view == "3_translate":
         if _ok:
             queue_remove("tab3_ready", [rel])
             queue_add("tab4_ready", [rel])
+            _track_flow_book(_nfc(_cf.parent.name))
         return _ok, f"{_cf.name}: {str(_msg)[:80]}"
 
     def _tr3_on_done():
+        _items3 = st.session_state.pop("_flow_books", [])
         _log3 = st.session_state.get("tr3_log", [])
         _fails3 = [ln[2:].strip() for ln in _log3 if ln.startswith("❌")]
         _oks3 = [ln[2:].strip() for ln in _log3 if ln.startswith("✅")]
@@ -1786,13 +1851,24 @@ if _active_view == "3_translate":
             return
         _set_stage_completion(
             t("3-영문번역 완료"),
-            t("번역을 마쳤습니다. 다음 단계에서 요약을 생성하세요."),
+            t("번역을 마쳤습니다."),
             next_stage="4_summary",
             open_target=_stage_folder("3_translate"),
+            question=t("이어서 장별 요약을 진행할까요?"),
+            next_items=_items3,
         )
 
     _src_n3f, _ko_n3f, _ = _chapter_counts()
     _ch_root3f = cfg.CHAPTERS_DIR
+    if _run_active("tr3"):
+        _run_panel(
+            "tr3", "영문번역 처리 중", _proc_translate3, on_done=_tr3_on_done,
+            item_progress_text=lambda done, total, translated, preserved, dropped, failed, resumed, api_calls: tf(
+                "단락 %d/%d · 재사용 %d · API 호출 %d · 번역 %d · 보존 %d · 제외 %d · 실패 %d",
+                done, total, resumed, api_calls, translated, preserved, dropped, failed,
+            ),
+        )
+        st.stop()
     _stage_flow_panel(
         ":material/translate: 영문번역",
         "챕터 TXT를 한국어로 번역해 같은 폴더에 `_ko.txt`로 저장합니다.",
@@ -1877,18 +1953,12 @@ if _active_view == "3_translate":
         else:
             st.info(t("번역 대기 없음 — 📂 챕터 분할에서 챕터를 먼저 분리하세요"))
 
-        if _run_active("tr3"):
-            _run_panel(
-                "tr3",
-                "영문번역 처리 중",
-                _proc_translate3,
-                on_done=_tr3_on_done,
-                item_progress_text=lambda done, total, translated, preserved, dropped, failed, resumed, api_calls: tf(
-                    "단락 %d/%d · 재사용 %d · API 호출 %d · 번역 %d · 보존 %d · 제외 %d · 실패 %d",
-                    done, total, resumed, api_calls, translated, preserved, dropped, failed,
-                ),
-            )
-            st.stop()
+        if st.session_state.get("_autostart_tab") == "tr3" and not _run_active("tr3"):
+            st.session_state.pop("_autostart_tab", None)
+            _items = {_nfc(x) for x in st.session_state.pop("_autostart_items", [])}
+            _work = [_it["obj"] for _it in _tr_pend3 if _nfc(Path(_it["obj"]).parent.name) in _items]
+            if _work:
+                _run_start("tr3", _work)
 
     st.info(t("💡 다음 단계: **📝 문서요약**으로 이동하세요"))
 
@@ -1931,18 +2001,21 @@ if _active_view == "4_summary":
             _touched.add(_book)
             st.session_state["summ4_touched"] = sorted(_touched)
             queue_add("tab5_ready", [_book])
+            _track_flow_book(_book)
         else:
             queue_remove("tab4_ready", [rel])
             queue_add("tab4_failed", [rel])
         return _ok, f"{_cf.name}: {str(_msg)[:70]}"
 
     def _summ4_on_done():
-        for _stem in st.session_state.get("summ4_touched", []):
+        _touched4 = list(st.session_state.get("summ4_touched", []))
+        for _stem in _touched4:
             try:
                 summarize_book_overview(DEFAULT_WS, _stem)
             except Exception:
                 pass
         st.session_state.pop("summ4_touched", None)
+        st.session_state.pop("_flow_books", None)
         _log4 = st.session_state.get("summ4_log", [])
         _fails4 = [ln[2:].strip() for ln in _log4 if ln.startswith("❌")]
         _oks4 = [ln[2:].strip() for ln in _log4 if ln.startswith("✅")]
@@ -1958,15 +2031,34 @@ if _active_view == "4_summary":
                 kind="warning",
             )
             return
+        # 위키 반영 질문 — A: 이미 반영됨(교체) / B: 미반영(반영)
+        _vault4 = _current_wiki_dir()
+        _vstems4 = {_nfc(p.stem) for p in _vault4.rglob("*.md")} if _vault4.exists() else set()
+        _already4 = [s for s in _touched4 if _nfc(s) in _vstems4]
+        if _touched4 and _already4:
+            _q4 = (tf("「%s」이(가) 이미 옵시디언 위키에 반영되어 있습니다. 방금 요약한 내용으로 교체할까요?", _touched4[0])
+                   if len(_touched4) == 1 else
+                   tf("요약한 %d권 중 일부가 이미 위키에 있습니다. 방금 요약으로 교체·반영할까요?", len(_touched4)))
+        elif _touched4:
+            _q4 = (tf("장별로 요약된 「%s」 문서를 옵시디언 위키에 반영할까요?", _touched4[0])
+                   if len(_touched4) == 1 else
+                   tf("요약된 %d권을 옵시디언 위키에 반영할까요?", len(_touched4)))
+        else:
+            _q4 = t("요약된 문서를 옵시디언 위키에 반영할까요?")
         _set_stage_completion(
             t("4-문서요약 완료"),
-            t("요약을 마쳤습니다. 다음 단계에서 Wiki 반영을 진행하세요."),
+            t("요약을 마쳤습니다."),
             next_stage="5_wiki",
             open_target=_stage_folder("4_summary"),
+            question=_q4,
+            next_items=_touched4,
         )
 
     _src_n4f, _ko_n4f, _json_n4f = _chapter_counts()
     _ch_root4f = cfg.CHAPTERS_DIR
+    if _run_active("summ4"):
+        _run_panel("summ4", "문서요약 처리 중", _proc_summary4, on_done=_summ4_on_done)
+        st.stop()
     _stage_flow_panel(
         ":material/summarize: 문서요약",
         "챕터 TXT(번역본 우선)로 요약을 생성해 같은 폴더에 `_wiki.md`로 저장합니다.",
@@ -2086,9 +2178,13 @@ if _active_view == "4_summary":
         else:
             st.info(t("요약 대기 없음 — 🌐 영문번역 처리 후 자동 등록되거나 위에서 TXT를 직접 업로드하세요"))
 
-        if _run_active("summ4"):
-            _run_panel("summ4", "문서요약 처리 중", _proc_summary4, on_done=_summ4_on_done)
-            st.stop()
+        if st.session_state.get("_autostart_tab") == "summ4" and not _run_active("summ4"):
+            st.session_state.pop("_autostart_tab", None)
+            _items = {_nfc(x) for x in st.session_state.pop("_autostart_items", [])}
+            _auto4 = [str(_it["obj"][0].relative_to(cfg.BASE_DIR)) for _it in _sum_pend4
+                      if _nfc(_it["obj"][1]) in _items]
+            if _auto4:
+                _run_start("summ4", _auto4)
 
         if _sum_failed4:
             st.markdown(tf("#### 요약 실패 (%d개)", len(_sum_failed4)))
@@ -2199,6 +2295,9 @@ if _active_view == "5_wiki":
     _ch_root5f = cfg.CHAPTERS_DIR
     _vault5f = _current_wiki_dir()
     _n_notes5f = sum(1 for _ in _vault5f.rglob("*.md")) if _vault5f.exists() else 0
+    if _run_active("wiki5"):
+        _run_panel("wiki5", "위키반영 처리 중", _proc_wiki5, on_done=_wiki5_on_done)
+        st.stop()
     _stage_flow_panel(
         ":material/menu_book: 위키반영",
         "챕터 요약(_wiki.md)들을 합쳐 Obsidian 보관함(Vault)에 위키 노트로 저장합니다.",
@@ -2252,6 +2351,10 @@ if _active_view == "5_wiki":
     _wiki_refresh5: list[dict] = []
     for _stem5 in _q5_stems:
         _ch5 = chapters_dir(DEFAULT_WS, _stem5)
+        # 유령 항목 자동 정리: 챕터 폴더가 없으면(삭제·프래그먼트 잔재) 큐에서 제거하고 건너뜀
+        if not _ch5.exists():
+            queue_remove("tab5_ready", [_stem5])
+            continue
         _jsons5 = list_summary_files(_ch5)
         _total5 = len([f for f in _ch5.glob("??_*.txt")
                        if not f.stem.endswith(("_ko", "_wiki"))]) if _ch5.exists() else 0
@@ -2347,10 +2450,6 @@ if _active_view == "5_wiki":
     elif not _wiki_refresh5:
         st.info(t("Wiki 대기 없음 — 📝 문서요약에서 요약 완료 후 자동 등록되거나 아래에서 수동 추가하세요"))
 
-    if _run_active("wiki5") and st.session_state.get("wiki5_status_place") != "refresh":
-        _run_panel("wiki5", "위키반영 처리 중", _proc_wiki5, on_done=_wiki5_on_done)
-        st.stop()
-
     if _wiki_refresh5:
         st.divider()
         st.markdown(tf("#### 새 요약 있음 · 기존 Wiki 갱신 확인 (%d권)", len(_wiki_refresh5)))
@@ -2378,9 +2477,12 @@ if _active_view == "5_wiki":
             st.session_state["wiki5_status_place"] = "refresh"
             _run_start("wiki5", _refresh_stems5)
 
-    if _run_active("wiki5"):
-        _run_panel("wiki5", "위키반영 처리 중", _proc_wiki5, on_done=_wiki5_on_done)
-        st.stop()
+    if st.session_state.get("_autostart_tab") == "wiki5" and not _run_active("wiki5"):
+        st.session_state.pop("_autostart_tab", None)
+        _items = {_nfc(x) for x in st.session_state.pop("_autostart_items", [])}
+        _auto5 = [_it["obj"]["stem"] for _it in _wiki_pend5 if _nfc(_it["obj"]["stem"]) in _items]
+        if _auto5:
+            _run_start("wiki5", _auto5)
 
     # 수동 추가 expander (책 단위)
     with st.expander(t("➕ 수동으로 추가 (요약 완료된 책에서 선택)")):

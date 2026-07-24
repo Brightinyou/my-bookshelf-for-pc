@@ -66,6 +66,8 @@ Also confirm/choose the folder (vault) where Wiki notes are saved in `⚙️ Set
 
 Switch stages from the top menu. Every upload area accepts **file picker or drag & drop**. The "open folder" buttons are tucked into a small expander so the actual work area stands out.
 
+> **When a stage finishes, a popup asks about the next step.** For example, after text conversion it asks *"Split into chapters next?"* — press **[Yes, proceed now]** and **only the book you just processed** advances and runs automatically (other queued books are left untouched). To process several at once or pick manually, use **[Choose on the screen]** to open the regular queue view. The popup closes while processing so the progress bar and Stop button stay visible.
+
 ### ① 📄 Text conversion
 - Uploaded PDF/TXT files stack up in the **processing queue**.
 - Select items and press **[Convert to text]** — extracts the text layer and saves TXT. The original PDF is kept.
@@ -79,10 +81,14 @@ Switch stages from the top menu. Every upload area accepts **file picker or drag
 
 ### ③ 📝 Summaries
 - Creates per-chapter summary notes (`_wiki.md`) — author, key summary, overview, key quotes, key keywords (with explanations).
+- Summaries are written as **direct statements of the content**, not "the author says …".
+- **Length control**: in the Settings tab or the collapsible **"Adjust summary length"** here, set the summary body to **5-40 % of the source** (15 % default). Higher values make longer notes and increase **output tokens / API cost** (input tokens for the source stay the same). Short chapters keep a minimum length.
 - Select queued items and press **[▶ Start]**.
 
 ### ④ 📖 Wiki
 - Merges summaries into a **hub note + per-chapter notes** in the Obsidian vault.
+- The note's frontmatter is auto-filled with **author, publication date, and publisher (`Place: Publisher`)**, extracted from the source's title/colophon page (left blank if not confidently found).
+- If a book is already reflected, the popup asks **"Replace?"** to update it in place.
 - Use **[Select all]/[Clear]** in the queue, then **[▶ Start]**.
 
 ---

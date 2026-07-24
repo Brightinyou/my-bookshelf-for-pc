@@ -269,11 +269,15 @@ def load_overview_file(path: Path) -> dict | None:
         category = m.group(1).strip() if m else "기타"
         ma = _re.search(r"(?m)^author:\s*(.+)$", text[:400])
         mm = _re.search(r"(?m)^model:\s*(.+)$", text[:400])
+        mp = _re.search(r"(?m)^published:\s*(.+)$", text[:400])
+        mpub = _re.search(r"(?m)^publisher:\s*(.+)$", text[:400])
         summary, intro = parse_summary_md(text)
         if not (summary or intro):
             return None
         return {"category": category, "summary": summary, "intro": intro,
                 "author": ma.group(1).strip() if ma else "",
+                "published_date": mp.group(1).strip().strip('"') if mp else "",
+                "publisher": mpub.group(1).strip().strip('"') if mpub else "",
                 "model": mm.group(1).strip() if mm else ""}
     except Exception:
         return None
@@ -295,8 +299,30 @@ def summarize_book_overview(ws_name: str, stem: str) -> tuple[bool, str]:
         sections.append({"idx": i, "title": title, "summary": d.get("summary", "")})
     if not sections:
         return False, "장별 요약 없음 — 챕터 요약을 먼저 실행하세요"
+    # 서지 정보(저자·출판사·출판일) 추출용 — 표제지·판권면은 분할 전 '원본 전체 txt'
+    # 앞·뒤에 있으므로 그것을 우선 사용하고, 없으면 첫/끝 챕터 txt로 폴백한다.
+    head_text = ""
+    _orig = None
     try:
-        ov = _cw.generate_overview(stem, sections)
+        _want = _nfc(stem + ".txt")
+        if cfg.TXT_DIR.exists():
+            _orig = next((p for p in cfg.TXT_DIR.rglob("*.txt") if _nfc(p.name) == _want), None)
+    except Exception:
+        _orig = None
+    try:
+        if _orig is not None:
+            _full = _orig.read_text(encoding="utf-8", errors="ignore")
+            head_text = (_full[:3500] + "\n…\n" + _full[-1500:]).strip()
+        else:
+            _txts = [f for f in sorted(ch_dir.glob("??_*.txt")) if not f.stem.endswith(("_ko", "_wiki"))]
+            if _txts:
+                _h = _txts[0].read_text(encoding="utf-8", errors="ignore")[:3500]
+                _t = _txts[-1].read_text(encoding="utf-8", errors="ignore")[-2000:]
+                head_text = (_h + "\n…\n" + _t).strip()
+    except Exception:
+        head_text = ""
+    try:
+        ov = _cw.generate_overview(stem, sections, head_text=head_text)
     except Exception as e:
         return False, str(e)[:200]
     summary = " ".join((ov.get("summary") or "").split())
@@ -305,6 +331,8 @@ def summarize_book_overview(ws_name: str, stem: str) -> tuple[bool, str]:
         return False, "전체요약 응답이 비었습니다"
     model = llm.effective_wiki_model()
     author = (ov.get("author") or "").strip() or _author_from_stem(stem)
+    published = (ov.get("published_date") or "").strip()
+    publisher = (ov.get("publisher") or "").strip()
     # '#키워드 — 해설' 한 줄씩 — 줄바꿈 보존 (2026-07-09)
     keywords = "\n".join(ln.strip() for ln in (ov.get("keywords") or "").splitlines() if ln.strip())
     out = overview_file_for(ws_name, stem)
@@ -319,7 +347,9 @@ def summarize_book_overview(ws_name: str, stem: str) -> tuple[bool, str]:
         f"book: {stem}\n"
         + (f"author: {author}\n" if author else "")
         + f"category: {ov.get('category', '기타')}\n"
-        f"model: {model}\n"
+        + (f"published: {published}\n" if published else "")
+        + (f'publisher: "{publisher.replace(chr(34), chr(39))}"\n' if publisher else "")
+        + f"model: {model}\n"
         f"generated: {date.today().isoformat()}\n"
         "---\n"
         f"{_SUMMARY_PREFIX} {summary}\n\n"

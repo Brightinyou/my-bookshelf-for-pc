@@ -631,4 +631,20 @@ _EN.update({
         "Sets each chapter note's body as a percentage of the source length (15% recommended). Short chapters keep a minimum length. Applies from the next summarization.",
     ":material/info: 분량(%)이 커질수록 생성되는 요약이 길어져 **출력 토큰 소비·API 비용이 늘어납니다.** (원문을 보내는 입력 토큰은 분량과 무관하게 동일합니다.)":
         ":material/info: A higher percentage produces longer summaries, so **output-token usage and API cost increase.** (Input tokens for sending the source text stay the same regardless of length.)",
+    # 단계 완료 대화형 흐름 (2026-07-24)
+    "예, 바로 진행": "Yes, proceed now",
+    "직접 화면에서 선택": "Choose on the screen",
+    "이어서 장별로 분할할까요?": "Split into chapters next?",
+    "이어서 영문번역을 진행할까요?": "Translate to Korean next?",
+    "이어서 장별 요약을 진행할까요?": "Summarize chapters next?",
+    "번역을 마쳤습니다.": "Translation complete.",
+    "요약을 마쳤습니다.": "Summarization complete.",
+    "요약된 문서를 옵시디언 위키에 반영할까요?": "Reflect the summarized document into the Obsidian wiki?",
+    "「%s」이(가) 이미 옵시디언 위키에 반영되어 있습니다. 방금 요약한 내용으로 교체할까요?":
+        "\"%s\" is already in the Obsidian wiki. Replace it with the summary you just generated?",
+    "요약한 %d권 중 일부가 이미 위키에 있습니다. 방금 요약으로 교체·반영할까요?":
+        "Some of the %d books are already in the wiki. Replace them with the new summaries?",
+    "장별로 요약된 「%s」 문서를 옵시디언 위키에 반영할까요?":
+        "Reflect the chapter-summarized \"%s\" into the Obsidian wiki?",
+    "요약된 %d권을 옵시디언 위키에 반영할까요?": "Reflect %d summarized books into the Obsidian wiki?",
 })
