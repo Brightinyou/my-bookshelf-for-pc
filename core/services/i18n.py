@@ -622,4 +622,13 @@ _EN.update({
     "현재": "current",
     "번역과 별개로, 위키 노트 생성에 쓸 모델입니다. 구조화 출력은 공급자별로 자동 처리됩니다.":
         "The model used to generate Wiki notes (separate from translation). Structured output is handled per provider.",
+    # 설정 · 요약 분량 슬라이더 (2026-07-23)
+    "요약 분량": "Summary length",
+    "요약 분량 (원문 대비 %)": "Summary length (% of source)",
+    ":material/tune: 요약 분량 조절": ":material/tune: Adjust summary length",
+    "설정 탭과 문서요약 탭이 같은 값을 공유합니다.": "The Settings tab and the Summary tab share the same value.",
+    "장별 요약 본문을 원문 글자수 대비 몇 %로 만들지 정합니다 (권장 15%). 짧은 장은 최소 분량을 보장합니다. 다음 요약부터 적용됩니다.":
+        "Sets each chapter note's body as a percentage of the source length (15% recommended). Short chapters keep a minimum length. Applies from the next summarization.",
+    ":material/info: 분량(%)이 커질수록 생성되는 요약이 길어져 **출력 토큰 소비·API 비용이 늘어납니다.** (원문을 보내는 입력 토큰은 분량과 무관하게 동일합니다.)":
+        ":material/info: A higher percentage produces longer summaries, so **output-token usage and API cost increase.** (Input tokens for sending the source text stay the same regardless of length.)",
 })

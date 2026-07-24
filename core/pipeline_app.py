@@ -1894,6 +1894,29 @@ if _active_view == "3_translate":
 
 
 # ── 4: 요약생성 ─────────────────────────────────────────
+def _wiki_len_cb(widget_key: str):
+    """슬라이더 조작 즉시 pref에 커밋 (설정·문서요약 두 슬라이더 동기화의 핵심)."""
+    try:
+        llm.set_pref("wiki_length_pct", int(st.session_state[widget_key]))
+    except Exception:
+        pass
+
+
+def _render_wiki_length_slider(widget_key: str):
+    """요약 분량 % 슬라이더 — 설정 탭·문서요약 탭 공용. pref_wiki_length_pct 공유.
+    on_change가 먼저 커밋되므로 매 렌더에서 pref로 재동기화해도 사용자 조작을 되돌리지 않는다."""
+    import chapter_wiki as _cw
+    st.session_state[widget_key] = _cw.wiki_pct()
+    st.slider(
+        t("요약 분량 (원문 대비 %)"),
+        min_value=_cw.WIKI_PCT_MIN, max_value=_cw.WIKI_PCT_MAX,
+        step=1, format="%d%%", key=widget_key,
+        on_change=_wiki_len_cb, args=(widget_key,),
+        help=t("설정 탭과 문서요약 탭이 같은 값을 공유합니다."))
+    st.caption(t("장별 요약 본문을 원문 글자수 대비 몇 %로 만들지 정합니다 (권장 15%). 짧은 장은 최소 분량을 보장합니다. 다음 요약부터 적용됩니다."))
+    st.caption(t(":material/info: 분량(%)이 커질수록 생성되는 요약이 길어져 **출력 토큰 소비·API 비용이 늘어납니다.** (원문을 보내는 입력 토큰은 분량과 무관하게 동일합니다.)"))
+
+
 if _active_view == "4_summary":
     def _proc_summary4(rel):
         _cf = cfg.BASE_DIR / rel
@@ -1954,6 +1977,10 @@ if _active_view == "4_summary":
         ],
         "flow4",
     )
+
+    # 요약 분량 조절 — 여기서도 바로 조절(설정 탭의 기본값과 동기화, 2026-07-23)
+    with st.expander(t(":material/tune: 요약 분량 조절"), expanded=False):
+        _render_wiki_length_slider("wiki_length_pct_sl4")
 
     _prov_ok4 = any(llm.has_key(p) for p in llm.PROVIDERS)
     if not _prov_ok4:
@@ -2513,6 +2540,10 @@ if _active_view == "settings":
     else:
         st.info(t("사용 가능한 API 키나 활성화된 CLI가 없습니다. 아래에서 API 키를 입력하거나 CLI 사용을 켜세요."))
     st.caption(t("번역과 별개로, 위키 노트 생성에 쓸 모델입니다. 구조화 출력은 공급자별로 자동 처리됩니다."))
+
+    # 요약 분량 — 원문 대비 % 슬라이더 (기본 설정 홈. 문서요약 탭과 pref 공유, 2026-07-23)
+    st.markdown(f":material/tune: **{t('요약 분량')}**")
+    _render_wiki_length_slider("wiki_length_pct_sl")
     st.divider()
 
     # 🖥 CLI 구독 도구 — API 등록보다 앞(우선) · Claude/Codex 컴팩트 토글 (2026-07-10)
